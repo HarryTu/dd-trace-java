@@ -1,8 +1,9 @@
 package datadog.trace.instrumentation.grpc.server;
 
+import static datadog.trace.api.datastreams.DataStreamsContext.fromTags;
 import static datadog.trace.api.gateway.Events.EVENTS;
+import static datadog.trace.bootstrap.instrumentation.api.AgentPropagation.extractContextAndGetSpanContext;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.propagate;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
 import static datadog.trace.instrumentation.grpc.server.GrpcExtractAdapter.GETTER;
 import static datadog.trace.instrumentation.grpc.server.GrpcServerDecorator.DECORATE;
@@ -20,13 +21,14 @@ import datadog.trace.api.gateway.RequestContext;
 import datadog.trace.api.gateway.RequestContextSlot;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan.Context;
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import datadog.trace.bootstrap.instrumentation.api.TagContext;
 import io.grpc.ForwardingServerCall;
 import io.grpc.ForwardingServerCallListener;
 import io.grpc.Grpc;
 import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
@@ -60,7 +62,7 @@ public class TracingServerInterceptor implements ServerInterceptor {
       return next.startCall(call, headers);
     }
 
-    Context spanContext = propagate().extract(headers, GETTER);
+    AgentSpanContext spanContext = extractContextAndGetSpanContext(headers, GETTER);
     AgentTracer.TracerAPI tracer = tracer();
     spanContext = callIGCallbackRequestStarted(tracer, spanContext);
 
@@ -69,12 +71,13 @@ public class TracingServerInterceptor implements ServerInterceptor {
 
     AgentTracer.get()
         .getDataStreamsMonitoring()
-        .setCheckpoint(span, SERVER_PATHWAY_EDGE_TAGS, 0, 0);
+        .setCheckpoint(span, fromTags(SERVER_PATHWAY_EDGE_TAGS));
 
     RequestContext reqContext = span.getRequestContext();
     if (reqContext != null) {
       callIGCallbackClientAddress(cbp, reqContext, call);
       callIGCallbackHeaders(cbp, reqContext, headers);
+      callIGCallbackGrpcServerMethod(cbp, reqContext, call.getMethodDescriptor());
     }
 
     DECORATE.afterStart(span);
@@ -236,7 +239,8 @@ public class TracingServerInterceptor implements ServerInterceptor {
 
   // IG helpers follow
 
-  private static Context callIGCallbackRequestStarted(AgentTracer.TracerAPI cbp, Context context) {
+  private static AgentSpanContext callIGCallbackRequestStarted(
+      AgentTracer.TracerAPI cbp, AgentSpanContext context) {
     Supplier<Flow<Object>> startedCbAppSec =
         cbp.getCallbackProvider(RequestContextSlot.APPSEC).getCallback(EVENTS.requestStarted());
     Supplier<Flow<Object>> startedCbIast =
@@ -312,6 +316,16 @@ public class TracingServerInterceptor implements ServerInterceptor {
         callback.apply(requestContext, span);
       }
     }
+  }
+
+  private static <ReqT, RespT> void callIGCallbackGrpcServerMethod(
+      CallbackProvider cbp, RequestContext ctx, MethodDescriptor<ReqT, RespT> methodDescriptor) {
+    String method = methodDescriptor.getFullMethodName();
+    BiFunction<RequestContext, String, Flow<Void>> cb = cbp.getCallback(EVENTS.grpcServerMethod());
+    if (method == null || cb == null) {
+      return;
+    }
+    cb.apply(ctx, method);
   }
 
   private static void callIGCallbackGrpcMessage(@Nonnull final AgentSpan span, Object obj) {

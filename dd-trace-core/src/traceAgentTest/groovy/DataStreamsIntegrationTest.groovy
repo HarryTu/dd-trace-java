@@ -3,27 +3,22 @@ import datadog.communication.ddagent.SharedCommunicationObjects
 import datadog.communication.http.OkHttpUtils
 import datadog.trace.api.Config
 import datadog.trace.api.TraceConfig
+import datadog.trace.api.datastreams.DataStreamsTags
 import datadog.trace.api.time.ControllableTimeSource
-import datadog.trace.bootstrap.instrumentation.api.StatsPoint
+import datadog.trace.api.datastreams.StatsPoint
 import datadog.trace.common.metrics.EventListener
 import datadog.trace.common.metrics.OkHttpSink
 import datadog.trace.core.datastreams.DefaultDataStreamsMonitoring
-import datadog.trace.test.util.DDSpecification
 import okhttp3.HttpUrl
 import spock.lang.Ignore
-import spock.lang.Requires
 import spock.util.concurrent.PollingConditions
 
 import java.util.concurrent.CopyOnWriteArrayList
 
 import static datadog.trace.common.metrics.EventListener.EventType.OK
-import static datadog.trace.core.datastreams.DefaultDataStreamsMonitoring.DEFAULT_BUCKET_DURATION_NANOS
 
-@Requires({
-  "true" == System.getenv("CI")
-})
 @Ignore("The agent in CI doesn't have a valid API key. Unlike metrics and traces, data streams fails in this case")
-class DataStreamsIntegrationTest extends DDSpecification {
+class DataStreamsIntegrationTest extends AbstractTraceAgentTest {
 
   def "Sending stats bucket to agent should notify with OK event"() {
     given:
@@ -50,10 +45,11 @@ class DataStreamsIntegrationTest extends DDSpecification {
     }
 
     when:
-    def dataStreams = new DefaultDataStreamsMonitoring(sink, sharedCommunicationObjects.featuresDiscovery, timeSource, { traceConfig }, Config.get())
+    def dataStreams = new DefaultDataStreamsMonitoring(sink, sharedCommunicationObjects.featuresDiscovery(Config.get()), timeSource, { traceConfig }, Config.get())
     dataStreams.start()
-    dataStreams.accept(new StatsPoint("testType", "testGroup", "testTopic", 1, 2, timeSource.currentTimeNanos, 0, 0))
-    timeSource.advance(DEFAULT_BUCKET_DURATION_NANOS)
+    def tg = DataStreamsTags.create("testType", null, "testTopic", "testGroup", null)
+    dataStreams.add(new StatsPoint(tg, 1, 2, 5, timeSource.currentTimeNanos, 0, 0, 0, null))
+    timeSource.advance(Config.get().getDataStreamsBucketDurationNanoseconds())
     dataStreams.report()
 
     then:

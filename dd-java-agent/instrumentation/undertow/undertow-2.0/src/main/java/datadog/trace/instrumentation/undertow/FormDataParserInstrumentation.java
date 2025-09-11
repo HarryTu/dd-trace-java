@@ -12,6 +12,7 @@ import datadog.appsec.api.blocking.BlockingException;
 import datadog.trace.advice.ActiveRequestContext;
 import datadog.trace.advice.RequiresRequestContext;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.agent.tooling.muzzle.Reference;
 import datadog.trace.api.gateway.BlockResponseFunction;
 import datadog.trace.api.gateway.CallbackProvider;
@@ -24,9 +25,9 @@ import io.undertow.server.handlers.form.FormData;
 import java.util.function.BiFunction;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public class FormDataParserInstrumentation extends Instrumenter.AppSec
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class FormDataParserInstrumentation extends InstrumenterModule.AppSec
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public FormDataParserInstrumentation() {
     super("undertow", "undertow-2.0");
@@ -53,8 +54,8 @@ public class FormDataParserInstrumentation extends Instrumenter.AppSec
     return new Reference[] {EXCHANGE_REFERENCE};
   }
 
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("doParse")
             .and(takesArgument(0, named("org.xnio.channels.StreamSourceChannel")))
             .and(takesArguments(1))

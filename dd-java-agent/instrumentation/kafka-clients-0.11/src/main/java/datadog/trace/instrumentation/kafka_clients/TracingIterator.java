@@ -1,14 +1,14 @@
 package datadog.trace.instrumentation.kafka_clients;
 
+import static datadog.trace.api.datastreams.DataStreamsContext.create;
+import static datadog.trace.api.datastreams.DataStreamsTags.Direction.INBOUND;
+import static datadog.trace.api.datastreams.DataStreamsTags.create;
+import static datadog.trace.bootstrap.instrumentation.api.AgentPropagation.DSM_CONCERN;
+import static datadog.trace.bootstrap.instrumentation.api.AgentPropagation.extractContextAndGetSpanContext;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateNext;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.closePrevious;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.propagate;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
-import static datadog.trace.core.datastreams.TagsProcessor.DIRECTION_IN;
-import static datadog.trace.core.datastreams.TagsProcessor.DIRECTION_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.GROUP_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.TOPIC_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.TYPE_TAG;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.traceConfig;
 import static datadog.trace.instrumentation.kafka_clients.KafkaDecorator.BROKER_DECORATE;
 import static datadog.trace.instrumentation.kafka_clients.KafkaDecorator.KAFKA_DELIVER;
 import static datadog.trace.instrumentation.kafka_clients.KafkaDecorator.TIME_IN_QUEUE_ENABLED;
@@ -18,13 +18,16 @@ import static datadog.trace.instrumentation.kafka_common.StreamingContext.STREAM
 import static datadog.trace.instrumentation.kafka_common.Utils.computePayloadSizeBytes;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
+import datadog.context.propagation.Propagator;
+import datadog.context.propagation.Propagators;
 import datadog.trace.api.Config;
+import datadog.trace.api.datastreams.DataStreamsContext;
+import datadog.trace.api.datastreams.DataStreamsTags;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan.Context;
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import datadog.trace.bootstrap.instrumentation.api.InstrumentationTags;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,16 +40,22 @@ public class TracingIterator implements Iterator<ConsumerRecord<?, ?>> {
   private final CharSequence operationName;
   private final KafkaDecorator decorator;
   private final String group;
+  private final String clusterId;
+  private final String bootstrapServers;
 
   public TracingIterator(
       final Iterator<ConsumerRecord<?, ?>> delegateIterator,
       final CharSequence operationName,
       final KafkaDecorator decorator,
-      String group) {
+      String group,
+      String clusterId,
+      String bootstrapServers) {
     this.delegateIterator = delegateIterator;
     this.operationName = operationName;
     this.decorator = decorator;
     this.group = group;
+    this.clusterId = clusterId;
+    this.bootstrapServers = bootstrapServers;
   }
 
   @Override
@@ -72,7 +81,8 @@ public class TracingIterator implements Iterator<ConsumerRecord<?, ?>> {
       AgentSpan span, queueSpan = null;
       if (val != null) {
         if (!Config.get().isKafkaClientPropagationDisabledForTopic(val.topic())) {
-          final Context spanContext = propagate().extract(val.headers(), GETTER);
+          final AgentSpanContext spanContext =
+              extractContextAndGetSpanContext(val.headers(), GETTER);
           long timeInQueueStart = GETTER.extractTimeInQueueStart(val.headers());
           if (timeInQueueStart == 0 || !TIME_IN_QUEUE_ENABLED) {
             span = startSpan(operationName, spanContext);
@@ -87,18 +97,13 @@ public class TracingIterator implements Iterator<ConsumerRecord<?, ?>> {
             // spans are written out together by TraceStructureWriter when running in strict mode
           }
 
-          LinkedHashMap<String, String> sortedTags = new LinkedHashMap<>();
-          sortedTags.put(DIRECTION_TAG, DIRECTION_IN);
-          sortedTags.put(GROUP_TAG, group);
-          sortedTags.put(TOPIC_TAG, val.topic());
-          sortedTags.put(TYPE_TAG, "kafka");
-
+          DataStreamsTags tags = create("kafka", INBOUND, val.topic(), group, clusterId);
           final long payloadSize =
-              span.traceConfig().isDataStreamsEnabled() ? computePayloadSizeBytes(val) : 0;
-          if (STREAMING_CONTEXT.empty()) {
+              traceConfig().isDataStreamsEnabled() ? computePayloadSizeBytes(val) : 0;
+          if (STREAMING_CONTEXT.isDisabledForTopic(val.topic())) {
             AgentTracer.get()
                 .getDataStreamsMonitoring()
-                .setCheckpoint(span, sortedTags, val.timestamp(), payloadSize);
+                .setCheckpoint(span, create(tags, val.timestamp(), payloadSize));
           } else {
             // when we're in a streaming context we want to consume only from source topics
             if (STREAMING_CONTEXT.isSourceTopic(val.topic())) {
@@ -106,9 +111,9 @@ public class TracingIterator implements Iterator<ConsumerRecord<?, ?>> {
               // since the data received from the source may leave the topology on
               // some other instance of the application, breaking the context propagation
               // for DSM users
-              propagate()
-                  .injectPathwayContext(
-                      span, val.headers(), SETTER, sortedTags, val.timestamp(), payloadSize);
+              Propagator dsmPropagator = Propagators.forConcern(DSM_CONCERN);
+              DataStreamsContext dsmContext = create(tags, val.timestamp(), payloadSize);
+              dsmPropagator.inject(span.with(dsmContext), val.headers(), SETTER);
             }
           }
         } else {
@@ -118,7 +123,7 @@ public class TracingIterator implements Iterator<ConsumerRecord<?, ?>> {
           span.setTag(InstrumentationTags.TOMBSTONE, true);
         }
         decorator.afterStart(span);
-        decorator.onConsume(span, val, group);
+        decorator.onConsume(span, val, group, bootstrapServers);
         activateNext(span);
         if (null != queueSpan) {
           queueSpan.finish();

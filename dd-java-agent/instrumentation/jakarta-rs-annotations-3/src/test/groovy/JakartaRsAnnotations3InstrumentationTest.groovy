@@ -1,4 +1,5 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
+import datadog.trace.api.config.TraceInstrumentationConfig
 import datadog.trace.bootstrap.instrumentation.api.Tags
 import datadog.trace.instrumentation.jakarta3.JakartaRsAnnotationsDecorator
 
@@ -6,13 +7,14 @@ import jakarta.ws.rs.DELETE
 import jakarta.ws.rs.GET
 import jakarta.ws.rs.HEAD
 import jakarta.ws.rs.OPTIONS
+import jakarta.ws.rs.PATCH
 import jakarta.ws.rs.POST
 import jakarta.ws.rs.PUT
 import jakarta.ws.rs.Path
 
 import static datadog.trace.agent.test.utils.TraceUtils.runUnderTrace
 
-class JakartaRsAnnotations3InstrumentationTest extends AgentTestRunner {
+class JakartaRsAnnotations3InstrumentationTest extends InstrumentationSpecification {
 
   def "instrumentation can be used as root span and resource is set to METHOD PATH"() {
     setup:
@@ -42,6 +44,7 @@ class JakartaRsAnnotations3InstrumentationTest extends AgentTestRunner {
 
   def "span named '#name' from annotations on class when is not root span"() {
     setup:
+    injectSysConfig(TraceInstrumentationConfig.JAX_RS_ADDITIONAL_ANNOTATIONS, "CustomMethod")
     runUnderTrace("test") {
       obj.call()
     }
@@ -56,6 +59,7 @@ class JakartaRsAnnotations3InstrumentationTest extends AgentTestRunner {
           tags {
             "$Tags.COMPONENT" "jakarta-rs"
             "$Tags.HTTP_ROUTE" name.split(" ").last()
+            withCustomIntegrationName(null)
             defaultTags()
           }
         }
@@ -96,6 +100,16 @@ class JakartaRsAnnotations3InstrumentationTest extends AgentTestRunner {
         void call() {
         }
       }
+    "PATCH /interface"    | new InterfaceWithPath() {
+        @PATCH
+        void call() {
+        }
+      }
+    "CUSTOM /interface"    | new InterfaceWithPath() {
+        @CustomMethod
+        void call() {
+        }
+      }
     "POST /abstract/d"   | new AbstractClassWithPath() {
         @POST
         @Path("/d")
@@ -128,6 +142,10 @@ class JakartaRsAnnotations3InstrumentationTest extends AgentTestRunner {
 
   def "no annotations has no effect"() {
     setup:
+    def obj = new Jakarta() {
+        void call() {
+        }
+      }
     runUnderTrace("test") {
       obj.call()
     }
@@ -144,13 +162,6 @@ class JakartaRsAnnotations3InstrumentationTest extends AgentTestRunner {
         }
       }
     }
-
-    where:
-    obj | _
-    new Jakarta() {
-        void call() {
-        }
-      }   | _
   }
 
   interface Jakarta {

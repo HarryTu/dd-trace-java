@@ -1,11 +1,11 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.iast.InstrumentationBridge
 import datadog.trace.api.iast.propagation.PropagationModule
 import org.json.Cookie
 import org.json.JSONObject
 import org.json.JSONTokener
 
-class JSONCookieInstrumentationTest extends AgentTestRunner {
+class JSONCookieInstrumentationTest extends InstrumentationSpecification {
 
   @Override void configurePreAgent() {
     injectSysConfig("dd.iast.enabled", "true")
@@ -22,8 +22,9 @@ class JSONCookieInstrumentationTest extends AgentTestRunner {
 
 
     then:
-    1 * module.taintIfTainted(_ as JSONObject, cookie)
-    1 * module.taintIfTainted(_ as JSONTokener, cookie)
+    1 * module.taintObjectIfTainted(_ as JSONObject, cookie)
+    1 * module.taintObjectIfTainted(_ as Reader, cookie)
+    1 * module.taintObjectIfTainted(_ as JSONTokener, _ as Reader)
     0 * _
   }
 }

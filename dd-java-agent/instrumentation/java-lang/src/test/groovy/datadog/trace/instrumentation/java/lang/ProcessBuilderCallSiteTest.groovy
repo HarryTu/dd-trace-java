@@ -1,11 +1,11 @@
 package datadog.trace.instrumentation.java.lang
 
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.iast.InstrumentationBridge
 import datadog.trace.api.iast.sink.CommandInjectionModule
 import foo.bar.TestProcessBuilderSuite
 
-class ProcessBuilderCallSiteTest extends AgentTestRunner {
+class ProcessBuilderCallSiteTest extends InstrumentationSpecification {
 
   @Override
   protected void configurePreAgent() {
@@ -25,7 +25,7 @@ class ProcessBuilderCallSiteTest extends AgentTestRunner {
     then:
     thrown(IOException)
     1 * iastModule.onProcessBuilderStart(command)
-    _ * TEST_CHECKPOINTER._
+    _ * TEST_PROFILING_CONTEXT_INTEGRATION._
     0 * _
   }
 }

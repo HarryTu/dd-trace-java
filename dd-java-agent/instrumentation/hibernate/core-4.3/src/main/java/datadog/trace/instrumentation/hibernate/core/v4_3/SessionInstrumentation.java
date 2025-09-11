@@ -8,6 +8,7 @@ import static net.bytebuddy.matcher.ElementMatchers.returns;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.ContextStore;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.instrumentation.hibernate.SessionMethodUtils;
@@ -21,9 +22,9 @@ import net.bytebuddy.matcher.ElementMatcher;
 import org.hibernate.SharedSessionContract;
 import org.hibernate.procedure.ProcedureCall;
 
-@AutoService(Instrumenter.class)
-public class SessionInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.CanShortcutTypeMatching {
+@AutoService(InstrumenterModule.class)
+public class SessionInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.CanShortcutTypeMatching, Instrumenter.HasMethodAdvice {
 
   static final String SESSION_STATE = "datadog.trace.instrumentation.hibernate.SessionState";
 
@@ -76,8 +77,8 @@ public class SessionInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(returns(hasInterface(named("org.hibernate.procedure.ProcedureCall")))),
         SessionInstrumentation.class.getName() + "$GetProcedureCallAdvice");
   }

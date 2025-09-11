@@ -21,6 +21,16 @@ final class ConfigConverter {
 
   private static final Logger log = LoggerFactory.getLogger(ConfigConverter.class);
 
+  /**
+   * Custom exception for invalid boolean values to maintain backward compatibility. When caught in
+   * ConfigProvider, boolean methods should return false instead of default value.
+   */
+  static class InvalidBooleanValueException extends IllegalArgumentException {
+    public InvalidBooleanValueException(String message) {
+      super(message);
+    }
+  }
+
   private static final ValueOfLookup LOOKUP = new ValueOfLookup();
 
   /**
@@ -38,6 +48,8 @@ final class ConfigConverter {
     try {
       return (T) LOOKUP.get(tClass).invoke(value);
     } catch (final NumberFormatException e) {
+      throw e;
+    } catch (final IllegalArgumentException e) {
       throw e;
     } catch (final Throwable e) {
       log.debug("Can't parse: ", e);
@@ -81,6 +93,19 @@ final class ConfigConverter {
     }
     Map<String, String> map = new HashMap<>();
     loadMap(map, trimmed, settingName, keyValueSeparator);
+    return map;
+  }
+
+  @Nonnull
+  static Map<String, String> parseTraceTagsMap(
+      final String str, final char keyValueSeparator, final List<Character> argSeparators) {
+    // If we ever want to have default values besides an empty map, this will need to change.
+    String trimmed = Strings.trim(str);
+    if (trimmed.isEmpty()) {
+      return Collections.emptyMap();
+    }
+    Map<String, String> map = new HashMap<>();
+    loadTraceTagsMap(map, trimmed, keyValueSeparator, argSeparators);
     return map;
   }
 
@@ -201,6 +226,63 @@ final class ConfigConverter {
     }
   }
 
+  private static void loadTraceTagsMap(
+      Map<String, String> map,
+      String str,
+      char keyValueSeparator,
+      final List<Character> argSeparators) {
+    int start = 0;
+    int splitter = str.indexOf(keyValueSeparator, start);
+    char argSeparator = '\0';
+    int argSeparatorInd = -1;
+
+    // Given a list of separators ordered by priority, find the first (highest priority) separator
+    // that appears in the string and store its value and first occurrence in the string
+    for (Character sep : argSeparators) {
+      argSeparatorInd = str.indexOf(sep);
+      if (argSeparatorInd != -1) {
+        argSeparator = sep;
+        break;
+      }
+    }
+    while (start < str.length()) {
+      int nextSplitter =
+          argSeparatorInd == -1
+              ? -1
+              : str.indexOf(
+                  keyValueSeparator,
+                  argSeparatorInd + 1); // next splitter after the next argSeparator
+      int nextArgSeparator =
+          argSeparatorInd == -1 ? -1 : str.indexOf(argSeparator, argSeparatorInd + 1);
+      int end = argSeparatorInd == -1 ? str.length() : argSeparatorInd;
+
+      if (start >= end) { // the character is only the delimiter
+        start = end + 1;
+        splitter = nextSplitter;
+        argSeparatorInd = nextArgSeparator;
+        continue;
+      }
+
+      String key, value;
+      if (splitter >= end
+          || splitter
+              == -1) { // only key, no value; either due end of string or substring not having
+        // splitter
+        key = str.substring(start, end).trim();
+        value = "";
+      } else {
+        key = str.substring(start, splitter).trim();
+        value = str.substring(splitter + 1, end).trim();
+      }
+      if (!key.isEmpty()) {
+        map.put(key, value);
+      }
+      splitter = nextSplitter;
+      argSeparatorInd = nextArgSeparator;
+      start = end + 1;
+    }
+  }
+
   private static void loadMapWithOptionalMapping(
       Map<String, String> map,
       String str,
@@ -248,6 +330,12 @@ final class ConfigConverter {
                     "Illegal tag starting with non letter for key '" + key + "'");
               }
             } else {
+              // If wildcard exists, we do not allow other header mappings
+              if (key.charAt(0) == '*') {
+                map.clear();
+                map.put(key, defaultPrefix);
+                return;
+              }
               if (Character.isLetter(key.charAt(0))) {
                 value = defaultPrefix + Strings.normalizedHeaderTag(key);
               } else {
@@ -337,8 +425,15 @@ final class ConfigConverter {
   public static Boolean booleanValueOf(String value) {
     if ("1".equals(value)) {
       return Boolean.TRUE;
+    } else if ("0".equals(value)) {
+      return Boolean.FALSE;
+    } else if ("true".equalsIgnoreCase(value)) {
+      return Boolean.TRUE;
+    } else if ("false".equalsIgnoreCase(value)) {
+      return Boolean.FALSE;
     } else {
-      return Boolean.valueOf(value);
+      // Throw custom exception for invalid boolean values to maintain backward compatibility
+      throw new InvalidBooleanValueException("Invalid boolean value: " + value);
     }
   }
 
@@ -362,31 +457,5 @@ final class ConfigConverter {
         throw new RuntimeException(e);
       }
     }
-  }
-
-  public static String renderIntegerRange(BitSet bitset) {
-    StringBuilder sb = new StringBuilder();
-    int start = 0;
-    while (true) {
-      start = bitset.nextSetBit(start);
-      if (start < 0) {
-        break;
-      }
-      int end = bitset.nextClearBit(start);
-      if (sb.length() > 0) {
-        sb.append(',');
-      }
-      if (start < end - 1) {
-        // interval
-        sb.append(start);
-        sb.append('-');
-        sb.append(end);
-      } else {
-        // single value
-        sb.append(start);
-      }
-      start = end;
-    }
-    return sb.toString();
   }
 }

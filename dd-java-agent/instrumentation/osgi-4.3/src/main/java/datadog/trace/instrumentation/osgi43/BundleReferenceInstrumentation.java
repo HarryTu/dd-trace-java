@@ -11,6 +11,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.AgentClassLoading;
 import java.io.IOException;
 import java.io.InputStream;
@@ -20,15 +21,15 @@ import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 import org.osgi.framework.BundleReference;
 
-@AutoService(Instrumenter.class)
-public final class BundleReferenceInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public final class BundleReferenceInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
   public BundleReferenceInstrumentation() {
     super("classloading", "osgi");
   }
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     // Avoid matching older versions of OSGi that don't have the wiring API.
     return hasClassNamed("org.osgi.framework.wiring.BundleWiring");
   }
@@ -50,18 +51,18 @@ public final class BundleReferenceInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("getResource"))
             .and(takesArguments(1).and(takesArgument(0, String.class))),
         BundleReferenceInstrumentation.class.getName() + "$WidenGetResourceAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(named("getResourceAsStream"))
             .and(takesArguments(1).and(takesArgument(0, String.class))),
         BundleReferenceInstrumentation.class.getName() + "$WidenGetResourceAsStreamAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(named("loadClass"))
             .and(

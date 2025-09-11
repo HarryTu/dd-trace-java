@@ -5,6 +5,7 @@ import io.vertx.redis.client.RedisAPI
 import io.vertx.redis.client.Response
 import spock.lang.AutoCleanup
 import spock.lang.Shared
+import spock.util.concurrent.PollingConditions
 
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -13,9 +14,15 @@ import static datadog.trace.agent.test.utils.TraceUtils.basicSpan
 
 abstract class VertxRedisAPITestBase extends VertxRedisTestBase {
 
-  @AutoCleanup
+  @AutoCleanup(quiet = true)
   @Shared
-  RedisAPI redisAPI = null
+  RedisAPI redisAPI
+
+  def setupSpec() {
+    redisAPI = createRedis()
+  }
+
+  abstract RedisAPI createRedis()
 
   def "dbsize (1 arg)"() {
     when:
@@ -93,6 +100,7 @@ abstract class VertxRedisAPITestBase extends VertxRedisTestBase {
     }
   }
 
+  @Flaky("https://github.com/DataDog/dd-trace-java/issues/6910")
   def "linsert (5 args)"() {
     when:
     def rpush = runWithParentAndHandler({ Handler<AsyncResult<Response>> h ->
@@ -135,20 +143,37 @@ abstract class VertxRedisAPITestBase extends VertxRedisTestBase {
   }
 }
 
-@Flaky("all test cases are flaky https://github.com/DataDog/dd-trace-java/issues/3874")
 class VertxRedisAPIRedisForkedTest extends VertxRedisAPITestBase {
-  def setupSpec() {
-    redisAPI = RedisAPI.api(redis)
+
+  @Override
+  RedisAPI createRedis() {
+    return RedisAPI.api(redis)
   }
 }
 
-@Flaky("all test cases are flaky https://github.com/DataDog/dd-trace-java/issues/3874")
 class VertxRedisAPIRedisConnectionForkedTest extends VertxRedisAPITestBase {
-  def setupSpec() {
+  @Override
+  RedisAPI createRedis() {
+    RedisAPI api = null
+
+    new PollingConditions(delay: 3, timeout: 15).eventually {
+      (api = connect()) != null
+    }
+
+    return api
+  }
+
+  private RedisAPI connect() {
     def latch = new CountDownLatch(1)
-    redis.connect({ar ->
+    RedisAPI api = null
+    redis.connect({ ar ->
       try {
-        redisAPI = RedisAPI.api(ar.result())
+        if (ar.succeeded()) {
+          api = RedisAPI.api(ar.result())
+        } else {
+          println "Redis connection failed"
+          ar.cause().printStackTrace(System.out)
+        }
       } catch (Throwable t) {
         t.printStackTrace(System.out)
       } finally {
@@ -156,6 +181,7 @@ class VertxRedisAPIRedisConnectionForkedTest extends VertxRedisAPITestBase {
       }
     })
     latch.await(10, TimeUnit.SECONDS)
-    assert redisAPI
+
+    return api
   }
 }

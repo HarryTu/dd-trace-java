@@ -1,5 +1,5 @@
 import com.google.common.io.Files
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.agent.test.asserts.ListWriterAssert
 import datadog.trace.api.DDSpanTypes
 import datadog.trace.bootstrap.instrumentation.api.InstrumentationTags
@@ -26,7 +26,7 @@ import jakarta.jms.TextMessage
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicReference
 
-class JMS2Test extends AgentTestRunner {
+class JMS2Test extends InstrumentationSpecification {
   @Shared
   HornetQServer server
   @Shared
@@ -80,10 +80,10 @@ class JMS2Test extends AgentTestRunner {
 
   def "sending a message to #jmsResourceName generates spans"() {
     setup:
-    def producer = session.createProducer(destination)
+    def producer = session.createProducer(null)
     def consumer = session.createConsumer(destination)
 
-    producer.send(message)
+    producer.send(destination, message)
 
     Message receivedMessage = consumer.receive()
     // required to finish auto-acknowledged spans

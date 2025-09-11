@@ -6,6 +6,7 @@ import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.namedOn
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers;
 import datadog.trace.api.InstrumenterConfig;
 import de.thetaphi.forbiddenapis.SuppressForbidden;
@@ -17,9 +18,9 @@ import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 import org.slf4j.LoggerFactory;
 
-@AutoService(Instrumenter.class)
-public final class TraceAnnotationsInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public final class TraceAnnotationsInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   static final String CONFIG_FORMAT = "(?:\\s*[\\w.$]+\\s*;)*\\s*[\\w.$]+\\s*;?\\s*";
 
@@ -28,6 +29,10 @@ public final class TraceAnnotationsInstrumentation extends Instrumenter.Tracing
   @SuppressForbidden
   public TraceAnnotationsInstrumentation() {
     super("trace", "trace-annotation");
+    this.methodTraceMatcher = namedOneOf(loadAnnotations());
+  }
+
+  static Set<String> loadAnnotations() {
     Set<String> annotations = new HashSet<>();
     annotations.add("datadog.trace.api.Trace");
     final String configString = InstrumenterConfig.get().getTraceAnnotations();
@@ -56,7 +61,7 @@ public final class TraceAnnotationsInstrumentation extends Instrumenter.Tracing
         start = next + 1;
       } while (start != 0);
     }
-    this.methodTraceMatcher = namedOneOf(annotations);
+    return annotations;
   }
 
   @Override
@@ -77,7 +82,7 @@ public final class TraceAnnotationsInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(isAnnotatedWith(methodTraceMatcher), packageName + ".TraceAdvice");
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(isAnnotatedWith(methodTraceMatcher), packageName + ".TraceAdvice");
   }
 }

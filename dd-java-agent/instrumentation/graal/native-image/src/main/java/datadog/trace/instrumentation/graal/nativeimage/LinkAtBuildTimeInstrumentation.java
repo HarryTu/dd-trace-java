@@ -6,11 +6,12 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
+@AutoService(InstrumenterModule.class)
 public final class LinkAtBuildTimeInstrumentation extends AbstractNativeImageInstrumentation
-    implements Instrumenter.ForSingleType {
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   @Override
   public String instrumentedType() {
@@ -18,8 +19,8 @@ public final class LinkAtBuildTimeInstrumentation extends AbstractNativeImageIns
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(named("linkAtBuildTime")).and(takesArgument(0, Class.class)),
         LinkAtBuildTimeInstrumentation.class.getName() + "$LinkAtBuildTimeAdvice");
   }

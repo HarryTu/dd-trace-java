@@ -6,6 +6,8 @@ import static datadog.trace.agent.tooling.bytebuddy.csi.ConstantPool.CONSTANT_ME
 import datadog.trace.agent.tooling.bytebuddy.ClassFileLocators;
 import datadog.trace.agent.tooling.csi.CallSiteAdvice;
 import datadog.trace.agent.tooling.csi.CallSites;
+import datadog.trace.agent.tooling.csi.InvokeAdvice;
+import datadog.trace.agent.tooling.csi.InvokeDynamicAdvice;
 import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.Collections;
@@ -49,26 +51,33 @@ public class Advices {
 
   private final AdviceIntrospector introspector;
 
+  private final Listener[] listeners;
+
   private Advices(
       final Map<String, Map<String, Map<String, CallSiteAdvice>>> advices,
       final String[] helpers,
-      final AdviceIntrospector introspector) {
+      final AdviceIntrospector introspector,
+      final Listener... listeners) {
     this.advices = Collections.unmodifiableMap(advices);
     this.helpers = helpers;
     this.introspector = introspector;
+    this.listeners = listeners;
   }
 
   public static Advices fromCallSites(@Nonnull final CallSites... callSites) {
     return fromCallSites(Arrays.asList(callSites));
   }
 
-  public static Advices fromCallSites(@Nonnull final Iterable<CallSites> callSites) {
-    return fromCallSites(callSites, AdviceIntrospector.ConstantPoolInstrospector.INSTANCE);
+  public static Advices fromCallSites(
+      @Nonnull final Iterable<CallSites> callSites, final Listener... listeners) {
+    return fromCallSites(
+        callSites, AdviceIntrospector.ConstantPoolInstrospector.INSTANCE, listeners);
   }
 
   public static Advices fromCallSites(
       @Nonnull final Iterable<CallSites> callSites,
-      @Nonnull final AdviceIntrospector introspector) {
+      @Nonnull final AdviceIntrospector introspector,
+      final Listener... listeners) {
     final AdviceContainer container = new AdviceContainer();
     for (final CallSites entry : callSites) {
       if (isCallSitesEnabled(entry)) {
@@ -77,7 +86,8 @@ public class Advices {
     }
     return container.advices.isEmpty()
         ? EMPTY
-        : new Advices(container.advices, container.helpers.toArray(new String[0]), introspector);
+        : new Advices(
+            container.advices, container.helpers.toArray(new String[0]), introspector, listeners);
   }
 
   /**
@@ -91,14 +101,7 @@ public class Advices {
     if (advices.isEmpty()) {
       return this;
     }
-    byte[] classFile = resolveFromBuilder(type, builder);
-    if (classFile == null) {
-      classFile = resolveFromLoader(type, loader);
-    }
-    if (classFile == null) {
-      return this; // do not do any filtering if we don't have access to the class file buffer
-    }
-    return introspector.findAdvices(this, classFile);
+    return introspector.findAdvices(this, builder, type, loader, listeners);
   }
 
   private static boolean isCallSitesEnabled(final CallSites callSites) {
@@ -108,41 +111,6 @@ public class Advices {
     final CallSites.HasEnabledProperty hasEnabledProperty =
         (CallSites.HasEnabledProperty) callSites;
     return hasEnabledProperty.isEnabled();
-  }
-
-  /**
-   * Try to fetch the class file buffer from the actual builder via introspection to improve
-   * performance
-   */
-  private byte[] resolveFromBuilder(
-      @Nonnull final TypeDescription type, @Nonnull final DynamicType.Builder<?> builder) {
-    if (builder instanceof AbstractInliningDynamicTypeBuilder
-        && BUILDER_CLASS_LOCATOR_FIELD != null) {
-      try {
-        final ClassFileLocator locator =
-            (ClassFileLocator) BUILDER_CLASS_LOCATOR_FIELD.get(builder);
-        final ClassFileLocator.Resolution resolution = locator.locate(type.getName());
-        return resolution.isResolved() ? resolution.resolve() : null;
-      } catch (Throwable e) {
-        if (LOG.isWarnEnabled()) {
-          LOG.warn("Failed to fetch type {} from builder", type.getName(), e);
-        }
-      }
-    }
-    return null;
-  }
-
-  /** Use the default class loader strategy to resolve the class file buffer */
-  private byte[] resolveFromLoader(@Nonnull final TypeDescription type, final ClassLoader loader) {
-    try (final ClassFileLocator locator = ClassFileLocators.classFileLocator(loader)) {
-      final ClassFileLocator.Resolution resolution = locator.locate(type.getName());
-      return resolution.isResolved() ? resolution.resolve() : null;
-    } catch (Throwable e) {
-      if (LOG.isWarnEnabled()) {
-        LOG.warn("Failed to fetch type {} from class loader", type.getName(), e);
-      }
-    }
-    return null;
   }
 
   public CallSiteAdvice findAdvice(@Nonnull final Handle handle) {
@@ -173,6 +141,11 @@ public class Advices {
       return null;
     }
     return methodAdvices.get(descriptor);
+  }
+
+  /** Gets the type of advice we are dealing with */
+  public byte typeOf(final CallSiteAdvice advice) {
+    return ((TypedAdvice) advice).getType();
   }
 
   public String[] getHelpers() {
@@ -210,15 +183,17 @@ public class Advices {
 
     @Override
     public void addAdvice(
-        final String type,
+        final byte type,
+        final String owner,
         final String method,
         final String descriptor,
         final CallSiteAdvice advice) {
       final Map<String, Map<String, CallSiteAdvice>> typeAdvices =
-          advices.computeIfAbsent(type, k -> new HashMap<>());
+          advices.computeIfAbsent(owner, k -> new HashMap<>());
       final Map<String, CallSiteAdvice> methodAdvices =
           typeAdvices.computeIfAbsent(method, k -> new HashMap<>());
-      final CallSiteAdvice oldAdvice = methodAdvices.put(descriptor, advice);
+      final CallSiteAdvice oldAdvice =
+          methodAdvices.put(descriptor, TypedAdvice.withType(advice, type));
       if (oldAdvice != null) {
         throw new UnsupportedOperationException(
             String.format(
@@ -235,7 +210,12 @@ public class Advices {
   public interface AdviceIntrospector {
 
     @Nonnull
-    Advices findAdvices(@Nonnull final Advices advices, @Nonnull final byte[] classFile);
+    Advices findAdvices(
+        @Nonnull Advices advices,
+        @Nonnull DynamicType.Builder<?> builder,
+        @Nonnull TypeDescription type,
+        ClassLoader loader,
+        Listener... listeners);
 
     class NoOpAdviceInstrospector implements AdviceIntrospector {
 
@@ -243,7 +223,11 @@ public class Advices {
 
       @Override
       public @Nonnull Advices findAdvices(
-          final @Nonnull Advices advices, final @Nonnull byte[] classFile) {
+          final @Nonnull Advices advices,
+          final @Nonnull DynamicType.Builder<?> builder,
+          @Nonnull final TypeDescription type,
+          final ClassLoader loader,
+          final Listener... listeners) {
         return advices;
       }
     }
@@ -268,8 +252,27 @@ public class Advices {
 
       @Override
       public @Nonnull Advices findAdvices(
-          final @Nonnull Advices advices, final @Nonnull byte[] classFile) {
+          final @Nonnull Advices advices,
+          final @Nonnull DynamicType.Builder<?> builder,
+          @Nonnull final TypeDescription type,
+          final ClassLoader loader,
+          final Listener... listeners) {
+        byte[] classFile = resolveFromBuilder(type, builder);
+        if (classFile == null) {
+          classFile = resolveFromLoader(type, loader);
+        }
+        if (classFile == null) {
+          return advices; // do not do any filtering if we don't have access to the class file
+          // buffer
+        }
         final ConstantPool cp = new ConstantPool(classFile);
+        for (final Listener listener : listeners) {
+          try {
+            listener.onConstantPool(type, cp, classFile);
+          } catch (final Throwable e) {
+            LOG.debug("Failed to apply advice listener {}", listener, e);
+          }
+        }
         for (int index = 1; index < cp.getCount(); index++) {
           final int referenceType = cp.getType(index);
           final ConstantPoolHandler handler = CP_HANDLERS.get(referenceType);
@@ -284,6 +287,42 @@ public class Advices {
       /** Handler for a particular type of constant pool type (MethodRef, InvokeDynamic, ...) */
       private interface ConstantPoolHandler {
         CallSiteAdvice findAdvice(@Nonnull Advices advices, @Nonnull ConstantPool cp, int index);
+      }
+
+      /**
+       * + * Try to fetch the class file buffer from the actual builder via introspection to improve
+       * + * performance +
+       */
+      private byte[] resolveFromBuilder(
+          @Nonnull final TypeDescription type, @Nonnull final DynamicType.Builder<?> builder) {
+        if (builder instanceof AbstractInliningDynamicTypeBuilder
+            && BUILDER_CLASS_LOCATOR_FIELD != null) {
+          try {
+            final ClassFileLocator locator =
+                (ClassFileLocator) BUILDER_CLASS_LOCATOR_FIELD.get(builder);
+            final ClassFileLocator.Resolution resolution = locator.locate(type.getName());
+            return resolution.isResolved() ? resolution.resolve() : null;
+          } catch (Throwable e) {
+            if (LOG.isWarnEnabled()) {
+              LOG.warn("Failed to fetch type {} from builder", type.getName(), e);
+            }
+          }
+        }
+        return null;
+      }
+
+      /** Use the default class loader strategy to resolve the class file buffer */
+      private byte[] resolveFromLoader(
+          @Nonnull final TypeDescription type, final ClassLoader loader) {
+        try (final ClassFileLocator locator = ClassFileLocators.classFileLocator(loader)) {
+          final ClassFileLocator.Resolution resolution = locator.locate(type.getName());
+          return resolution.isResolved() ? resolution.resolve() : null;
+        } catch (Throwable e) {
+          if (LOG.isWarnEnabled()) {
+            LOG.warn("Failed to fetch type {} from class loader", type.getName(), e);
+          }
+        }
+        return null;
       }
 
       /**
@@ -323,6 +362,75 @@ public class Advices {
           return methodAdvices.get(descriptor);
         }
       }
+    }
+  }
+
+  public interface Listener {
+    void onConstantPool(
+        @Nonnull TypeDescription type, @Nonnull ConstantPool pool, final byte[] classFile);
+  }
+
+  // Kept public only for testing
+  public interface TypedAdvice {
+    byte getType();
+
+    static CallSiteAdvice withType(final CallSiteAdvice advice, final byte type) {
+      if (advice instanceof InvokeAdvice) {
+        return new InvokeWithType((InvokeAdvice) advice, type);
+      } else {
+        return new InvokeDynamicWithType((InvokeDynamicAdvice) advice, type);
+      }
+    }
+  }
+
+  private static class InvokeWithType implements InvokeAdvice, TypedAdvice {
+    private final InvokeAdvice advice;
+    private final byte type;
+
+    private InvokeWithType(InvokeAdvice advice, byte type) {
+      this.advice = advice;
+      this.type = type;
+    }
+
+    @Override
+    public byte getType() {
+      return type;
+    }
+
+    @Override
+    public void apply(
+        final MethodHandler handler,
+        final int opcode,
+        final String owner,
+        final String name,
+        final String descriptor,
+        final boolean isInterface) {
+      advice.apply(handler, opcode, owner, name, descriptor, isInterface);
+    }
+  }
+
+  private static class InvokeDynamicWithType implements InvokeDynamicAdvice, TypedAdvice {
+    private final InvokeDynamicAdvice advice;
+    private final byte type;
+
+    private InvokeDynamicWithType(final InvokeDynamicAdvice advice, final byte type) {
+      this.advice = advice;
+      this.type = type;
+    }
+
+    @Override
+    public byte getType() {
+      return type;
+    }
+
+    @Override
+    public void apply(
+        final MethodHandler handler,
+        final String name,
+        final String descriptor,
+        final Handle bootstrapMethodHandle,
+        final Object... bootstrapMethodArguments) {
+      advice.apply(handler, name, descriptor, bootstrapMethodHandle, bootstrapMethodArguments);
     }
   }
 }

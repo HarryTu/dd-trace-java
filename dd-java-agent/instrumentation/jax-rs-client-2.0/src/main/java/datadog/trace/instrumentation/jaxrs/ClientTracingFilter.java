@@ -1,7 +1,7 @@
 package datadog.trace.instrumentation.jaxrs;
 
+import static datadog.context.Context.current;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.propagate;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
 import static datadog.trace.instrumentation.jaxrs.InjectAdapter.SETTER;
 import static datadog.trace.instrumentation.jaxrs.JaxRsClientDecorator.DECORATE;
@@ -9,7 +9,6 @@ import static datadog.trace.instrumentation.jaxrs.JaxRsClientDecorator.JAX_RS_CL
 
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
-import datadog.trace.bootstrap.instrumentation.decorator.HttpClientDecorator;
 import javax.annotation.Priority;
 import javax.ws.rs.Priorities;
 import javax.ws.rs.client.ClientRequestContext;
@@ -23,19 +22,11 @@ public class ClientTracingFilter implements ClientRequestFilter, ClientResponseF
 
   @Override
   public void filter(final ClientRequestContext requestContext) {
-    final AgentSpan span = startSpan(JAX_RS_CLIENT_CALL);
+    final AgentSpan span = startSpan("jax-rs", JAX_RS_CLIENT_CALL);
     try (final AgentScope scope = activateSpan(span)) {
       DECORATE.afterStart(span);
       DECORATE.onRequest(span, requestContext);
-
-      propagate().inject(span, requestContext.getHeaders(), SETTER);
-      propagate()
-          .injectPathwayContext(
-              span,
-              requestContext.getHeaders(),
-              SETTER,
-              HttpClientDecorator.CLIENT_PATHWAY_EDGE_TAGS);
-
+      DECORATE.injectContext(current().with(span), requestContext.getHeaders(), SETTER);
       requestContext.setProperty(SPAN_PROPERTY_NAME, span);
     }
   }

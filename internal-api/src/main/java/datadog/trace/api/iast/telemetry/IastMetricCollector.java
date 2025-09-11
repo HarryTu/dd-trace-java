@@ -13,7 +13,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.atomic.AtomicLongArray;
@@ -31,8 +30,11 @@ public class IastMetricCollector implements MetricCollector<IastMetricCollector.
 
   private static final Verbosity VERBOSITY = Config.get().getIastTelemetryVerbosity();
 
-  private static final IastMetricCollector INSTANCE =
-      VERBOSITY != Verbosity.OFF ? new IastMetricCollector() : new NoOpInstance();
+  private static IastMetricCollector INSTANCE = new NoOpInstance();
+
+  public static void register(final IastMetricCollector collector) {
+    INSTANCE = collector;
+  }
 
   public static IastMetricCollector get() {
     return INSTANCE;
@@ -101,20 +103,20 @@ public class IastMetricCollector implements MetricCollector<IastMetricCollector.
   }
 
   public void addMetric(final IastMetric metric, final byte tagValue, final int value) {
-    final Tag tag = metric.getTag();
-    if (tag != null && tag.isWrapped(tagValue)) {
-      // e.g.: VulnerabilityTypes.RESPONSE_HEADER
-      for (final byte unwrapped : metric.getTag().unwrap(tagValue)) {
-        increment(metric.getIndex(unwrapped), value);
-      }
-    } else {
-      increment(metric.getIndex(tagValue), value);
-    }
-  }
-
-  private void increment(final int index, final int value) {
+    final int index = metric.getIndex(tagValue);
     if (index >= 0) {
       counters.getAndAdd(index, value);
+    } else if (tagValue < 0) {
+      final Tag tag = metric.getTag();
+      final byte[] unwrapped = tag == null ? null : tag.unwrap(tagValue);
+      if (unwrapped != null) {
+        for (byte unwrappedValue : unwrapped) {
+          final int unwrappedIndex = metric.getIndex(unwrappedValue);
+          if (unwrappedIndex >= 0) {
+            counters.getAndAdd(unwrappedIndex, value);
+          }
+        }
+      }
     }
   }
 
@@ -133,8 +135,9 @@ public class IastMetricCollector implements MetricCollector<IastMetricCollector.
       if (metric.getTag() == null) {
         prepareMetric(metric, (byte) -1);
       } else {
-        for (final byte tagValue : metric.getTag().getValues()) {
-          prepareMetric(metric, tagValue);
+        final int tagCount = metric.getTag().count();
+        for (byte i = 0; i < tagCount; i++) {
+          prepareMetric(metric, i);
         }
       }
     }
@@ -172,7 +175,7 @@ public class IastMetricCollector implements MetricCollector<IastMetricCollector.
           metric.getName(),
           "count",
           value,
-          computeTag(metric, tagValue));
+          metric.getTelemetryTag(tagValue));
       this.metric = metric;
       this.tagValue = tagValue;
     }
@@ -186,19 +189,7 @@ public class IastMetricCollector implements MetricCollector<IastMetricCollector.
     }
 
     public String getSpanTag() {
-      if (metric.getTag() == null) {
-        return metric.getName();
-      }
-      final String tag = metric.getTag().toString(tagValue);
-      final String spanTag = tag.toLowerCase(Locale.ROOT).replace('.', '_');
-      return String.format("%s.%s", metric.getName(), spanTag);
-    }
-
-    public static String computeTag(final IastMetric metric, final byte tagValue) {
-      if (metric.getTag() == null) {
-        return null;
-      }
-      return String.format("%s:%s", metric.getTag().getName(), metric.getTag().toString(tagValue));
+      return metric.getSpanTag(tagValue);
     }
   }
 

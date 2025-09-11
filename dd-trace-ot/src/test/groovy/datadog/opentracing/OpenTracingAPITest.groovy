@@ -1,12 +1,12 @@
 package datadog.opentracing
 
 import datadog.trace.api.DDTags
-import datadog.trace.api.StatsDClient
 import datadog.trace.api.config.TracerConfig
 import datadog.trace.api.interceptor.MutableSpan
 import datadog.trace.api.interceptor.TraceInterceptor
-import datadog.trace.common.writer.ListWriter
 import datadog.trace.api.scopemanager.ScopeListener
+import datadog.trace.bootstrap.instrumentation.api.AgentTracer
+import datadog.trace.common.writer.ListWriter
 import datadog.trace.context.TraceScope
 import datadog.trace.test.util.DDSpecification
 import io.opentracing.Scope
@@ -20,9 +20,8 @@ import static datadog.trace.agent.test.asserts.ListWriterAssert.assertTraces
 
 class OpenTracingAPITest extends DDSpecification {
   def writer = new ListWriter()
-  def statsDClient = Mock(StatsDClient)
 
-  def tracer = DDTracer.builder().writer(writer).statsDClient(statsDClient).build()
+  def tracer = DDTracer.builder().writer(writer).build()
 
   def traceInterceptor = Mock(TraceInterceptor)
   def scopeListener = Mock(ScopeListener)
@@ -65,6 +64,7 @@ class OpenTracingAPITest extends DDSpecification {
           operationName "someOperation"
           resourceName "someOperation"
           tags {
+            "$DDTags.DD_INTEGRATION" "opentracing"
             defaultTags()
           }
         }
@@ -75,7 +75,7 @@ class OpenTracingAPITest extends DDSpecification {
   def "span with builder"() {
     when:
     Span testSpan = tracer.buildSpan("someOperation")
-      .withTag(Tags.COMPONENT, "test-component")
+      .withTag(Tags.COMPONENT, "opentracing")
       .withTag("someBoolean", true)
       .withTag("someNumber", 1)
       .withTag(DDTags.SERVICE_NAME, "someService")
@@ -101,7 +101,8 @@ class OpenTracingAPITest extends DDSpecification {
           operationName "someOperation"
           resourceName "someOperation"
           tags {
-            "$datadog.trace.bootstrap.instrumentation.api.Tags.COMPONENT" "test-component"
+            "$datadog.trace.bootstrap.instrumentation.api.Tags.COMPONENT" "opentracing"
+            "$DDTags.DD_INTEGRATION" "opentracing"
             "someBoolean" true
             "someNumber" 1
             defaultTags()
@@ -123,7 +124,7 @@ class OpenTracingAPITest extends DDSpecification {
 
     when:
     testSpan.setTag(DDTags.SERVICE_NAME, "someService")
-    testSpan.setTag(Tags.COMPONENT, "test-component")
+    testSpan.setTag(Tags.COMPONENT, "opentracing")
     testSpan.setTag("someBoolean", true)
     testSpan.setTag("someNumber", 1)
     testSpan.setOperationName("someOtherOperation")
@@ -142,7 +143,8 @@ class OpenTracingAPITest extends DDSpecification {
           operationName("someOtherOperation")
           resourceName "someOtherOperation"
           tags {
-            "$datadog.trace.bootstrap.instrumentation.api.Tags.COMPONENT" "test-component"
+            "$datadog.trace.bootstrap.instrumentation.api.Tags.COMPONENT" "opentracing"
+            "$DDTags.DD_INTEGRATION" "opentracing"
             "someBoolean" true
             "someNumber" 1
             defaultTags()
@@ -206,6 +208,7 @@ class OpenTracingAPITest extends DDSpecification {
           operationName "someOperation"
           resourceName "someOperation"
           tags {
+            "$DDTags.DD_INTEGRATION" "opentracing"
             defaultTags()
           }
         }
@@ -215,6 +218,7 @@ class OpenTracingAPITest extends DDSpecification {
           resourceName "someOperation2"
           childOf(span(0))
           tags {
+            "$DDTags.DD_INTEGRATION" null
             defaultTags()
           }
         }
@@ -223,22 +227,25 @@ class OpenTracingAPITest extends DDSpecification {
   }
 
   def "span with async propagation"() {
+    setup:
+    AgentTracer.TracerAPI internalTracer = tracer.tracer
+
     when:
     Scope scope = tracer.buildSpan("someOperation")
       .withTag(DDTags.SERVICE_NAME, "someService")
       .startActive(true)
-    ((TraceScope) scope).setAsyncPropagation(false)
+    internalTracer.setAsyncPropagationEnabled(false)
 
     then:
     scope instanceof TraceScope
-    !((TraceScope) scope).isAsyncPropagating()
+    !internalTracer.isAsyncPropagationEnabled()
 
     when:
-    ((TraceScope) scope).setAsyncPropagation(true)
+    internalTracer.setAsyncPropagationEnabled(true)
     TraceScope.Continuation continuation = ((TraceScope) scope).capture()
 
     then:
-    ((TraceScope) scope).isAsyncPropagating()
+    internalTracer.isAsyncPropagationEnabled()
     continuation != null
 
     when:
@@ -256,6 +263,7 @@ class OpenTracingAPITest extends DDSpecification {
           operationName "someOperation"
           resourceName "someOperation"
           tags {
+            "$DDTags.DD_INTEGRATION" "opentracing"
             defaultTags()
           }
         }
@@ -264,26 +272,26 @@ class OpenTracingAPITest extends DDSpecification {
   }
 
   def "span inherits async propagation"() {
+    setup:
+    AgentTracer.TracerAPI internalTracer = tracer.tracer
+
     when:
     Scope outer = tracer.buildSpan("someOperation")
       .withTag(DDTags.SERVICE_NAME, "someService")
       .startActive(true)
-    ((TraceScope) outer).setAsyncPropagation(false)
+    internalTracer.setAsyncPropagationEnabled(false)
 
     then:
-    outer instanceof TraceScope
-    !((TraceScope) outer).isAsyncPropagating()
+    !internalTracer.isAsyncPropagationEnabled()
 
     when:
-    ((TraceScope) outer).setAsyncPropagation(true)
+    internalTracer.setAsyncPropagationEnabled(true)
     Scope inner = tracer.buildSpan("otherOperation")
       .withTag(DDTags.SERVICE_NAME, "otherService")
       .startActive(true)
 
     then:
-    inner instanceof TraceScope
-    ((TraceScope) outer).isAsyncPropagating()
-    ((TraceScope) inner).isAsyncPropagating()
+    internalTracer.isAsyncPropagationEnabled()
 
     when:
     inner.close()
@@ -364,8 +372,6 @@ class OpenTracingAPITest extends DDSpecification {
 
     then:
     2 * scopeListener.afterScopeActivated()
-    1 * statsDClient.incrementCounter("scope.close.error")
-    1 * statsDClient.incrementCounter("scope.user.close.error")
     0 * _
 
     when:
@@ -382,15 +388,13 @@ class OpenTracingAPITest extends DDSpecification {
     firstScope.close()
 
     then:
-    1 * statsDClient.incrementCounter("scope.close.error")
-    1 * statsDClient.incrementCounter("scope.user.close.error")
     0 * _
   }
 
   def "closing scope when not on top in strict mode"() {
     setup:
     injectSysConfig(TracerConfig.SCOPE_STRICT_MODE, "true")
-    DDTracer strictTracer = DDTracer.builder().writer(writer).statsDClient(statsDClient).build()
+    DDTracer strictTracer = DDTracer.builder().writer(writer).build()
     strictTracer.addTraceInterceptor(traceInterceptor)
     strictTracer.tracer.addScopeListener(scopeListener)
 
@@ -411,8 +415,6 @@ class OpenTracingAPITest extends DDSpecification {
 
     then:
     thrown(RuntimeException)
-    1 * statsDClient.incrementCounter("scope.close.error")
-    1 * statsDClient.incrementCounter("scope.user.close.error")
     0 * _
 
     when:

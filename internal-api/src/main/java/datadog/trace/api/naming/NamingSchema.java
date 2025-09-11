@@ -1,6 +1,7 @@
 package datadog.trace.api.naming;
 
-import java.util.Map;
+import datadog.trace.api.TagMap;
+import java.util.function.Supplier;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
@@ -176,9 +177,9 @@ public interface NamingSchema {
      *
      * @param messagingSystem the messaging system (e.g. jms, kafka, amqp,..)
      * @param useLegacyTracing if true legacy tracing service naming will be applied if compatible
-     * @return the service name
+     * @return the supplier for the service name
      */
-    String inboundService(@Nonnull String messagingSystem, boolean useLegacyTracing);
+    Supplier<String> inboundService(@Nonnull String messagingSystem, boolean useLegacyTracing);
 
     /**
      * Calculate the operation name for a messaging producer span.
@@ -196,16 +197,16 @@ public interface NamingSchema {
      * @param useLegacyTracing if true legacy tracing service naming will be applied if compatible
      * @return the service name
      */
-    String outboundService(@Nonnull String messagingSystem, boolean useLegacyTracing);
+    Supplier<String> outboundService(@Nonnull String messagingSystem, boolean useLegacyTracing);
 
     /**
      * Calculate the service name for a messaging time in queue synthetic span.
      *
      * @param messagingSystem the messaging system (e.g. jms, kafka, amqp,..)
-     * @return the service name
+     * @return the service name supplier
      */
     @Nonnull
-    String timeInQueueService(@Nonnull String messagingSystem);
+    Supplier<String> timeInQueueService(@Nonnull String messagingSystem);
 
     /**
      * Calculate the operation name for a messaging time in queue synthetic span.
@@ -228,11 +229,10 @@ public interface NamingSchema {
     /**
      * Calculate the tags to be added to a span to represent the peer service
      *
-     * @param unsafeTags the span tags. Map che be mutated
-     * @return the input tags
+     * @param unsafeTags the span tags. Map to be mutated
      */
     @Nonnull
-    Map<String, Object> tags(@Nonnull Map<String, Object> unsafeTags);
+    void tags(@Nonnull TagMap unsafeTags);
   }
 
   interface ForServer {

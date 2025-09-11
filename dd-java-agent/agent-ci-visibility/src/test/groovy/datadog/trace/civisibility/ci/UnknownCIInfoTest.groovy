@@ -4,6 +4,7 @@ import datadog.trace.api.Config
 import datadog.trace.api.git.GitInfoProvider
 import datadog.trace.api.git.UserSuppliedGitInfoBuilder
 import datadog.trace.bootstrap.instrumentation.api.Tags
+import datadog.trace.civisibility.ci.env.CiEnvironmentImpl
 import datadog.trace.civisibility.git.CILocalGitInfoBuilder
 import datadog.trace.civisibility.git.CIProviderGitInfoBuilder
 import datadog.trace.civisibility.git.tree.GitClient
@@ -44,11 +45,11 @@ class UnknownCIInfoTest extends CITagsProviderTest {
     ]
 
     when:
-    CIProviderInfoFactory ciProviderInfoFactory = new CIProviderInfoFactory(Config.get(), GIT_FOLDER_FOR_TESTS)
+    CIProviderInfoFactory ciProviderInfoFactory = new CIProviderInfoFactory(Config.get(), GIT_FOLDER_FOR_TESTS, new CiEnvironmentImpl(System.getenv()))
     def ciProviderInfo = ciProviderInfoFactory.createCIProviderInfo(workspaceForTests)
     def ciInfo = ciProviderInfo.buildCIInfo()
     def ciTagsProvider = ciTagsProvider()
-    def ciTags = ciTagsProvider.getCiTags(ciInfo)
+    def ciTags = ciTagsProvider.getCiTags(ciInfo, PullRequestInfo.EMPTY)
 
     then:
     ciTags == expectedTags
@@ -61,14 +62,14 @@ class UnknownCIInfoTest extends CITagsProviderTest {
 
     GitInfoProvider gitInfoProvider = new GitInfoProvider()
     gitInfoProvider.registerGitInfoBuilder(new UserSuppliedGitInfoBuilder())
-    gitInfoProvider.registerGitInfoBuilder(new CIProviderGitInfoBuilder())
+    gitInfoProvider.registerGitInfoBuilder(new CIProviderGitInfoBuilder(Config.get(), new CiEnvironmentImpl(System.getenv())))
     gitInfoProvider.registerGitInfoBuilder(new CILocalGitInfoBuilder(gitClientFactory, "this-target-folder-does-not-exist"))
-    CIProviderInfoFactory ciProviderInfoFactory = new CIProviderInfoFactory(Config.get(), "this-target-folder-does-not-exist")
+    CIProviderInfoFactory ciProviderInfoFactory = new CIProviderInfoFactory(Config.get(), "this-target-folder-does-not-exist", new CiEnvironmentImpl(System.getenv()))
 
     def ciProviderInfo = ciProviderInfoFactory.createCIProviderInfo(workspaceForTests)
     def ciInfo = ciProviderInfo.buildCIInfo()
     def ciTagsProvider = new CITagsProvider(gitInfoProvider)
-    def ciTags = ciTagsProvider.getCiTags(ciInfo)
+    def ciTags = ciTagsProvider.getCiTags(ciInfo, PullRequestInfo.EMPTY)
 
     then:
     ciTags.get("$Tags.CI_WORKSPACE_PATH") == null

@@ -18,6 +18,7 @@ import static net.bytebuddy.matcher.ElementMatchers.isMethod;
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.ExcludeFilterProvider;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.ExcludeFilter;
@@ -36,9 +37,9 @@ import scala.concurrent.forkjoin.ForkJoinTask;
  * <p>Note: There are quite a few separate implementations of {@code ForkJoinTask}/{@code
  * ForkJoinPool}: JVM, Akka, Scala, Netty to name a few. This class handles Scala version.
  */
-@AutoService(Instrumenter.class)
-public final class ScalaForkJoinTaskInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy, ExcludeFilterProvider {
+@AutoService(InstrumenterModule.class)
+public final class ScalaForkJoinTaskInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice, ExcludeFilterProvider {
 
   public ScalaForkJoinTaskInstrumentation() {
     super("java_concurrent", "scala_concurrent");
@@ -64,11 +65,11 @@ public final class ScalaForkJoinTaskInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(namedOneOf("doExec", "exec")), getClass().getName() + "$Exec");
-    transformation.applyAdvice(isMethod().and(named("fork")), getClass().getName() + "$Fork");
-    transformation.applyAdvice(isMethod().and(named("cancel")), getClass().getName() + "$Cancel");
+    transformer.applyAdvice(isMethod().and(named("fork")), getClass().getName() + "$Fork");
+    transformer.applyAdvice(isMethod().and(named("cancel")), getClass().getName() + "$Cancel");
   }
 
   @Override
@@ -97,7 +98,7 @@ public final class ScalaForkJoinTaskInstrumentation extends Instrumenter.Tracing
     @Advice.OnMethodEnter
     public static <T> void fork(@Advice.This ForkJoinTask<T> task) {
       if (!exclude(FORK_JOIN_TASK, task)) {
-        capture(InstrumentationContext.get(ForkJoinTask.class, State.class), task, true);
+        capture(InstrumentationContext.get(ForkJoinTask.class, State.class), task);
       }
     }
   }

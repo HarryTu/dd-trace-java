@@ -2,13 +2,16 @@ package datadog.trace.bootstrap.instrumentation.decorator;
 
 import static datadog.trace.api.cache.RadixTreeCache.PORTS;
 import static datadog.trace.api.cache.RadixTreeCache.UNSET_PORT;
+import static datadog.trace.bootstrap.instrumentation.java.net.HostNameResolver.hostName;
 
+import datadog.context.ContextScope;
 import datadog.trace.api.Config;
 import datadog.trace.api.DDTags;
 import datadog.trace.api.Functions;
 import datadog.trace.api.cache.QualifiedClassNameCache;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.api.ErrorPriorities;
 import datadog.trace.bootstrap.instrumentation.api.Tags;
 import java.lang.reflect.Method;
 import java.net.Inet4Address;
@@ -64,7 +67,9 @@ public abstract class BaseDecorator {
     if (spanType() != null) {
       span.setSpanType(spanType());
     }
-    span.setTag(Tags.COMPONENT, component());
+    final CharSequence component = component();
+    span.setTag(Tags.COMPONENT, component);
+    span.context().setIntegrationName(component);
     if (traceAnalyticsEnabled) {
       span.setMetric(DDTags.ANALYTICS_SAMPLE_RATE, traceAnalyticsSampleRate);
     }
@@ -86,10 +91,21 @@ public abstract class BaseDecorator {
   }
 
   public AgentSpan onError(final AgentSpan span, final Throwable throwable) {
+    return onError(span, throwable, ErrorPriorities.DEFAULT);
+  }
+
+  public AgentSpan onError(final AgentSpan span, final Throwable throwable, byte errorPriority) {
     if (throwable != null) {
-      span.addThrowable(throwable instanceof ExecutionException ? throwable.getCause() : throwable);
+      span.addThrowable(
+          throwable instanceof ExecutionException ? throwable.getCause() : throwable,
+          errorPriority);
     }
     return span;
+  }
+
+  public ContextScope onError(final ContextScope scope, final Throwable throwable) {
+    onError(AgentSpan.fromContext(scope.context()), throwable);
+    return scope;
   }
 
   public AgentSpan onPeerConnection(
@@ -107,13 +123,14 @@ public abstract class BaseDecorator {
 
   public AgentSpan onPeerConnection(AgentSpan span, InetAddress remoteAddress, boolean resolved) {
     if (remoteAddress != null) {
-      if (resolved) {
-        span.setTag(Tags.PEER_HOSTNAME, remoteAddress.getHostName());
+      String ip = remoteAddress.getHostAddress();
+      if (resolved && Config.get().isPeerHostNameEnabled()) {
+        span.setTag(Tags.PEER_HOSTNAME, hostName(remoteAddress, ip));
       }
       if (remoteAddress instanceof Inet4Address) {
-        span.setTag(Tags.PEER_HOST_IPV4, remoteAddress.getHostAddress());
+        span.setTag(Tags.PEER_HOST_IPV4, ip);
       } else if (remoteAddress instanceof Inet6Address) {
-        span.setTag(Tags.PEER_HOST_IPV6, remoteAddress.getHostAddress());
+        span.setTag(Tags.PEER_HOST_IPV6, ip);
       }
     }
     return span;

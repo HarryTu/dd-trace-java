@@ -2,7 +2,7 @@ package datadog.trace.core
 
 import datadog.trace.api.DDTags
 import datadog.trace.api.DDTraceId
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext
 import datadog.trace.bootstrap.instrumentation.api.ErrorPriorities
 import datadog.trace.bootstrap.instrumentation.api.ProfilingContextIntegration
 import datadog.trace.common.writer.ListWriter
@@ -19,7 +19,7 @@ import static datadog.trace.core.DDSpanContext.SPAN_SAMPLING_MAX_PER_SECOND_TAG
 class DDSpanContextTest extends DDCoreSpecification {
 
   def writer
-  def tracer
+  CoreTracer tracer
   def profilingContextIntegration
 
   def setup() {
@@ -185,7 +185,7 @@ class DDSpanContextTest extends DDCoreSpecification {
     def extracted = new ExtractedContext(DDTraceId.from(123), 456, SAMPLER_KEEP, "789", tracer.getPropagationTagsFactory().empty(), DATADOG)
       .withRequestContextDataAppSec("dummy")
 
-    def top = tracer.buildSpan("top").asChildOf((AgentSpan.Context) extracted).start()
+    def top = tracer.buildSpan("top").asChildOf((AgentSpanContext) extracted).start()
     def topC = (DDSpanContext) top.context()
     def topTS = top.getRequestContext().getTraceSegment()
     def current = tracer.buildSpan("current").asChildOf(top).start()
@@ -289,6 +289,29 @@ class DDSpanContextTest extends DDCoreSpecification {
     "_dd.${tag}.json"
   }
 
+  def "Span IDs printed as unsigned long"() {
+    setup:
+    def parent = tracer.buildSpan("fakeOperation")
+      .withServiceName("fakeService")
+      .withResourceName("fakeResource")
+      .withSpanId(-987654321)
+      .start()
+
+    def span = tracer.buildSpan("fakeOperation")
+      .withServiceName("fakeService")
+      .withResourceName("fakeResource")
+      .withSpanId(-123456789)
+      .asChildOf(parent.context())
+      .start()
+
+    def context = span.context() as DDSpanContext
+
+    expect:
+    // even though span ID and parent ID are setup as negative numbers, they should be printed as their unsigned value
+    // asserting there is no negative sign after ids is the best I can do.
+    context.toString().contains("id=-") == false
+  }
+
   static void assertTagmap(Map source, Map comparison, boolean removeThread = false) {
     def sourceWithoutCommonTags = new HashMap(source)
     sourceWithoutCommonTags.remove("runtime-id")
@@ -299,6 +322,8 @@ class DDSpanContextTest extends DDCoreSpecification {
     sourceWithoutCommonTags.remove("_dd.trace_span_attribute_schema")
     sourceWithoutCommonTags.remove(DDTags.PROFILING_ENABLED)
     sourceWithoutCommonTags.remove(DDTags.PROFILING_CONTEXT_ENGINE)
+    sourceWithoutCommonTags.remove(DDTags.DSM_ENABLED)
+    sourceWithoutCommonTags.remove(DDTags.DJM_ENABLED)
     if (removeThread) {
       sourceWithoutCommonTags.remove(DDTags.THREAD_ID)
       sourceWithoutCommonTags.remove(DDTags.THREAD_NAME)

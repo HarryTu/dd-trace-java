@@ -21,19 +21,21 @@ public class Redaction {
           "2fa",
           "accesstoken",
           "aiohttpsession",
+          "apikey",
+          "appkey",
           "apisecret",
           "apisignature",
-          "apikey",
+          "applicationkey",
           "auth",
-          "authtoken",
           "authorization",
+          "authtoken",
           "ccnumber",
           "certificatepin",
           "cipher",
           "clientid",
           "clientsecret",
-          "config",
-          "connect.sid",
+          "connectionstring",
+          "connectsid",
           "cookie",
           "credentials",
           "creditcard",
@@ -44,8 +46,9 @@ public class Redaction {
           "dburl",
           "encryptionkey",
           "encryptionkeyid",
-          "env",
+          "geolocation",
           "gpgkey",
+          "ipaddress",
           "jti",
           "jwt",
           "licensekey",
@@ -53,7 +56,7 @@ public class Redaction {
           "mysqlpwd",
           "nonce",
           "oauth",
-          "oauth_token",
+          "oauthtoken",
           "otp",
           "passhash",
           "passwd",
@@ -67,20 +70,21 @@ public class Redaction {
           "pkcs8",
           "privatekey",
           "publickey",
+          "pwd",
           "recaptchakey",
           "refreshtoken",
           "routingnumber",
           "salt",
           "secret",
+          "secretkey",
           "secrettoken",
-          "secretKey",
           "securityanswer",
           "securitycode",
           "securityquestion",
           "serviceaccountcredentials",
           "session",
-          "sessionkey",
           "sessionid",
+          "sessionkey",
           "setcookie",
           "signature",
           "signaturekey",
@@ -93,26 +97,34 @@ public class Redaction {
           "usersession",
           "voterid",
           "xapikey",
+          "xauthtoken",
           "xcsrftoken",
           "xforwardedfor",
           "xrealip",
-          "xauthtoken",
-          "xsrftoken",
-          "pwd");
+          "xsrf",
+          "xsrftoken");
   private static final Set<String> KEYWORDS = ConcurrentHashMap.newKeySet();
   private static ClassNameTrie typeTrie = ClassNameTrie.Builder.EMPTY_TRIE;
   private static List<String> redactedClasses;
   private static List<String> redactedPackages;
 
   static {
+    initKeywords();
+  }
+
+  static void initKeywords() {
     /*
      * based on sentry list: https://github.com/getsentry/sentry-python/blob/fefb454287b771ac31db4e30fa459d9be2f977b8/sentry_sdk/scrubber.py#L17-L58
      */
     KEYWORDS.addAll(PREDEFINED_KEYWORDS);
+    // Exclude user defined keywords
+    for (String keyword : Config.get().getDynamicInstrumentationRedactionExcludedIdentifiers()) {
+      KEYWORDS.remove(normalize(keyword));
+    }
   }
 
   public static void addUserDefinedKeywords(Config config) {
-    String redactedIdentifiers = config.getDebuggerRedactedIdentifiers();
+    String redactedIdentifiers = config.getDynamicInstrumentationRedactedIdentifiers();
     if (redactedIdentifiers == null) {
       return;
     }
@@ -123,7 +135,7 @@ public class Redaction {
   }
 
   public static void addUserDefinedTypes(Config config) {
-    String redactedTypes = config.getDebuggerRedactedTypes();
+    String redactedTypes = config.getDynamicInstrumentationRedactedTypes();
     if (redactedTypes == null) {
       return;
     }

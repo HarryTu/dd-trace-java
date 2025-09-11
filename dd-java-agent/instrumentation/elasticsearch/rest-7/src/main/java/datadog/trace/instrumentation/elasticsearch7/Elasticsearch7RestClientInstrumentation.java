@@ -12,6 +12,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import net.bytebuddy.asm.Advice;
@@ -21,16 +22,16 @@ import org.elasticsearch.client.Request;
 import org.elasticsearch.client.Response;
 import org.elasticsearch.client.ResponseListener;
 
-@AutoService(Instrumenter.class)
-public class Elasticsearch7RestClientInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class Elasticsearch7RestClientInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public Elasticsearch7RestClientInstrumentation() {
     super("elasticsearch", "elasticsearch-rest", "elasticsearch-rest-7");
   }
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     // Avoid matching pre-ES7 releases which have their own instrumentations.
     return hasClassNamed("org.elasticsearch.client.RestClient$InternalRequest");
   }
@@ -49,14 +50,14 @@ public class Elasticsearch7RestClientInstrumentation extends Instrumenter.Tracin
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("performRequest"))
             .and(takesArguments(1))
             .and(takesArgument(0, named("org.elasticsearch.client.Request"))),
         Elasticsearch7RestClientInstrumentation.class.getName() + "$ElasticsearchRestClientAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(named("performRequestAsync"))
             .and(takesArguments(2))

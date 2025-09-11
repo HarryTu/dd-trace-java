@@ -17,8 +17,8 @@ import com.datadog.debugger.el.expressions.HasAnyExpression;
 import com.datadog.debugger.el.expressions.IfElseExpression;
 import com.datadog.debugger.el.expressions.IfExpression;
 import com.datadog.debugger.el.expressions.IndexExpression;
+import com.datadog.debugger.el.expressions.IsDefinedExpression;
 import com.datadog.debugger.el.expressions.IsEmptyExpression;
-import com.datadog.debugger.el.expressions.IsUndefinedExpression;
 import com.datadog.debugger.el.expressions.LenExpression;
 import com.datadog.debugger.el.expressions.MatchesExpression;
 import com.datadog.debugger.el.expressions.NotExpression;
@@ -32,6 +32,7 @@ import com.datadog.debugger.el.values.MapValue;
 import com.datadog.debugger.el.values.NullValue;
 import com.datadog.debugger.el.values.NumericValue;
 import com.datadog.debugger.el.values.ObjectValue;
+import com.datadog.debugger.el.values.SetValue;
 import com.datadog.debugger.el.values.StringValue;
 import com.datadog.debugger.probe.LogProbe;
 import com.datadog.debugger.probe.ProbeDefinition;
@@ -176,8 +177,8 @@ public class MoshiConfigTestHelper {
     }
 
     @Override
-    public Void visit(IsUndefinedExpression isUndefinedExpression) {
-      throw new UnsupportedOperationException("isUndefined expression");
+    public Void visit(IsDefinedExpression isDefinedExpression) {
+      throw new UnsupportedOperationException("isDefined expression");
     }
 
     @Override
@@ -295,10 +296,11 @@ public class MoshiConfigTestHelper {
     @Override
     public Void visit(NumericValue numericValue) {
       try {
-        if (numericValue.getValue() instanceof Long) {
-          jsonWriter.value(numericValue.getValue().longValue());
-        } else if (numericValue.getValue() instanceof Double) {
-          jsonWriter.value(numericValue.getValue().doubleValue());
+        Number widenValue = numericValue.getWidenValue();
+        if (widenValue instanceof Long) {
+          jsonWriter.value(widenValue.longValue());
+        } else if (widenValue instanceof Double) {
+          jsonWriter.value(widenValue.doubleValue());
         } else {
           throw new UnsupportedOperationException(
               "numeric value unsupported:" + numericValue.getValue().getClass());
@@ -332,6 +334,11 @@ public class MoshiConfigTestHelper {
     @Override
     public Void visit(MapValue mapValue) {
       throw new UnsupportedOperationException("mapValue");
+    }
+
+    @Override
+    public Void visit(SetValue setValue) {
+      throw new UnsupportedOperationException("setValue");
     }
   }
 }

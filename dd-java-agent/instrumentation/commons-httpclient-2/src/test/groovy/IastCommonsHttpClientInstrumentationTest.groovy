@@ -1,4 +1,4 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.iast.InstrumentationBridge
 import datadog.trace.api.iast.propagation.PropagationModule
 import datadog.trace.api.iast.sink.SsrfModule
@@ -9,7 +9,7 @@ import spock.lang.Shared
 
 import static datadog.trace.agent.test.server.http.TestHttpServer.httpServer
 
-class IastCommonsHttpClientInstrumentationTest extends AgentTestRunner {
+class IastCommonsHttpClientInstrumentationTest extends InstrumentationSpecification {
 
   @Override
   protected void configurePreAgent() {
@@ -51,7 +51,7 @@ class IastCommonsHttpClientInstrumentationTest extends AgentTestRunner {
 
   private void mockPropagation() {
     final propagation = Mock(PropagationModule) {
-      taintIfTainted(_, _) >> {
+      taintObjectIfTainted(_, _) >> {
         if (tainteds.containsKey(it[1])) {
           tainteds.put(it[0], null)
         }

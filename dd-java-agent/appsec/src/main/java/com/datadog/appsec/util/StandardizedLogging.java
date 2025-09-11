@@ -1,9 +1,11 @@
 package com.datadog.appsec.util;
 
+import static com.datadog.appsec.ddwaf.WAFResultData.Rule;
+
 import com.datadog.appsec.event.data.Address;
 import com.datadog.appsec.report.AppSecEvent;
-import com.datadog.appsec.report.Rule;
-import io.sqreen.powerwaf.Powerwaf;
+import com.datadog.ddwaf.Waf;
+import datadog.environment.SystemProperties;
 import org.slf4j.Logger;
 import org.slf4j.Marker;
 import org.slf4j.MarkerFactory;
@@ -41,11 +43,11 @@ public class StandardizedLogging {
             + "AppSec could not start. No security activities will be collected. "
             + "Please contact support at https://docs.datadoghq.com/help/ for help. "
             + "Host information: operating_system: {}, libc: {}, arch: {}, runtime: {} {}",
-        System.getProperty("os.name"),
+        SystemProperties.get("os.name"),
         libc,
-        System.getProperty("os.arch"),
-        System.getProperty("java.vm.vendor"),
-        System.getProperty("java.version"));
+        SystemProperties.get("os.arch"),
+        SystemProperties.get("java.vm.vendor"),
+        SystemProperties.get("java.version"));
   }
 
   // C4:
@@ -120,13 +122,13 @@ public class StandardizedLogging {
   /*
    * D4: Executing AppSec In-App WAF with parameters: <Parameters_passed_to_the_lib>
    *
-   * Not implemented: traversing the parameters may have side-effects. We could
+   * Not implemented: traversing the parameters may have side effects. We could
    * dump the parameters after the conversion, but the conversion happens inside
    * the binding, not on this module.
    */
 
   // D5
-  public static void inAppWafReturn(Logger logger, Powerwaf.ResultWithData resultWithData) {
+  public static void inAppWafReturn(Logger logger, Waf.ResultWithData resultWithData) {
     logger.debug("AppSec In-App WAF returned: {}", resultWithData);
   }
 
@@ -135,10 +137,7 @@ public class StandardizedLogging {
     String ruleId = "unknown rule";
     Rule rule = event.getRule();
     if (rule != null) {
-      String id = rule.getId();
-      if (id != null) {
-        ruleId = id;
-      }
+      ruleId = rule.id;
     }
 
     if (logger.isDebugEnabled()) {
@@ -187,9 +186,7 @@ public class StandardizedLogging {
   public static void _initialConfigSourceAndLibddwafVersion(Logger logger, String source) {
     if (logger.isDebugEnabled()) {
       logger.info(
-          "AppSec initial configuration from {}, libddwaf version: {}",
-          source,
-          Powerwaf.LIB_VERSION);
+          "AppSec initial configuration from {}, libddwaf version: {}", source, Waf.LIB_VERSION);
     }
   }
 

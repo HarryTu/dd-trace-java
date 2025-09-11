@@ -4,6 +4,7 @@ import static datadog.trace.bootstrap.debugger.util.Redaction.REDACTED_VALUE;
 
 import datadog.trace.bootstrap.debugger.CapturedContext;
 import datadog.trace.bootstrap.debugger.Limits;
+import datadog.trace.bootstrap.debugger.el.ReflectiveFieldValueResolver;
 import datadog.trace.bootstrap.debugger.util.Redaction;
 import datadog.trace.bootstrap.debugger.util.TimeoutChecker;
 import datadog.trace.bootstrap.debugger.util.WellKnownClasses;
@@ -14,6 +15,7 @@ import java.util.Collection;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -90,16 +92,18 @@ public class SerializerWithLimits {
       if ("$jacocoData".equals(field.getName()) && Modifier.isTransient(field.getModifiers())) {
         return false;
       }
-      // skip constant fields
-      if (Modifier.isStatic(field.getModifiers()) && Modifier.isFinal(field.getModifiers())) {
+      // skip static fields
+      if (Modifier.isStatic(field.getModifiers())) {
         return false;
       }
       return true;
     }
 
-    void objectFieldPrologue(Field field, Object value, int maxDepth) throws Exception;
+    void objectFieldPrologue(String fieldName, Object value, int maxDepth) throws Exception;
 
     void handleFieldException(Exception ex, Field field);
+
+    void fieldNotCaptured(String reason, Field field);
 
     void objectEpilogue(Object value) throws Exception;
 
@@ -110,6 +114,7 @@ public class SerializerWithLimits {
 
   private final TokenWriter tokenWriter;
   private final TimeoutChecker timeoutChecker;
+  private RuntimeException exception;
 
   public SerializerWithLimits(TokenWriter tokenWriter, TimeoutChecker timeoutChecker) {
     this.tokenWriter = tokenWriter;
@@ -144,9 +149,17 @@ public class SerializerWithLimits {
     } else if (value.getClass().isArray() && (limits.maxReferenceDepth > 0)) {
       serializeArray(value, limits);
     } else if (value instanceof Collection && (limits.maxReferenceDepth > 0)) {
-      serializeCollection(value, limits);
+      if (WellKnownClasses.isSafe((Collection<?>) value)) {
+        serializeCollection(value, limits);
+      } else {
+        serializeObjectValue(value, limits);
+      }
     } else if (value instanceof Map && (limits.maxReferenceDepth > 0)) {
-      serializeMap(value, limits);
+      if (WellKnownClasses.isSafe((Map<?, ?>) value)) {
+        serializeMap(value, limits);
+      } else {
+        serializeObjectValue(value, limits);
+      }
     } else if (value instanceof Enum) {
       serializeEnum(value, limits);
     } else if (limits.maxReferenceDepth > 0) {
@@ -169,13 +182,9 @@ public class SerializerWithLimits {
     int size = 0;
     try {
       map = (Map<?, ?>) value;
-      if (WellKnownClasses.isSizeSafe(map)) {
-        size = map.size(); // /!\ alien call /!\
-        Set<? extends Map.Entry<?, ?>> entries = map.entrySet(); // /!\ alien call /!\
-        isComplete = serializeMapEntries(entries, limits); // /!\ contains alien calls /!\
-      } else {
-        throw new RuntimeException("Unsupported Map type: " + map.getClass().getTypeName());
-      }
+      size = map.size(); // /!\ alien call /!\
+      Set<? extends Map.Entry<?, ?>> entries = map.entrySet(); // /!\ alien call /!\
+      isComplete = serializeMapEntries(entries, limits); // /!\ contains alien calls /!\
       tokenWriter.mapEpilogue(isComplete, size);
     } catch (Exception ex) {
       tokenWriter.mapEpilogue(isComplete, size);
@@ -190,12 +199,8 @@ public class SerializerWithLimits {
     int size = 0;
     try {
       col = (Collection<?>) value;
-      if (WellKnownClasses.isSizeSafe(col)) {
-        size = col.size(); // /!\ alien call /!\
-        isComplete = serializeCollection(col, limits); // /!\ contains alien calls /!\
-      } else {
-        throw new RuntimeException("Unsupported Collection type: " + col.getClass().getTypeName());
-      }
+      size = col.size(); // /!\ alien call /!\
+      isComplete = serializeCollection(col, limits); // /!\ contains alien calls /!\
       tokenWriter.collectionEpilogue(value, isComplete, size);
     } catch (Exception ex) {
       tokenWriter.collectionEpilogue(value, isComplete, size);
@@ -256,6 +261,8 @@ public class SerializerWithLimits {
 
   private void serializeObjectValue(Object value, Limits limits) throws Exception {
     tokenWriter.objectPrologue(value);
+    Map<String, Function<Object, CapturedContext.CapturedValue>> specialTypeAccess =
+        WellKnownClasses.getSpecialTypeAccess(value);
     Class<?> currentClass = value.getClass();
     int processedFieldCount = 0;
     NotCapturedReason reason = null;
@@ -264,16 +271,24 @@ public class SerializerWithLimits {
       Field[] fields = currentClass.getDeclaredFields();
       for (Field field : fields) {
         try {
-          if (!tokenWriter.objectFilterInField(field)) {
-            continue;
-          }
-          field.setAccessible(true);
-          Object fieldValue = field.get(value);
-          onField(field, fieldValue, limits);
-          processedFieldCount++;
           if (processedFieldCount >= limits.maxFieldCount) {
             reason = NotCapturedReason.FIELD_COUNT;
             break classLoop;
+          }
+          if (!tokenWriter.objectFilterInField(field)) {
+            continue;
+          }
+          processedFieldCount++;
+          if (specialTypeAccess != null) {
+            Function<Object, CapturedContext.CapturedValue> specialFieldAccess =
+                specialTypeAccess.get(field.getName());
+            if (specialFieldAccess != null) {
+              onSpecialField(specialFieldAccess, value, limits);
+            } else {
+              onField(field, value, limits);
+            }
+          } else {
+            onField(field, value, limits);
           }
         } catch (Exception e) {
           tokenWriter.handleFieldException(e, field);
@@ -286,16 +301,37 @@ public class SerializerWithLimits {
     }
   }
 
-  private void onField(Field field, Object value, Limits limits) throws Exception {
-    tokenWriter.objectFieldPrologue(field, value, limits.maxReferenceDepth);
+  private void onField(Field field, Object obj, Limits limits) throws Exception {
+    if (ReflectiveFieldValueResolver.trySetAccessible(field)) {
+      field.setAccessible(true);
+      Object fieldValue = field.get(obj);
+      internalOnField(field.getName(), field.getType().getTypeName(), fieldValue, limits);
+    } else {
+      String msg = ReflectiveFieldValueResolver.buildInaccessibleMsg(field);
+      tokenWriter.fieldNotCaptured(msg, field);
+    }
+  }
+
+  private void onSpecialField(
+      Function<Object, CapturedContext.CapturedValue> specialFieldAccess,
+      Object value,
+      Limits limits)
+      throws Exception {
+    CapturedContext.CapturedValue field = specialFieldAccess.apply(value);
+    internalOnField(field.getName(), field.getType(), field.getValue(), limits);
+  }
+
+  private void internalOnField(String fieldName, String fieldType, Object value, Limits limits)
+      throws Exception {
+    tokenWriter.objectFieldPrologue(fieldName, value, limits.maxReferenceDepth);
     Limits newLimits = Limits.decDepthLimits(limits);
     String typeName;
-    if (SerializerWithLimits.isPrimitive(field.getType().getTypeName())) {
-      typeName = field.getType().getTypeName();
+    if (SerializerWithLimits.isPrimitive(fieldType)) {
+      typeName = fieldType;
     } else {
-      typeName = value != null ? value.getClass().getTypeName() : field.getType().getTypeName();
+      typeName = value != null ? value.getClass().getTypeName() : fieldType;
     }
-    if (Redaction.isRedactedKeyword(field.getName())) {
+    if (Redaction.isRedactedKeyword(fieldName)) {
       value = REDACTED_VALUE;
     }
     serialize(

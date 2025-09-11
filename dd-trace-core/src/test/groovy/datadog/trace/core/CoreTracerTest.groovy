@@ -9,23 +9,24 @@ import datadog.remoteconfig.state.ParsedConfigKey
 import datadog.remoteconfig.state.ProductListener
 import datadog.trace.api.Config
 import datadog.trace.api.StatsDClient
+import datadog.trace.api.remoteconfig.ServiceNameCollector
 import datadog.trace.api.sampling.PrioritySampling
+import datadog.trace.api.sampling.SamplingMechanism
 import datadog.trace.common.sampling.AllSampler
 import datadog.trace.common.sampling.PrioritySampler
 import datadog.trace.common.sampling.RateByServiceTraceSampler
 import datadog.trace.common.sampling.Sampler
-import datadog.trace.api.sampling.SamplingMechanism
 import datadog.trace.common.writer.DDAgentWriter
 import datadog.trace.common.writer.ListWriter
 import datadog.trace.common.writer.LoggingWriter
-import datadog.trace.core.datastreams.DataStreamContextExtractor
-import datadog.trace.core.propagation.HttpCodec
+import datadog.trace.core.tagprocessor.TagsPostProcessorFactory
 import datadog.trace.core.test.DDCoreSpecification
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import spock.lang.Timeout
 
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.CopyOnWriteArrayList
 
 import static datadog.trace.api.config.GeneralConfig.ENV
 import static datadog.trace.api.config.GeneralConfig.HEALTH_METRICS_ENABLED
@@ -51,9 +52,6 @@ class CoreTracerTest extends DDCoreSpecification {
     tracer.initialSampler instanceof RateByServiceTraceSampler
     tracer.writer instanceof DDAgentWriter
     tracer.statsDClient != null && tracer.statsDClient != StatsDClient.NO_OP
-
-    tracer.propagate().injector instanceof HttpCodec.CompoundInjector
-    tracer.propagate().extractor instanceof DataStreamContextExtractor
 
     cleanup:
     tracer.close()
@@ -420,6 +418,255 @@ class CoreTracerTest extends DDCoreSpecification {
 
     cleanup:
     tracer?.close()
+  }
+
+  def "verify configuration polling with custom tags"() {
+    setup:
+    def key = ParsedConfigKey.parse("datadog/2/APM_TRACING/config_overrides/config")
+    def poller = Mock(ConfigurationPoller)
+    def sco = new SharedCommunicationObjects(
+      okHttpClient: Mock(OkHttpClient),
+      monitoring: Mock(Monitoring),
+      agentUrl: HttpUrl.get('https://example.com'),
+      featuresDiscovery: Mock(DDAgentFeaturesDiscovery),
+      configurationPoller: poller
+      )
+
+    def updater
+
+    when:
+    def tracer = CoreTracer.builder()
+      .sharedCommunicationObjects(sco)
+      .pollForTracingConfiguration()
+      .build()
+
+    then:
+    1 * poller.addListener(Product.APM_TRACING, _ as ProductListener) >> {
+      updater = it[1] // capture config updater for further testing
+    }
+    and:
+    tracer.captureTraceConfig().tracingTags == [:]
+
+    when:
+    updater.accept(key, value.getBytes(StandardCharsets.UTF_8), null)
+    updater.commit()
+
+    then:
+    tracer.captureTraceConfig().tracingTags == expectedValue
+    tracer.captureTraceConfig().mergedTracerTags == expectedValue
+    when:
+    updater.remove(key, null)
+    updater.commit()
+
+    then:
+    tracer.captureTraceConfig().tracingTags == [:]
+
+    cleanup:
+    tracer?.close()
+
+    where:
+    value | expectedValue
+    """{"lib_config":{"tracing_tags": ["a:b", "c:d", "e:f"]}}""" | ["a":"b", "c":"d", "e":"f"]
+    """{"lib_config":{"tracing_tags": ["", "c:d", ""]}}""" | [ "c":"d"]
+    """{"lib_config":{"tracing_tags": [":b", "c:", "e:f"]}}""" | ["e":"f"]
+    """{"lib_config":{"tracing_tags": [":", "c:", "e:f"]}}""" | ["e":"f"]
+    """{"lib_config":{"tracing_tags": [":", "c:", ""]}}""" | [:]
+    """{"lib_config":{"tracing_tags": []}}""" | [:]
+  }
+
+  def "verify configuration polling with tracing_enabled"() {
+    setup:
+    def key = ParsedConfigKey.parse("datadog/2/APM_TRACING/config_overrides/config")
+    def poller = Mock(ConfigurationPoller)
+    def sco = new SharedCommunicationObjects(
+      okHttpClient: Mock(OkHttpClient),
+      monitoring: Mock(Monitoring),
+      agentUrl: HttpUrl.get('https://example.com'),
+      featuresDiscovery: Mock(DDAgentFeaturesDiscovery),
+      configurationPoller: poller
+      )
+
+    def updater
+
+    when:
+    def tracer = CoreTracer.builder()
+      .sharedCommunicationObjects(sco)
+      .pollForTracingConfiguration()
+      .build()
+
+    then:
+
+    1 * poller.addListener(Product.APM_TRACING, _ as ProductListener) >> {
+      updater = it[1] // capture config updater for further testing
+    }
+    and:
+    tracer.captureTraceConfig().traceEnabled == true
+
+    when:
+    updater.accept(key, value.getBytes(StandardCharsets.UTF_8), null)
+    updater.commit()
+
+    then:
+    tracer.captureTraceConfig().traceEnabled == expectedValue
+
+    cleanup:
+    tracer?.close()
+
+    where:
+    value | expectedValue
+    """{"lib_config":{"tracing_enabled": false } } """ | false
+    """{"lib_config":{"tracing_enabled": true } } """  | true
+    """{"action": "enable", "lib_config": {"tracing_sampling_rate": null, "log_injection_enabled": null, "tracing_header_tags": null, "runtime_metrics_enabled": null, "tracing_debug": null, "tracing_service_mapping": null, "tracing_sampling_rules": null, "span_sampling_rules": null, "data_streams_enabled": null, "tracing_enabled": false}}""" | false
+  }
+
+  def "test local root service name override"() {
+    setup:
+    def tracer = tracerBuilder().writer(new ListWriter()).serviceName("test").build()
+    tracer.updatePreferredServiceName(preferred)
+    when:
+    def span = tracer.startSpan("", "test")
+    span.finish()
+    then:
+    span.serviceName == expected
+    and:
+    if (preferred != null) {
+      ServiceNameCollector.get().getServices().contains(preferred)
+    }
+    cleanup:
+    tracer?.close()
+    where:
+    preferred | expected
+    null      | "test"
+    "some"    | "some"
+  }
+
+  def "test dd_version exists only if service == dd_service"() {
+    setup:
+    injectSysConfig(SERVICE_NAME, "dd_service_name")
+    injectSysConfig(VERSION, "1.0.0")
+    TagsPostProcessorFactory.withAddBaseService(true)
+    def tracer = tracerBuilder().writer(new ListWriter()).build()
+
+    when:
+    def span = tracer.buildSpan("def").withTag(SERVICE_NAME,"foo").start()
+    span.finish()
+    then:
+    span.getServiceName() == "foo"
+    span.getTags().containsKey("version") == false
+
+    when:
+    def span2 = tracer.buildSpan("abc").start()
+    span2.finish()
+    then:
+    span2.getServiceName() == "dd_service_name"
+    span2.getTags()["version"] == "1.0.0"
+
+    cleanup:
+    tracer?.close()
+  }
+
+  def "flushes on tracer close if configured to do so"() {
+    given:
+    def writer = new WriterWithExplicitFlush()
+    def tracer = tracerBuilder().writer(writer).flushOnClose(true).build()
+
+    when:
+    tracer.buildSpan('my_span').start().finish()
+    tracer.close()
+
+    then:
+    !writer.flushedTraces.empty
+  }
+
+  def "verify no filtering of service/env when mismatched with DD_SERVICE/DD_ENV"() {
+    setup:
+    injectSysConfig(SERVICE_NAME, service)
+    injectSysConfig(ENV, env)
+
+    def key = ParsedConfigKey.parse("datadog/2/APM_TRACING/config_overrides/config")
+    def poller = Mock(ConfigurationPoller)
+    def sco = new SharedCommunicationObjects(
+      okHttpClient: Mock(OkHttpClient),
+      monitoring: Mock(Monitoring),
+      agentUrl: HttpUrl.get('https://example.com'),
+      featuresDiscovery: Mock(DDAgentFeaturesDiscovery),
+      configurationPoller: poller
+      )
+
+    def updater
+
+    when:
+    def tracer = CoreTracer.builder()
+      .sharedCommunicationObjects(sco)
+      .pollForTracingConfiguration()
+      .build()
+
+    then:
+    1 * poller.addListener(Product.APM_TRACING, _ as ProductListener) >> {
+      updater = it[1] // capture config updater for further testing
+    }
+    and:
+    tracer.captureTraceConfig().serviceMapping == [:]
+
+    when:
+    updater.accept(key, """
+      {
+        "service_target": {
+          "service": "${targetService}",
+          "env": "${targetEnv}"
+        },
+        "lib_config":
+        {
+          "tracing_service_mapping":
+          [{
+             "from_key": "foobar",
+             "to_name": "bar"
+          }]
+        }
+      }
+      """.getBytes(StandardCharsets.UTF_8), null)
+    updater.commit()
+
+    then: "configuration should be applied"
+    tracer.captureTraceConfig().serviceMapping == ["foobar":"bar"]
+
+    cleanup:
+    tracer?.close()
+
+    where:
+    service   | env    | targetService | targetEnv
+    "service" | "env"  | "service_1"   | "env"
+    "service" | "env"  | "service"     | "env_1"
+    "service" | "env"  | "service_2"   | "env_2"
+  }
+}
+
+class WriterWithExplicitFlush implements datadog.trace.common.writer.Writer {
+  final List<List<DDSpan>> writtenTraces = new CopyOnWriteArrayList<>()
+  final List<List<DDSpan>> flushedTraces = new CopyOnWriteArrayList<>()
+
+  @Override
+  void write(List<DDSpan> trace) {
+    writtenTraces.add(trace)
+  }
+
+  @Override
+  void start() {
+  }
+
+  @Override
+  boolean flush() {
+    flushedTraces.addAll(writtenTraces)
+    writtenTraces.clear()
+    return true
+  }
+
+  @Override
+  void close() {
+  }
+
+  @Override
+  void incrementDropCounts(int spanCount) {
   }
 }
 

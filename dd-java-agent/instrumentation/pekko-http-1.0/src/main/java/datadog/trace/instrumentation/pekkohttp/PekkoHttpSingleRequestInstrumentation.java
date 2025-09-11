@@ -2,8 +2,8 @@ package datadog.trace.instrumentation.pekkohttp;
 
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.propagate;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
+import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.getCurrentContext;
 import static datadog.trace.instrumentation.pekkohttp.PekkoHttpClientDecorator.DECORATE;
 import static datadog.trace.instrumentation.pekkohttp.PekkoHttpClientDecorator.PEKKO_CLIENT_REQUEST;
 import static datadog.trace.instrumentation.pekkohttp.PekkoHttpClientHelpers.OnCompleteHandler;
@@ -12,18 +12,18 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
-import datadog.trace.bootstrap.instrumentation.decorator.HttpClientDecorator;
 import net.bytebuddy.asm.Advice;
 import org.apache.pekko.http.scaladsl.HttpExt;
 import org.apache.pekko.http.scaladsl.model.HttpRequest;
 import org.apache.pekko.http.scaladsl.model.HttpResponse;
 import scala.concurrent.Future;
 
-@AutoService(Instrumenter.class)
-public final class PekkoHttpSingleRequestInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class PekkoHttpSingleRequestInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public PekkoHttpSingleRequestInstrumentation() {
     super("pekko-http", "pekko-http-client");
   }
@@ -45,14 +45,14 @@ public final class PekkoHttpSingleRequestInstrumentation extends Instrumenter.Tr
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
+  public void methodAdvice(MethodTransformer transformer) {
     // This is mainly for compatibility with 10.0
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         named("singleRequest")
             .and(takesArgument(0, named("org.apache.pekko.http.scaladsl.model.HttpRequest"))),
         PekkoHttpSingleRequestInstrumentation.class.getName() + "$SingleRequestAdvice");
     // This is for 10.1+
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         named("singleRequestImpl")
             .and(takesArgument(0, named("org.apache.pekko.http.scaladsl.model.HttpRequest"))),
         PekkoHttpSingleRequestInstrumentation.class.getName() + "$SingleRequestAdvice");
@@ -73,15 +73,12 @@ public final class PekkoHttpSingleRequestInstrumentation extends Instrumenter.Tr
         return null;
       }
 
-      final AgentSpan span = startSpan(PEKKO_CLIENT_REQUEST);
+      final AgentSpan span = startSpan("pekko-http", PEKKO_CLIENT_REQUEST);
       DECORATE.afterStart(span);
       DECORATE.onRequest(span, request);
 
       if (request != null) {
-        propagate().inject(span, request, headers);
-        propagate()
-            .injectPathwayContext(
-                span, request, headers, HttpClientDecorator.CLIENT_PATHWAY_EDGE_TAGS);
+        DECORATE.injectContext(getCurrentContext().with(span), request, headers);
         // Request is immutable, so we have to assign new value once we update headers
         request = headers.getRequest();
       }

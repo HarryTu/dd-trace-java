@@ -12,6 +12,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import net.bytebuddy.asm.Advice;
@@ -21,16 +22,16 @@ import org.opensearch.action.ActionRequest;
 import org.opensearch.action.ActionResponse;
 import org.opensearch.action.ActionType;
 
-@AutoService(Instrumenter.class)
-public class OpensearchTransportClientInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class OpensearchTransportClientInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public OpensearchTransportClientInstrumentation() {
     super("opensearch", "opensearch-transport");
   }
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     return hasClassNamed("org.opensearch.action.ActionType");
   }
 
@@ -48,8 +49,8 @@ public class OpensearchTransportClientInstrumentation extends Instrumenter.Traci
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("execute"))
             .and(takesArguments(3))

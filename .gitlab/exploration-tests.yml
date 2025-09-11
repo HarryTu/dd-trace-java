@@ -1,5 +1,5 @@
 variables:
-  EXPLORATION_TESTS_IMAGE: $REGISTRY/ci/dd-trace-java:exploration-tests
+  EXPLORATION_TESTS_IMAGE: registry.ddbuild.io/ci/dd-trace-java:exploration-tests
 
 build-exploration-tests-image:
   stage: exploration-tests
@@ -12,42 +12,95 @@ build-exploration-tests-image:
     - docker push $EXPLORATION_TESTS_IMAGE
 
 .common-exploration-tests: &common-exploration-tests
+  rules:
+    - if: '$POPULATE_CACHE'
+      when: never
+    - if: $CI_PIPELINE_SOURCE != "schedule"
+      changes:
+        paths:
+          - dd-java-agent/agent-debugger/**/*
+        compare_to: "master"
+      when: on_success
+    - when: manual
+      allow_failure: true
   before_script:
-    - source $HOME/.sdkman/bin/sdkman-init.sh
-    - export JAVA_HOME=$JAVA_8_HOME
-    - ./gradlew :dd-java-agent:shadowJar --no-scan
     - cp workspace/dd-java-agent/build/libs/*.jar /exploration-tests/dd-java-agent.jar
     - cp dd-java-agent/agent-debugger/exploration-tests/run-exploration-tests.sh /exploration-tests
-    - cp dd-java-agent/agent-debugger/exploration-tests/exclude*.txt /exploration-tests
+    - cp dd-java-agent/agent-debugger/exploration-tests/exclude_*.txt /exploration-tests
+    - cp dd-java-agent/agent-debugger/exploration-tests/include_*.txt /exploration-tests
+    - source $HOME/.sdkman/bin/sdkman-init.sh && cd / && sdk env
     - cd /exploration-tests
+    - java -version
   after_script:
-    - cd $CI_PROJECT_DIR
-    - cp /exploration-tests/$PROJECT/agent.log agent.log
-    - gzip agent.log
-    - tar czf surefire-reports.tar.gz /exploration-tests/$PROJECT/target/surefire-reports
-    - tar czf debugger-dumps.tar.gz /tmp/debugger
+    - cp /exploration-tests/${PROJECT}/agent.log ${PROJECT}_agent.log
+    - gzip ${PROJECT}_agent.log
+    - tar czf ${PROJECT}_surefire-reports.tar.gz /exploration-tests/${PROJECT}/target/surefire-reports
+    - tar czf ${PROJECT}_debugger-dumps.tar.gz /tmp/debugger
   stage: exploration-tests
-  when: manual
   tags: [ "runner:main"]
-  needs: []
   image: $EXPLORATION_TESTS_IMAGE
   artifacts:
     paths:
-      - agent.log.gz
-      - surefire-reports.tar.gz
-      - debugger-dumps.tar.gz
+      - "*_agent.log.gz"
+      - "*_surefire-reports.tar.gz"
+      - "*_debugger-dumps.tar.gz"
 
+exploration-tests-method-jsoup:
+  needs: [ build ]
+  dependencies:
+    - build
+  <<: *common-exploration-tests
+  variables:
+    PROJECT: jsoup
+  script:
+    - ./run-exploration-tests.sh "method" "$PROJECT" "mvn verify" "include_${PROJECT}.txt" "exclude_${PROJECT}.txt"
 
-exploration-tests-jackson-core:
+exploration-tests-line-jsoup:
+  needs: [ build ]
+  dependencies:
+    - build
+  <<: *common-exploration-tests
+  variables:
+    PROJECT: jsoup
+  script:
+    - ./run-exploration-tests.sh "line" "$PROJECT" "mvn verify" "include_${PROJECT}.txt" "exclude_${PROJECT}.txt"
+
+exploration-tests-method-jackson-core:
+  needs: [ build ]
+  dependencies:
+    - build
   <<: *common-exploration-tests
   variables:
     PROJECT: jackson-core
   script:
-    - ./run-exploration-tests.sh "$PROJECT" "./mvnw verify"
+    - ./run-exploration-tests.sh "method" "$PROJECT" "mvn verify" "include_${PROJECT}.txt" "exclude_${PROJECT}.txt"
 
-exploration-tests-jackson-databind:
+exploration-tests-line-jackson-core:
+  needs: [ build ]
+  dependencies:
+    - build
+  <<: *common-exploration-tests
+  variables:
+    PROJECT: jackson-core
+  script:
+    - ./run-exploration-tests.sh "line" "$PROJECT" "mvn verify" "include_${PROJECT}.txt" "exclude_${PROJECT}.txt"
+
+exploration-tests-method-jackson-databind:
+  needs: [ build ]
+  dependencies:
+    - build
   <<: *common-exploration-tests
   variables:
     PROJECT: jackson-databind
   script:
-    - ./run-exploration-tests.sh "$PROJECT" "./mvnw verify" "exclude_$PROJECT.txt"
+    - ./run-exploration-tests.sh "method" "$PROJECT" "./mvnw verify" "include_${PROJECT}.txt" "exclude_$PROJECT.txt"
+
+exploration-tests-line-jackson-databind:
+  needs: [ build ]
+  dependencies:
+    - build
+  <<: *common-exploration-tests
+  variables:
+    PROJECT: jackson-databind
+  script:
+    - ./run-exploration-tests.sh "line" "$PROJECT" "./mvnw verify" "include_${PROJECT}.txt" "exclude_line_$PROJECT.txt"

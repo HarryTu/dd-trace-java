@@ -32,11 +32,18 @@ abstract class GrpcStreamingTest extends VersionedNamingTestBase {
 
   protected abstract String serverOperation()
 
+  protected boolean hasClientMessageSpans() {
+    false
+  }
+
   @Override
   protected void configurePreAgent() {
     super.configurePreAgent()
     injectSysConfig("dd.trace.grpc.ignored.inbound.methods", "example.Greeter/IgnoreInbound")
     injectSysConfig("dd.trace.grpc.ignored.outbound.methods", "example.Greeter/Ignore")
+    if (hasClientMessageSpans()) {
+      injectSysConfig("integration.grpc-message.enabled", "true")
+    }
     // here to trigger wrapping to record scheduling time - the logic is trivial so it's enough to verify
     // that ClassCastExceptions do not arise from the wrapping
     injectSysConfig("dd.profiling.enabled", "true")
@@ -60,7 +67,7 @@ abstract class GrpcStreamingTest extends VersionedNamingTestBase {
                 serverReceived << value.message
 
                 (1..msgCount).each {
-                  if (TEST_TRACER.activeScope().isAsyncPropagating()) {
+                  if (TEST_TRACER.isAsyncPropagationEnabled()) {
                     observer.onNext(value)
                   } else {
                     observer.onError(new IllegalStateException("not async propagating!"))
@@ -70,7 +77,7 @@ abstract class GrpcStreamingTest extends VersionedNamingTestBase {
 
               @Override
               void onError(Throwable t) {
-                if (TEST_TRACER.activeScope().isAsyncPropagating()) {
+                if (TEST_TRACER.isAsyncPropagationEnabled()) {
                   error.set(t)
                   observer.onError(t)
                 } else {
@@ -80,7 +87,7 @@ abstract class GrpcStreamingTest extends VersionedNamingTestBase {
 
               @Override
               void onCompleted() {
-                if (TEST_TRACER.activeScope().isAsyncPropagating()) {
+                if (TEST_TRACER.isAsyncPropagationEnabled()) {
                   observer.onCompleted()
                 } else {
                   observer.onError(new IllegalStateException("not async propagating!"))
@@ -100,7 +107,7 @@ abstract class GrpcStreamingTest extends VersionedNamingTestBase {
     def streamObserver = client.conversation(new StreamObserver<Helloworld.Response>() {
         @Override
         void onNext(Helloworld.Response value) {
-          if (TEST_TRACER.activeScope().isAsyncPropagating()) {
+          if (TEST_TRACER.isAsyncPropagationEnabled()) {
             clientReceived << value.message
           } else {
             error.set(new IllegalStateException("not async propagating!"))
@@ -109,7 +116,7 @@ abstract class GrpcStreamingTest extends VersionedNamingTestBase {
 
         @Override
         void onError(Throwable t) {
-          if (TEST_TRACER.activeScope().isAsyncPropagating()) {
+          if (TEST_TRACER.isAsyncPropagationEnabled()) {
             error.set(t)
           } else {
             error.set(new IllegalStateException("not async propagating!"))
@@ -118,7 +125,7 @@ abstract class GrpcStreamingTest extends VersionedNamingTestBase {
 
         @Override
         void onCompleted() {
-          if (!TEST_TRACER.activeScope().isAsyncPropagating()) {
+          if (!TEST_TRACER.isAsyncPropagationEnabled()) {
             error.set(new IllegalStateException("not async propagating!"))
           }
         }
@@ -142,7 +149,7 @@ abstract class GrpcStreamingTest extends VersionedNamingTestBase {
     }.flatten().sort()
 
     assertTraces(2) {
-      trace((clientMessageCount * serverMessageCount) + 1) {
+      trace((hasClientMessageSpans() ? clientMessageCount * serverMessageCount : 0) + 1) {
         span {
           operationName clientOperation()
           resourceName "example.Greeter/Conversation"
@@ -154,24 +161,27 @@ abstract class GrpcStreamingTest extends VersionedNamingTestBase {
             "$Tags.SPAN_KIND" Tags.SPAN_KIND_CLIENT
             "$Tags.RPC_SERVICE" "example.Greeter"
             "status.code" "OK"
+            "grpc.status.code" "OK"
             "request.type" "example.Helloworld\$Response"
             "response.type" "example.Helloworld\$Response"
             peerServiceFrom(Tags.RPC_SERVICE)
             defaultTags()
           }
         }
-        (1..(clientMessageCount * serverMessageCount)).each {
-          span {
-            operationName "grpc.message"
-            resourceName "grpc.message"
-            spanType DDSpanTypes.RPC
-            childOf span(0)
-            errored false
-            tags {
-              "$Tags.COMPONENT" "grpc-client"
-              "$Tags.SPAN_KIND" Tags.SPAN_KIND_CLIENT
-              "message.type" "example.Helloworld\$Response"
-              defaultTagsNoPeerService()
+        if (hasClientMessageSpans()) {
+          (1..(clientMessageCount * serverMessageCount)).each {
+            span {
+              operationName "grpc.message"
+              resourceName "grpc.message"
+              spanType DDSpanTypes.RPC
+              childOf span(0)
+              errored false
+              tags {
+                "$Tags.COMPONENT" "grpc-client"
+                "$Tags.SPAN_KIND" Tags.SPAN_KIND_CLIENT
+                "message.type" "example.Helloworld\$Response"
+                defaultTagsNoPeerService()
+              }
             }
           }
         }
@@ -187,6 +197,7 @@ abstract class GrpcStreamingTest extends VersionedNamingTestBase {
             "$Tags.COMPONENT" "grpc-server"
             "$Tags.SPAN_KIND" Tags.SPAN_KIND_SERVER
             "status.code" "OK"
+            "grpc.status.code" "OK"
             defaultTags(true)
           }
         }
@@ -230,7 +241,7 @@ abstract class GrpcStreamingTest extends VersionedNamingTestBase {
   }
 }
 
-class GrpcStreamingV0ForkedTest extends GrpcStreamingTest {
+class GrpcStreamingV0Test extends GrpcStreamingTest {
 
   @Override
   int version() {
@@ -263,5 +274,12 @@ class GrpcStreamingV1ForkedTest extends GrpcStreamingTest {
   @Override
   protected String serverOperation() {
     return "grpc.server.request"
+  }
+}
+
+class GrpcStreamingClientMessageEnabledTest extends GrpcStreamingV0Test {
+  @Override
+  protected boolean hasClientMessageSpans() {
+    true
   }
 }

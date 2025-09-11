@@ -4,12 +4,13 @@ import static net.bytebuddy.matcher.ElementMatchers.isConstructor;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.Platform;
 
 /** Provides instrumentation of {@linkplain Exception} and {@linkplain Error} constructors. */
-@AutoService(Instrumenter.class)
-public final class ThrowableInstrumentation extends Instrumenter.Profiling
-    implements Instrumenter.ForBootstrap, Instrumenter.ForKnownTypes {
+@AutoService(InstrumenterModule.class)
+public final class ThrowableInstrumentation extends InstrumenterModule.Profiling
+    implements Instrumenter.ForBootstrap, Instrumenter.ForKnownTypes, Instrumenter.HasMethodAdvice {
 
   public ThrowableInstrumentation() {
     super("throwables");
@@ -21,8 +22,8 @@ public final class ThrowableInstrumentation extends Instrumenter.Profiling
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(isConstructor(), packageName + ".ThrowableInstanceAdvice");
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(isConstructor(), packageName + ".ThrowableInstanceAdvice");
   }
 
   @Override

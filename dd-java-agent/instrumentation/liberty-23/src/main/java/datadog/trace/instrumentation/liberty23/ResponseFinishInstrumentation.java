@@ -12,6 +12,7 @@ import com.ibm.ws.webcontainer.srt.SRTServletResponse;
 import com.ibm.wsspi.webcontainer.WebContainerRequestState;
 import com.ibm.wsspi.webcontainer.servlet.IExtendedRequest;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import net.bytebuddy.asm.Advice;
@@ -23,9 +24,9 @@ import net.bytebuddy.asm.Advice;
  * being caught. In short, the method runs too late. Maybe intercept {@link
  * SRTServletResponse#closeResponseOutput()} instead?
  */
-@AutoService(Instrumenter.class)
-public class ResponseFinishInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class ResponseFinishInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public ResponseFinishInstrumentation() {
     super("liberty");
@@ -49,11 +50,11 @@ public class ResponseFinishInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("finish").and(takesNoArguments()),
         ResponseFinishInstrumentation.class.getName() + "$ResponseFinishAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         named("closeResponseOutput").and(takesArguments(1)).and(takesArgument(0, boolean.class)),
         ResponseFinishInstrumentation.class.getName() + "$SetCompletedAdvice");
   }

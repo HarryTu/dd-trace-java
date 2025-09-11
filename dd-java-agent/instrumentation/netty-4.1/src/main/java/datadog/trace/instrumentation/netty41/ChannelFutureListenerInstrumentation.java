@@ -5,12 +5,14 @@ import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
 import static datadog.trace.instrumentation.netty41.AttributeKeys.CONNECT_PARENT_CONTINUATION_ATTRIBUTE_KEY;
+import static datadog.trace.instrumentation.netty41.server.NettyHttpServerDecorator.NETTY;
 import static datadog.trace.instrumentation.netty41.server.NettyHttpServerDecorator.NETTY_CONNECT;
 import static net.bytebuddy.matcher.ElementMatchers.isMethod;
 import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import datadog.trace.bootstrap.instrumentation.api.Tags;
@@ -20,9 +22,9 @@ import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public class ChannelFutureListenerInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class ChannelFutureListenerInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   public ChannelFutureListenerInstrumentation() {
     super(
@@ -63,8 +65,8 @@ public class ChannelFutureListenerInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("operationComplete"))
             .and(takesArgument(0, named("io.netty.channel.ChannelFuture"))),
@@ -72,7 +74,7 @@ public class ChannelFutureListenerInstrumentation extends Instrumenter.Tracing
   }
 
   public static class OperationCompleteAdvice {
-    @Advice.OnMethodEnter
+    @Advice.OnMethodEnter(suppress = Throwable.class)
     public static AgentScope activateScope(@Advice.Argument(0) final ChannelFuture future) {
       /*
       Idea here is:
@@ -91,6 +93,7 @@ public class ChannelFutureListenerInstrumentation extends Instrumenter.Tracing
       final AgentScope parentScope = continuation.activate();
 
       final AgentSpan errorSpan = startSpan(NETTY_CONNECT).setTag(Tags.COMPONENT, "netty");
+      errorSpan.context().setIntegrationName(NETTY);
       try (final AgentScope scope = activateSpan(errorSpan)) {
         NettyHttpServerDecorator.DECORATE.onError(errorSpan, cause);
         NettyHttpServerDecorator.DECORATE.beforeFinish(errorSpan);

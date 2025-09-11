@@ -6,7 +6,11 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
+import datadog.trace.bootstrap.CallDepthThreadLocalMap;
 import net.bytebuddy.asm.Advice;
+import net.bytebuddy.asm.Advice.OnMethodExit;
+import org.apache.pekko.http.scaladsl.HttpExt;
 import org.apache.pekko.http.scaladsl.model.HttpRequest;
 import org.apache.pekko.http.scaladsl.model.HttpResponse;
 import org.apache.pekko.stream.Materializer;
@@ -17,9 +21,9 @@ import scala.concurrent.Future;
  * Http2 support in pekko-http is handled by a separate {@code Http2} extension that only supports
  * {@code bindAndHandleAsync}.
  */
-@AutoService(Instrumenter.class)
-public final class PekkoHttp2ServerInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForKnownTypes {
+@AutoService(InstrumenterModule.class)
+public final class PekkoHttp2ServerInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForKnownTypes, Instrumenter.HasMethodAdvice {
   public PekkoHttp2ServerInstrumentation() {
     super("pekko-http2", "pekko-http", "pekko-http-server");
   }
@@ -27,7 +31,10 @@ public final class PekkoHttp2ServerInstrumentation extends Instrumenter.Tracing
   @Override
   public String[] knownMatchingTypes() {
     return new String[] {
-      "org.apache.pekko.http.scaladsl.Http2Ext", "org.apache.pekko.http.impl.engine.http2.Http2Ext"
+      // pekko 1.1.0 seems not going through Htt2Ext anymore
+      "org.apache.pekko.http.scaladsl.HttpExt",
+      "org.apache.pekko.http.scaladsl.Http2Ext",
+      "org.apache.pekko.http.impl.engine.http2.Http2Ext"
     };
   }
 
@@ -45,20 +52,20 @@ public final class PekkoHttp2ServerInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         takesArguments(8)
             .and(named("bindAndHandleAsync"))
             .and(takesArgument(0, named("scala.Function1")))
             .and(takesArgument(7, named("org.apache.pekko.stream.Materializer"))),
         getClass().getName() + "$Http2BindAndHandleAsync8ArgAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         takesArguments(7)
             .and(named("bindAndHandleAsync"))
             .and(takesArgument(0, named("scala.Function1")))
             .and(takesArgument(6, named("org.apache.pekko.stream.Materializer"))),
         getClass().getName() + "$Http2BindAndHandleAsync7ArgAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         takesArguments(6)
             .and(named("bindAndHandleAsync"))
             .and(takesArgument(0, named("scala.Function1")))
@@ -72,7 +79,14 @@ public final class PekkoHttp2ServerInstrumentation extends Instrumenter.Tracing
         @Advice.Argument(value = 0, readOnly = false)
             Function1<HttpRequest, Future<HttpResponse>> handler,
         @Advice.Argument(value = 7) final Materializer materializer) {
-      handler = new DatadogAsyncHandlerWrapper(handler, materializer.executionContext());
+      if (CallDepthThreadLocalMap.incrementCallDepth(HttpExt.class) == 0) {
+        handler = new DatadogAsyncHandlerWrapper(handler, materializer.executionContext());
+      }
+    }
+
+    @OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
+    public static void exit() {
+      CallDepthThreadLocalMap.decrementCallDepth(HttpExt.class);
     }
   }
 
@@ -82,7 +96,14 @@ public final class PekkoHttp2ServerInstrumentation extends Instrumenter.Tracing
         @Advice.Argument(value = 0, readOnly = false)
             Function1<HttpRequest, Future<HttpResponse>> handler,
         @Advice.Argument(value = 6) final Materializer materializer) {
-      handler = new DatadogAsyncHandlerWrapper(handler, materializer.executionContext());
+      if (CallDepthThreadLocalMap.incrementCallDepth(HttpExt.class) == 0) {
+        handler = new DatadogAsyncHandlerWrapper(handler, materializer.executionContext());
+      }
+    }
+
+    @OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
+    public static void exit() {
+      CallDepthThreadLocalMap.decrementCallDepth(HttpExt.class);
     }
   }
 
@@ -92,7 +113,14 @@ public final class PekkoHttp2ServerInstrumentation extends Instrumenter.Tracing
         @Advice.Argument(value = 0, readOnly = false)
             Function1<HttpRequest, Future<HttpResponse>> handler,
         @Advice.Argument(value = 5) final Materializer materializer) {
-      handler = new DatadogAsyncHandlerWrapper(handler, materializer.executionContext());
+      if (CallDepthThreadLocalMap.incrementCallDepth(HttpExt.class) == 0) {
+        handler = new DatadogAsyncHandlerWrapper(handler, materializer.executionContext());
+      }
+    }
+
+    @OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
+    public static void exit() {
+      CallDepthThreadLocalMap.decrementCallDepth(HttpExt.class);
     }
   }
 }

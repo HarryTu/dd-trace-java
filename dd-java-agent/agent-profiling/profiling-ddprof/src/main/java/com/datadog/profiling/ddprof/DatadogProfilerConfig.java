@@ -1,12 +1,11 @@
 package com.datadog.profiling.ddprof;
 
-import static datadog.trace.api.Platform.isJ9;
+import static datadog.environment.JavaVirtualMachine.isJ9;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_ALLOCATION_ENABLED;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_CONTEXT_ATTRIBUTES;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_CONTEXT_ATTRIBUTES_RESOURCE_NAME_ENABLED;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_CONTEXT_ATTRIBUTES_SPAN_NAME_ENABLED;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_ALLOC_ENABLED;
-import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_ALLOC_ENABLED_DEFAULT;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_ALLOC_INTERVAL;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_ALLOC_INTERVAL_DEFAULT;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_CPU_ENABLED;
@@ -23,6 +22,8 @@ import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILE
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_LIVEHEAP_ENABLED;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_LIVEHEAP_ENABLED_DEFAULT;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_LIVEHEAP_INTERVAL;
+import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_LIVEHEAP_SAMPLE_PERCENT;
+import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_LIVEHEAP_SAMPLE_PERCENT_DEFAULT;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_LIVEHEAP_TRACK_HEAPSIZE;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_LIVEHEAP_TRACK_HEAPSIZE_DEFAFULT;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_LOG_LEVEL;
@@ -35,7 +36,6 @@ import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILE
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_SCHEDULING_EVENT;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_SCHEDULING_EVENT_INTERVAL;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_STACKDEPTH;
-import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_STACKDEPTH_DEFAULT;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_COLLAPSING;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_COLLAPSING_DEFAULT;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_CONTEXT_FILTER;
@@ -43,17 +43,28 @@ import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILE
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_ENABLED;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_INTERVAL;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_INTERVAL_DEFAULT;
+import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_JVMTI;
+import static datadog.trace.api.config.ProfilingConfig.PROFILING_DATADOG_PROFILER_WALL_JVMTI_DEFAULT;
+import static datadog.trace.api.config.ProfilingConfig.PROFILING_HEAP_TRACK_GENERATIONS;
+import static datadog.trace.api.config.ProfilingConfig.PROFILING_HEAP_TRACK_GENERATIONS_DEFAULT;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_QUEUEING_TIME_ENABLED;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_QUEUEING_TIME_ENABLED_DEFAULT;
+import static datadog.trace.api.config.ProfilingConfig.PROFILING_STACKDEPTH;
+import static datadog.trace.api.config.ProfilingConfig.PROFILING_STACKDEPTH_DEFAULT;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_ULTRA_MINIMAL;
 import static datadog.trace.api.config.TraceInstrumentationConfig.TRACE_ENABLED;
 
+import datadog.environment.JavaVirtualMachine;
+import datadog.trace.api.config.ProfilingConfig;
 import datadog.trace.bootstrap.config.provider.ConfigProvider;
 import java.lang.management.ManagementFactory;
 import java.util.Collections;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class DatadogProfilerConfig {
+  private static final Logger log = LoggerFactory.getLogger(DatadogProfilerConfig.class);
 
   public static boolean isCpuProfilerEnabled(ConfigProvider configProvider) {
     return getBoolean(
@@ -138,14 +149,46 @@ public class DatadogProfilerConfig {
         PROFILING_DATADOG_PROFILER_WALL_CONTEXT_FILTER_DEFAULT);
   }
 
-  public static boolean isAllocationProfilingEnabled(ConfigProvider configProvider) {
-    boolean userOptedIn =
-        getBoolean(configProvider, PROFILING_DATADOG_PROFILER_ALLOC_ENABLED, false);
-    // once DD allocation profiling is GA use the longstanding allocation flag to toggle it
-    if (PROFILING_DATADOG_PROFILER_ALLOC_ENABLED_DEFAULT) {
-      return getBoolean(configProvider, PROFILING_ALLOCATION_ENABLED, userOptedIn);
+  private static boolean isJmethodIDSafe() {
+    // see https://bugs.openjdk.org/browse/JDK-8313816
+    if (JavaVirtualMachine.isJavaVersionAtLeast(22)) {
+      // any version after 22 should be safe
+      return true;
     }
-    return userOptedIn;
+    switch (JavaVirtualMachine.getLangVersion()) {
+      case "8":
+        // Java 8 is not affected by the jmethodID issue
+        return true;
+      case "11":
+        return JavaVirtualMachine.isJavaVersionAtLeast(11, 0, 23);
+      case "17":
+        return JavaVirtualMachine.isJavaVersionAtLeast(17, 0, 11);
+      case "21":
+        return JavaVirtualMachine.isJavaVersionAtLeast(21, 0, 3);
+      default:
+        // any other non-LTS version should be considered unsafe
+        return false;
+    }
+  }
+
+  public static boolean isAllocationProfilingEnabled(ConfigProvider configProvider) {
+    // JVMTI Allocation Sampler is available since Java 11
+    if (JavaVirtualMachine.isJavaVersionAtLeast(11)) {
+      boolean dflt = isJmethodIDSafe();
+      boolean enableDdprofAlloc =
+          getBoolean(
+              configProvider,
+              PROFILING_ALLOCATION_ENABLED,
+              dflt,
+              PROFILING_DATADOG_PROFILER_ALLOC_ENABLED);
+
+      if (!dflt && enableDdprofAlloc) {
+        log.warn(
+            "Allocation profiling was enabled although it is not considered stable on this JVM version.");
+      }
+      return enableDdprofAlloc;
+    }
+    return false;
   }
 
   public static boolean isAllocationProfilingEnabled() {
@@ -164,11 +207,18 @@ public class DatadogProfilerConfig {
   }
 
   public static boolean isMemoryLeakProfilingEnabled(ConfigProvider configProvider) {
-    return getBoolean(
-        configProvider,
-        PROFILING_DATADOG_PROFILER_LIVEHEAP_ENABLED,
-        PROFILING_DATADOG_PROFILER_LIVEHEAP_ENABLED_DEFAULT,
-        PROFILING_DATADOG_PROFILER_MEMLEAK_ENABLED);
+    boolean isSafe = isJmethodIDSafe();
+    boolean enableDdprofMemleak =
+        getBoolean(
+            configProvider,
+            PROFILING_DATADOG_PROFILER_LIVEHEAP_ENABLED,
+            PROFILING_DATADOG_PROFILER_LIVEHEAP_ENABLED_DEFAULT,
+            PROFILING_DATADOG_PROFILER_MEMLEAK_ENABLED);
+    if (!isSafe && enableDdprofMemleak) {
+      log.warn(
+          "Memory leak profiling was enabled although it is not considered stable on this JVM version.");
+    }
+    return enableDdprofMemleak;
   }
 
   public static boolean isMemoryLeakProfilingEnabled() {
@@ -180,6 +230,13 @@ public class DatadogProfilerConfig {
         configProvider,
         PROFILING_DATADOG_PROFILER_LIVEHEAP_TRACK_HEAPSIZE,
         PROFILING_DATADOG_PROFILER_LIVEHEAP_TRACK_HEAPSIZE_DEFAFULT);
+  }
+
+  public static int getLiveHeapSamplePercent(ConfigProvider configProvider) {
+    return getInteger(
+        configProvider,
+        PROFILING_DATADOG_PROFILER_LIVEHEAP_SAMPLE_PERCENT,
+        PROFILING_DATADOG_PROFILER_LIVEHEAP_SAMPLE_PERCENT_DEFAULT);
   }
 
   public static long getMemleakInterval(ConfigProvider configProvider) {
@@ -217,8 +274,9 @@ public class DatadogProfilerConfig {
   public static int getStackDepth(ConfigProvider configProvider) {
     return getInteger(
         configProvider,
-        PROFILING_DATADOG_PROFILER_STACKDEPTH,
-        PROFILING_DATADOG_PROFILER_STACKDEPTH_DEFAULT);
+        PROFILING_STACKDEPTH,
+        PROFILING_STACKDEPTH_DEFAULT,
+        PROFILING_DATADOG_PROFILER_STACKDEPTH);
   }
 
   public static int getStackDepth() {
@@ -241,6 +299,26 @@ public class DatadogProfilerConfig {
         configProvider,
         PROFILING_DATADOG_PROFILER_CSTACK,
         PROFILING_DATADOG_PROFILER_CSTACK_DEFAULT);
+  }
+
+  public static boolean isEndpointTrackingEnabled() {
+    return isEndpointTrackingEnabled(ConfigProvider.getInstance());
+  }
+
+  public static boolean isEndpointTrackingEnabled(ConfigProvider configProvider) {
+    return getBoolean(
+        configProvider,
+        ProfilingConfig.PROFILING_ENDPOINT_COLLECTION_ENABLED,
+        ProfilingConfig.PROFILING_ENDPOINT_COLLECTION_ENABLED_DEFAULT);
+  }
+
+  public static boolean isQueueTimeEnabled() {
+    return isQueueTimeEnabled(ConfigProvider.getInstance());
+  }
+
+  public static boolean isQueueTimeEnabled(ConfigProvider configProvider) {
+    return getBoolean(
+        configProvider, PROFILING_QUEUEING_TIME_ENABLED, PROFILING_QUEUEING_TIME_ENABLED_DEFAULT);
   }
 
   public static String getCStack() {
@@ -294,6 +372,11 @@ public class DatadogProfilerConfig {
     return configProvider.getBoolean(PROFILING_CONTEXT_ATTRIBUTES_RESOURCE_NAME_ENABLED, false);
   }
 
+  public static boolean isTrackingGenerations(ConfigProvider configProvider) {
+    return getBoolean(
+        configProvider, PROFILING_HEAP_TRACK_GENERATIONS, PROFILING_HEAP_TRACK_GENERATIONS_DEFAULT);
+  }
+
   public static String getString(ConfigProvider configProvider, String key, String defaultValue) {
     return configProvider.getString(key, configProvider.getString(normalizeKey(key), defaultValue));
   }
@@ -330,6 +413,13 @@ public class DatadogProfilerConfig {
 
   public static long getLong(ConfigProvider configProvider, String key) {
     return configProvider.getLong(key, configProvider.getLong(normalizeKey(key), -1));
+  }
+
+  public static boolean useJvmtiWallclockSampler(ConfigProvider configProvider) {
+    return getBoolean(
+        configProvider,
+        PROFILING_DATADOG_PROFILER_WALL_JVMTI,
+        PROFILING_DATADOG_PROFILER_WALL_JVMTI_DEFAULT);
   }
 
   private static String normalizeKey(String key) {

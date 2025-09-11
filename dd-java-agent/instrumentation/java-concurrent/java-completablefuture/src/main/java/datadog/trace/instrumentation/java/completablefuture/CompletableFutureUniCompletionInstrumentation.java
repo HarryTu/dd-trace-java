@@ -9,6 +9,7 @@ import static net.bytebuddy.matcher.ElementMatchers.isConstructor;
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.ExcludeFilterProvider;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.ConcurrentState;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.ExcludeFilter.ExcludeType;
 import java.util.Arrays;
@@ -44,9 +45,12 @@ import java.util.Map;
  * continuation {@code ConcurrentContinuation}, have been introduced to deal with the benign race
  * taking place that decides which thread actually get to run the user code that was supplied.
  */
-@AutoService(Instrumenter.class)
-public class CompletableFutureUniCompletionInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForBootstrap, Instrumenter.ForSingleType, ExcludeFilterProvider {
+@AutoService(InstrumenterModule.class)
+public class CompletableFutureUniCompletionInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForBootstrap,
+        Instrumenter.ForSingleType,
+        Instrumenter.HasMethodAdvice,
+        ExcludeFilterProvider {
   static final String JAVA_UTIL_CONCURRENT = "java.util.concurrent";
   static final String COMPLETABLE_FUTURE = JAVA_UTIL_CONCURRENT + ".CompletableFuture";
   static final String UNI_COMPLETION = COMPLETABLE_FUTURE + "$UniCompletion";
@@ -67,8 +71,8 @@ public class CompletableFutureUniCompletionInstrumentation extends Instrumenter.
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(isConstructor(), ADVICE_BASE + "UniConstructor");
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(isConstructor(), ADVICE_BASE + "UniConstructor");
   }
 
   @Override

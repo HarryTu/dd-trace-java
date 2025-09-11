@@ -1,24 +1,30 @@
 package datadog.trace.core;
 
+import static datadog.trace.api.DDTags.PARENT_ID;
 import static datadog.trace.api.DDTags.SPAN_LINKS;
 import static datadog.trace.api.cache.RadixTreeCache.HTTP_STATUSES;
 import static datadog.trace.bootstrap.instrumentation.api.ErrorPriorities.UNSET;
 
+import datadog.trace.api.Config;
+import datadog.trace.api.DDSpanId;
 import datadog.trace.api.DDTags;
 import datadog.trace.api.DDTraceId;
 import datadog.trace.api.Functions;
+import datadog.trace.api.ProcessTags;
+import datadog.trace.api.TagMap;
 import datadog.trace.api.cache.DDCache;
 import datadog.trace.api.cache.DDCaches;
 import datadog.trace.api.config.TracerConfig;
+import datadog.trace.api.datastreams.PathwayContext;
 import datadog.trace.api.gateway.BlockResponseFunction;
 import datadog.trace.api.gateway.RequestContext;
 import datadog.trace.api.gateway.RequestContextSlot;
 import datadog.trace.api.internal.TraceSegment;
 import datadog.trace.api.sampling.PrioritySampling;
 import datadog.trace.api.sampling.SamplingMechanism;
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpanLink;
-import datadog.trace.bootstrap.instrumentation.api.PathwayContext;
+import datadog.trace.bootstrap.instrumentation.api.Baggage;
 import datadog.trace.bootstrap.instrumentation.api.ProfilerContext;
 import datadog.trace.bootstrap.instrumentation.api.ProfilingContextIntegration;
 import datadog.trace.bootstrap.instrumentation.api.ResourceNamePriorities;
@@ -38,6 +44,7 @@ import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,7 +57,7 @@ import org.slf4j.LoggerFactory;
  * the associated Span instance
  */
 public class DDSpanContext
-    implements AgentSpan.Context, RequestContext, TraceSegment, ProfilerContext {
+    implements AgentSpanContext, RequestContext, TraceSegment, ProfilerContext {
   private static final Logger log = LoggerFactory.getLogger(DDSpanContext.class);
 
   public static final String PRIORITY_SAMPLING_KEY = "_sampling_priority_v1";
@@ -64,12 +71,15 @@ public class DDSpanContext
       DDCaches.newFixedSizeCache(256);
 
   private static final Map<String, String> EMPTY_BAGGAGE = Collections.emptyMap();
+  private static final Map<String, Object> EMPTY_META_STRUCT = Collections.emptyMap();
 
   /** The collection of all span related to this one */
-  private final PendingTrace trace;
+  private final TraceCollector traceCollector;
 
   /** Baggage is associated with the whole trace and shared with other spans */
   private volatile Map<String, String> baggageItems;
+
+  private final Baggage w3cBaggage;
 
   // Not Shared with other span contexts
   private final DDTraceId traceId;
@@ -82,6 +92,7 @@ public class DDSpanContext
   private final UTF8BytesString threadName;
 
   private volatile short httpStatusCode;
+  private CharSequence integrationName;
 
   /**
    * Tags are associated to the current span, they will not propagate to the children span.
@@ -92,7 +103,7 @@ public class DDSpanContext
    * rather read and accessed in a serial fashion on thread after thread. The synchronization can
    * then be wrapped around bulk operations to minimize the costly atomic operations.
    */
-  private final Map<String, Object> unsafeTags;
+  private final TagMap unsafeTags;
 
   /** The service name is required, otherwise the span are dropped by the agent */
   private volatile String serviceName;
@@ -140,6 +151,14 @@ public class DDSpanContext
   private final boolean injectBaggageAsTags;
   private volatile int encodedOperationName;
   private volatile int encodedResourceName;
+  private volatile CharSequence lastParentId;
+
+  /**
+   * Metastruct keys are associated to the current span, they will not propagate to the children
+   * span. They are an efficient way to send binary data to the agent without relying on bulky json
+   * payloads inside tags.
+   */
+  private volatile Map<String, Object> metaStruct = EMPTY_META_STRUCT;
 
   public DDSpanContext(
       final DDTraceId traceId,
@@ -155,7 +174,7 @@ public class DDSpanContext
       final boolean errorFlag,
       final CharSequence spanType,
       final int tagsSize,
-      final PendingTrace trace,
+      final TraceCollector traceCollector,
       final Object requestContextDataAppSec,
       final Object requestContextDataIast,
       final PathwayContext pathwayContext,
@@ -172,10 +191,11 @@ public class DDSpanContext
         samplingPriority,
         origin,
         baggageItems,
+        null,
         errorFlag,
         spanType,
         tagsSize,
-        trace,
+        traceCollector,
         requestContextDataAppSec,
         requestContextDataIast,
         null,
@@ -200,7 +220,7 @@ public class DDSpanContext
       final boolean errorFlag,
       final CharSequence spanType,
       final int tagsSize,
-      final PendingTrace trace,
+      final TraceCollector traceCollector,
       final Object requestContextDataAppSec,
       final Object requestContextDataIast,
       final PathwayContext pathwayContext,
@@ -218,10 +238,11 @@ public class DDSpanContext
         samplingPriority,
         origin,
         baggageItems,
+        null,
         errorFlag,
         spanType,
         tagsSize,
-        trace,
+        traceCollector,
         requestContextDataAppSec,
         requestContextDataIast,
         null,
@@ -246,7 +267,7 @@ public class DDSpanContext
       final boolean errorFlag,
       final CharSequence spanType,
       final int tagsSize,
-      final PendingTrace trace,
+      final TraceCollector traceCollector,
       final Object requestContextDataAppSec,
       final Object requestContextDataIast,
       final PathwayContext pathwayContext,
@@ -264,10 +285,11 @@ public class DDSpanContext
         samplingPriority,
         origin,
         baggageItems,
+        null,
         errorFlag,
         spanType,
         tagsSize,
-        trace,
+        traceCollector,
         requestContextDataAppSec,
         requestContextDataIast,
         null,
@@ -289,10 +311,11 @@ public class DDSpanContext
       final int samplingPriority,
       final CharSequence origin,
       final Map<String, String> baggageItems,
+      final Baggage w3cBaggage,
       final boolean errorFlag,
       final CharSequence spanType,
       final int tagsSize,
-      final PendingTrace trace,
+      final TraceCollector traceCollector,
       final Object requestContextDataAppSec,
       final Object requestContextDataIast,
       final Object CiVisibilityContextData,
@@ -302,8 +325,8 @@ public class DDSpanContext
       final ProfilingContextIntegration profilingContextIntegration,
       final boolean injectBaggageAsTags) {
 
-    assert trace != null;
-    this.trace = trace;
+    assert traceCollector != null;
+    this.traceCollector = traceCollector;
 
     assert traceId != null;
     this.traceId = traceId;
@@ -316,6 +339,7 @@ public class DDSpanContext
     } else {
       this.baggageItems = new ConcurrentHashMap<>(baggageItems);
     }
+    this.w3cBaggage = w3cBaggage;
 
     this.requestContextDataAppSec = requestContextDataAppSec;
     this.requestContextDataIast = requestContextDataIast;
@@ -327,7 +351,8 @@ public class DDSpanContext
     // The +1 is the magic number from the tags below that we set at the end,
     // and "* 4 / 3" is to make sure that we don't resize immediately
     final int capacity = Math.max((tagsSize <= 0 ? 3 : (tagsSize + 1)) * 4 / 3, 8);
-    this.unsafeTags = new HashMap<>(capacity);
+    this.unsafeTags = TagMap.create(capacity);
+
     // must set this before setting the service and resource names below
     this.profilingContextIntegration = profilingContextIntegration;
     // as fast as we can try to make this operation, we still might need to activate/deactivate
@@ -350,7 +375,7 @@ public class DDSpanContext
     this.propagationTags =
         propagationTags != null
             ? propagationTags
-            : trace.getTracer().getPropagationTagsFactory().empty();
+            : traceCollector.getTracer().getPropagationTagsFactory().empty();
     this.propagationTags.updateTraceIdHighOrderBits(this.traceId.toHighOrderLong());
     this.injectBaggageAsTags = injectBaggageAsTags;
     if (origin != null) {
@@ -359,6 +384,7 @@ public class DDSpanContext
     if (samplingPriority != PrioritySampling.UNSET) {
       setSamplingPriority(samplingPriority, SamplingMechanism.UNKNOWN);
     }
+    setTag(PARENT_ID, this.propagationTags.getLastParentId());
   }
 
   @Override
@@ -395,7 +421,7 @@ public class DDSpanContext
   }
 
   public void setServiceName(final String serviceName) {
-    this.serviceName = trace.mapServiceName(serviceName);
+    this.serviceName = traceCollector.mapServiceName(serviceName);
     this.topLevel = isTopLevel(parentServiceName, this.serviceName);
   }
 
@@ -413,6 +439,16 @@ public class DDSpanContext
   }
 
   public void setResourceName(final CharSequence resourceName, byte priority) {
+    if (log.isDebugEnabled()) {
+      log.debug(
+          "setResourceName `{}`->`{}` with priority {}->{} for traceId={} spanId={}",
+          this.resourceName,
+          resourceName,
+          resourceNamePriority,
+          priority,
+          traceId,
+          spanId);
+    }
     if (null == resourceName) {
       return;
     }
@@ -475,9 +511,14 @@ public class DDSpanContext
     this.spanType = spanType;
   }
 
+  /** Forces the local root span sampling decision to keep according manual mechanism. */
   public void forceKeep() {
+    forceKeep(SamplingMechanism.MANUAL);
+  }
+
+  public void forceKeep(byte samplingMechanism) {
     // set trace level sampling priority
-    getRootSpanContextOrThis().forceKeepThisSpan(SamplingMechanism.MANUAL);
+    getRootSpanContextOrThis().forceKeepThisSpan(samplingMechanism);
   }
 
   private void forceKeepThisSpan(byte samplingMechanism) {
@@ -487,6 +528,14 @@ public class DDSpanContext
         == PrioritySampling.UNSET) {
       propagationTags.updateTraceSamplingPriority(PrioritySampling.USER_KEEP, samplingMechanism);
     }
+  }
+
+  public void addPropagatedTraceSource(final int value) {
+    propagationTags.addTraceSource(value);
+  }
+
+  public void updateDebugPropagation(String value) {
+    propagationTags.updateDebugPropagation(value);
   }
 
   /** @return if sampling priority was set by this method invocation */
@@ -502,8 +551,8 @@ public class DDSpanContext
   }
 
   private DDSpanContext getRootSpanContextIfDifferent() {
-    if (trace != null) {
-      final DDSpan rootSpan = trace.getRootSpan();
+    if (traceCollector != null) {
+      final DDSpan rootSpan = traceCollector.getRootSpan();
       if (null != rootSpan && rootSpan.context() != this) {
         return rootSpan.context();
       }
@@ -514,6 +563,11 @@ public class DDSpanContext
   private boolean setThisSpanSamplingPriority(final int newPriority, final int newMechanism) {
     if (!validateSamplingPriority(newPriority, newMechanism)) {
       return false;
+    }
+    if (SamplingMechanism.canAvoidSamplingPriorityLock(newPriority, newMechanism)) {
+      SAMPLING_PRIORITY_UPDATER.set(this, newPriority);
+      propagationTags.updateTraceSamplingPriority(newPriority, newMechanism);
+      return true;
     }
     if (!SAMPLING_PRIORITY_UPDATER.compareAndSet(this, PrioritySampling.UNSET, newPriority)) {
       if (log.isDebugEnabled()) {
@@ -585,7 +639,7 @@ public class DDSpanContext
     // this is now effectively a no-op - there is no locking.
     // the priority is just CAS'd against UNSET/UNKNOWN, unless it's forced to USER_KEEP/MANUAL
     // but is maintained for backwards compatibility, and returns false when it used to
-    final DDSpan rootSpan = trace.getRootSpan();
+    final DDSpan rootSpan = traceCollector.getRootSpan();
     if (null != rootSpan && rootSpan.context() != this) {
       return rootSpan.context().lockSamplingPriority();
     }
@@ -598,14 +652,18 @@ public class DDSpanContext
   }
 
   public void beginEndToEnd() {
-    trace.beginEndToEnd();
+    traceCollector.beginEndToEnd();
   }
 
   public long getEndToEndStartTime() {
-    return trace.getEndToEndStartTime();
+    return traceCollector.getEndToEndStartTime();
   }
 
   public void setBaggageItem(final String key, final String value) {
+    if (key == null || value == null) {
+      log.debug("Try to set invalid baggage: key = {}, value = {}", key, value);
+      return;
+    }
     if (baggageItems == EMPTY_BAGGAGE) {
       synchronized (this) {
         if (baggageItems == EMPTY_BAGGAGE) {
@@ -630,8 +688,8 @@ public class DDSpanContext
   }
 
   @Override
-  public PendingTrace getTrace() {
-    return trace;
+  public TraceCollector getTraceCollector() {
+    return traceCollector;
   }
 
   public RequestContext getRequestContext() {
@@ -663,7 +721,7 @@ public class DDSpanContext
   }
 
   public CoreTracer getTracer() {
-    return trace.getTracer();
+    return traceCollector.getTracer();
   }
 
   public void setHttpStatusCode(short statusCode) {
@@ -703,23 +761,80 @@ public class DDSpanContext
       synchronized (unsafeTags) {
         unsafeTags.remove(tag);
       }
-    } else if (!trace.getTracer().getTagInterceptor().interceptTag(this, tag, value)) {
+    } else if (!traceCollector.getTracer().getTagInterceptor().interceptTag(this, tag, value)) {
       synchronized (unsafeTags) {
         unsafeSetTag(tag, value);
       }
     }
   }
 
-  void setAllTags(final Map<String, ?> map) {
-    if (map == null || map.isEmpty()) {
+  void setAllTags(final TagMap map) {
+    setAllTags(map, true);
+  }
+
+  void setAllTags(final TagMap map, boolean needsIntercept) {
+    if (map == null) {
       return;
     }
 
-    TagInterceptor tagInterceptor = trace.getTracer().getTagInterceptor();
     synchronized (unsafeTags) {
-      for (final Map.Entry<String, ?> tag : map.entrySet()) {
-        if (!tagInterceptor.interceptTag(this, tag.getKey(), tag.getValue())) {
-          unsafeSetTag(tag.getKey(), tag.getValue());
+      if (needsIntercept) {
+        // forEach out-performs the iterator of TagMap
+        // Taking advantage of ability to pass through other context arguments
+        // to avoid using a capturing lambda
+        map.forEach(
+            this,
+            traceCollector.getTracer().getTagInterceptor(),
+            (ctx, tagInterceptor, tagEntry) -> {
+              String tag = tagEntry.tag();
+              Object value = tagEntry.objectValue();
+
+              if (!tagInterceptor.interceptTag(ctx, tag, value)) {
+                ctx.unsafeTags.set(tagEntry);
+              }
+            });
+      } else {
+        unsafeTags.putAll(map);
+      }
+    }
+  }
+
+  void setAllTags(final TagMap.Ledger ledger) {
+    if (ledger == null) {
+      return;
+    }
+
+    TagInterceptor tagInterceptor = traceCollector.getTracer().getTagInterceptor();
+    synchronized (unsafeTags) {
+      for (final TagMap.EntryChange entryChange : ledger) {
+        if (entryChange.isRemoval()) {
+          unsafeTags.remove(entryChange.tag());
+        } else {
+          TagMap.Entry entry = (TagMap.Entry) entryChange;
+
+          String tag = entry.tag();
+          Object value = entry.objectValue();
+
+          if (!tagInterceptor.interceptTag(this, tag, value)) {
+            unsafeTags.set(entry);
+          }
+        }
+      }
+    }
+  }
+
+  void setAllTags(final Map<String, ?> map) {
+    if (map == null) {
+      return;
+    } else if (map instanceof TagMap) {
+      setAllTags((TagMap) map);
+    } else if (!map.isEmpty()) {
+      TagInterceptor tagInterceptor = traceCollector.getTracer().getTagInterceptor();
+      synchronized (unsafeTags) {
+        for (final Map.Entry<String, ?> tag : map.entrySet()) {
+          if (!tagInterceptor.interceptTag(this, tag.getKey(), tag.getValue())) {
+            unsafeSetTag(tag.getKey(), tag.getValue());
+          }
         }
       }
     }
@@ -756,12 +871,14 @@ public class DDSpanContext
    * @return the value associated with the tag
    */
   public Object unsafeGetTag(final String tag) {
-    return unsafeTags.get(tag);
+    return unsafeTags.getObject(tag);
   }
 
-  public Map<String, Object> getTags() {
+  @Deprecated
+  public TagMap getTags() {
     synchronized (unsafeTags) {
-      Map<String, Object> tags = new HashMap<>(unsafeTags);
+      TagMap tags = unsafeTags.copy();
+
       tags.put(DDTags.THREAD_ID, threadId);
       // maintain previously observable type of the thread name :|
       tags.put(DDTags.THREAD_NAME, threadName.toString());
@@ -776,7 +893,37 @@ public class DDSpanContext
       if (value != null) {
         tags.put(Tags.HTTP_URL, value.toString());
       }
-      return Collections.unmodifiableMap(tags);
+      return tags.freeze();
+    }
+  }
+
+  /** @see CoreSpan#getMetaStruct() */
+  public Map<String, Object> getMetaStruct() {
+    return Collections.unmodifiableMap(metaStruct);
+  }
+
+  /** @see CoreSpan#setMetaStruct(String, Object) */
+  public <T> void setMetaStruct(final String field, final T value) {
+    if (null == field) {
+      return;
+    }
+    if (metaStruct == EMPTY_META_STRUCT) {
+      synchronized (this) {
+        if (metaStruct == EMPTY_META_STRUCT) {
+          metaStruct = new ConcurrentHashMap<>(4);
+        }
+      }
+    }
+    if (null == value) {
+      metaStruct.remove(field);
+    } else {
+      metaStruct.put(field, value);
+    }
+  }
+
+  public void earlyProcessTags(List<AgentSpanLink> links) {
+    synchronized (unsafeTags) {
+      TagsPostProcessorFactory.eagerProcessor().processTags(unsafeTags, this, links);
     }
   }
 
@@ -784,16 +931,19 @@ public class DDSpanContext
       final MetadataConsumer consumer, int longRunningVersion, List<AgentSpanLink> links) {
     synchronized (unsafeTags) {
       // Tags
-      Map<String, Object> tags =
-          TagsPostProcessorFactory.instance().processTagsWithContext(unsafeTags, this);
+      TagsPostProcessorFactory.lazyProcessor().processTags(unsafeTags, this, links);
+
       String linksTag = DDSpanLink.toTag(links);
       if (linksTag != null) {
-        tags.put(SPAN_LINKS, linksTag);
+        unsafeTags.put(SPAN_LINKS, linksTag);
       }
       // Baggage
       Map<String, String> baggageItemsWithPropagationTags;
       if (injectBaggageAsTags) {
         baggageItemsWithPropagationTags = new HashMap<>(baggageItems);
+        if (w3cBaggage != null) {
+          injectW3CBaggageTags(baggageItemsWithPropagationTags);
+        }
         propagationTags.fillTagMap(baggageItemsWithPropagationTags);
       } else {
         baggageItemsWithPropagationTags = propagationTags.createTagMap();
@@ -803,7 +953,7 @@ public class DDSpanContext
           new Metadata(
               threadId,
               threadName,
-              tags,
+              unsafeTags,
               baggageItemsWithPropagationTags,
               samplingPriority != PrioritySampling.UNSET ? samplingPriority : getSamplingPriority(),
               measured,
@@ -811,8 +961,39 @@ public class DDSpanContext
               httpStatusCode == 0 ? null : HTTP_STATUSES.get(httpStatusCode),
               // Get origin from rootSpan.context
               getOrigin(),
-              longRunningVersion));
+              longRunningVersion,
+              ProcessTags.getTagsForSerialization()));
     }
+  }
+
+  void injectW3CBaggageTags(Map<String, String> baggageItemsWithPropagationTags) {
+    List<String> baggageTagKeys = Config.get().getTraceBaggageTagKeys();
+    if (baggageTagKeys.isEmpty()) {
+      return;
+    }
+    Map<String, String> w3cBaggageItems = w3cBaggage.asMap();
+    for (String key : baggageTagKeys) {
+      if ("*".equals(key)) {
+        // If the key is "*", we add all baggage items
+        for (Map.Entry<String, String> entry : w3cBaggageItems.entrySet()) {
+          baggageItemsWithPropagationTags.put("baggage." + entry.getKey(), entry.getValue());
+        }
+        break;
+      }
+      String value = w3cBaggageItems.get(key);
+      if (value != null) {
+        baggageItemsWithPropagationTags.put("baggage." + key, value);
+      }
+    }
+  }
+
+  @Override
+  public void setIntegrationName(CharSequence integrationName) {
+    this.integrationName = integrationName;
+  }
+
+  public CharSequence getIntegrationName() {
+    return integrationName;
   }
 
   @Override
@@ -822,14 +1003,14 @@ public class DDSpanContext
             .append("DDSpan [ t_id=")
             .append(traceId)
             .append(", s_id=")
-            .append(spanId)
+            .append(DDSpanId.toString(spanId))
             .append(", p_id=")
-            .append(parentId)
+            .append(DDSpanId.toString(parentId))
             .append(" ] trace=")
             .append(getServiceName())
-            .append("/")
+            .append('/')
             .append(getOperationName())
-            .append("/")
+            .append('/')
             .append(getResourceName());
     if (errorFlag) {
       s.append(" *errored*");
@@ -909,6 +1090,11 @@ public class DDSpanContext
   }
 
   @Override
+  public Object getTagTop(String key, boolean sanitize) {
+    return getRootSpanContextOrThis().getTagCurrent(key, sanitize);
+  }
+
+  @Override
   public void setTagCurrent(String key, Object value, boolean sanitize) {
     if (sanitize) {
       key = TagsHelper.sanitize(key);
@@ -917,19 +1103,66 @@ public class DDSpanContext
   }
 
   @Override
+  public Object getTagCurrent(String key, boolean sanitize) {
+    if (sanitize) {
+      key = TagsHelper.sanitize(key);
+    }
+    return this.getTag(key);
+  }
+
+  @Override
   public void setDataTop(String key, Object value) {
     getRootSpanContextOrThis().setDataCurrent(key, value);
   }
 
   @Override
+  public Object getDataTop(String key) {
+    return getRootSpanContextOrThis().getDataCurrent(key);
+  }
+
+  @Override
   public void effectivelyBlocked() {
-    setTag("appsec.blocked", "true");
+    setTagTop("appsec.blocked", "true");
   }
 
   @Override
   public void setDataCurrent(String key, Object value) {
+    this.setTag(getTagName(key), value);
+  }
+
+  @Override
+  public Object getDataCurrent(String key) {
+    return this.getTag(getTagName(key));
+  }
+
+  private String getTagName(String key) {
     // TODO is this decided?
-    String tagKey = "_dd." + key + ".json";
-    this.setTag(tagKey, value);
+    return "_dd." + key + ".json";
+  }
+
+  @Override
+  public void setMetaStructTop(String field, Object value) {
+    getRootSpanContextOrThis().setMetaStructCurrent(field, value);
+  }
+
+  @SuppressWarnings("unchecked")
+  @Override
+  public <T> T getOrCreateMetaStructTop(final String key, final Function<String, T> defaultValue) {
+    final DDSpanContext top = getRootSpanContextOrThis();
+    if (top.metaStruct == EMPTY_META_STRUCT) {
+      // this will safely create the metastruct if the field has not been initialized already
+      top.setMetaStruct(key, defaultValue.apply(key));
+    }
+    return (T) top.metaStruct.computeIfAbsent(key, defaultValue);
+  }
+
+  @Override
+  public void setMetaStructCurrent(String field, Object value) {
+    setMetaStruct(field, value);
+  }
+
+  @Override
+  public boolean isRemote() {
+    return false;
   }
 }

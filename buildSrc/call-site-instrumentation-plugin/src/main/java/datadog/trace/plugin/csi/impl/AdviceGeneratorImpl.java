@@ -2,6 +2,7 @@ package datadog.trace.plugin.csi.impl;
 
 import static com.github.javaparser.ast.Modifier.Keyword.PUBLIC;
 import static datadog.trace.plugin.csi.impl.CallSiteFactory.typeResolver;
+import static datadog.trace.plugin.csi.util.CallSiteConstants.ADVICE_TYPE_CLASS;
 import static datadog.trace.plugin.csi.util.CallSiteConstants.AUTO_SERVICE_FQDN;
 import static datadog.trace.plugin.csi.util.CallSiteConstants.CALL_SITES_CLASS;
 import static datadog.trace.plugin.csi.util.CallSiteConstants.CALL_SITES_FQCN;
@@ -55,6 +56,7 @@ import datadog.trace.plugin.csi.impl.CallSiteSpecification.Enabled;
 import datadog.trace.plugin.csi.util.ErrorCode;
 import datadog.trace.plugin.csi.util.MethodType;
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -156,9 +158,11 @@ public class AdviceGeneratorImpl implements AdviceGenerator {
     type.setModifier(PUBLIC, true);
     type.setName(getClassName(advice));
     type.addImplementedType(CALL_SITES_CLASS);
-    if (!CALL_SITES_FQCN.equals(callSite.getSpi().getClassName())) {
-      javaClass.addImport(callSite.getSpi().getClassName());
-      type.addImplementedType(getClassName(callSite.getSpi(), false));
+    for (final Type spi : callSite.getSpi()) {
+      if (!CALL_SITES_FQCN.equals(spi.getClassName())) {
+        javaClass.addImport(spi.getClassName());
+        type.addImplementedType(getClassName(spi, false));
+      }
     }
     javaClass.addType(type);
     return type;
@@ -168,9 +172,12 @@ public class AdviceGeneratorImpl implements AdviceGenerator {
       final ClassOrInterfaceDeclaration javaClass, final CallSiteSpecification callSite) {
     final NormalAnnotationExpr autoService = new NormalAnnotationExpr();
     autoService.setName(AUTO_SERVICE_FQDN);
-    autoService.addPair(
-        "value",
-        new ClassExpr(new ClassOrInterfaceType().setName(getClassName(callSite.getSpi(), false))));
+    final Type[] spiTypes = callSite.getSpi();
+    final List<Expression> spiExprs = new ArrayList<>(spiTypes.length);
+    for (final Type spi : spiTypes) {
+      spiExprs.add(new ClassExpr(new ClassOrInterfaceType().setName(getClassName(spi, false))));
+    }
+    autoService.addPair("value", new ArrayInitializerExpr().setValues(new NodeList<>(spiExprs)));
     javaClass.addAnnotation(autoService);
   }
 
@@ -179,20 +186,24 @@ public class AdviceGeneratorImpl implements AdviceGenerator {
     final MethodType pointCut = spec.getPointcut();
     final BlockStmt adviceBody = new BlockStmt();
     final Expression advice;
+    final String type;
     if (spec.isInvokeDynamic()) {
       advice = invokeDynamicAdviceSignature(adviceBody);
     } else {
       advice = invokeAdviceSignature(adviceBody);
     }
     if (spec instanceof BeforeSpecification) {
+      type = "BEFORE";
       writeStackOperations(spec, adviceBody);
       writeAdviceMethodCall(spec, adviceBody);
       writeOriginalMethodCall(spec, adviceBody);
     } else if (spec instanceof AfterSpecification) {
+      type = "AFTER";
       writeStackOperations(spec, adviceBody);
       writeOriginalMethodCall(spec, adviceBody);
       writeAdviceMethodCall(spec, adviceBody);
     } else {
+      type = "AROUND";
       writeAdviceMethodCall(spec, adviceBody);
     }
     body.addStatement(
@@ -201,6 +212,10 @@ public class AdviceGeneratorImpl implements AdviceGenerator {
             .setName("addAdvice")
             .setArguments(
                 new NodeList<>(
+                    new FieldAccessExpr()
+                        .setScope(
+                            new TypeExpr(new ClassOrInterfaceType().setName(ADVICE_TYPE_CLASS)))
+                        .setName(type),
                     new StringLiteralExpr(pointCut.getOwner().getInternalName()),
                     new StringLiteralExpr(pointCut.getMethodName()),
                     new StringLiteralExpr(pointCut.getMethodType().getDescriptor()),
@@ -338,12 +353,10 @@ public class AdviceGeneratorImpl implements AdviceGenerator {
       final MethodCallExpr invokeStatic =
           new MethodCallExpr()
               .setScope(new NameExpr("handler"))
-              .setName("method")
-              .addArgument(opCode("INVOKESTATIC"))
+              .setName("advice")
               .addArgument(new StringLiteralExpr(method.getOwner().getInternalName()))
               .addArgument(new StringLiteralExpr(method.getMethodName()))
-              .addArgument(new StringLiteralExpr(method.getMethodType().getDescriptor()))
-              .addArgument(new BooleanLiteralExpr(false));
+              .addArgument(new StringLiteralExpr(method.getMethodType().getDescriptor()));
       body.addStatement(invokeStatic);
     }
     if (requiresCast(advice)) {

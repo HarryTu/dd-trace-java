@@ -12,8 +12,12 @@ import net.bytebuddy.implementation.bytecode.assign.Assigner
 import net.bytebuddy.jar.asm.MethodVisitor
 import net.bytebuddy.jar.asm.Opcodes
 import net.bytebuddy.jar.asm.Type
+import spock.lang.Shared
 
 class IastPostProcessorFactoryTest extends DDSpecification {
+
+  @Shared
+  protected static final IastMetricCollector ORIGINAL_COLLECTOR = IastMetricCollector.INSTANCE
 
   private static final Type COLLECTOR_TYPE = Type.getType(IastMetricCollector)
   private static final Type METRIC_TYPE = Type.getType(IastMetric)
@@ -23,12 +27,21 @@ class IastPostProcessorFactoryTest extends DDSpecification {
     static void exit() {}
   }
 
+  void setup() {
+    IastMetricCollector.register(new IastMetricCollector())
+  }
+
+  void cleanup() {
+    IastMetricCollector.register(ORIGINAL_COLLECTOR)
+  }
+
   void 'test factory for non annotated'() {
     given:
     final method = new MethodDescription.ForLoadedMethod(NonAnnotatedAdvice.getDeclaredMethod('exit'))
 
     when:
-    final result = IastPostProcessorFactory.INSTANCE.make(method, true)
+    final result = IastPostProcessorFactory.INSTANCE.make(
+      method.getDeclaredAnnotations(), method.getReturnType().asErasure(), true)
 
     then:
     result == Advice.PostProcessor.NoOp.INSTANCE
@@ -48,7 +61,8 @@ class IastPostProcessorFactoryTest extends DDSpecification {
     final context = Mock(Implementation.Context)
 
     when:
-    final postProcessor = IastPostProcessorFactory.INSTANCE.make(method, true)
+    final postProcessor = IastPostProcessorFactory.INSTANCE.make(
+      method.getDeclaredAnnotations(), method.getReturnType().asErasure(), true)
 
     then:
     postProcessor != Advice.PostProcessor.NoOp.INSTANCE

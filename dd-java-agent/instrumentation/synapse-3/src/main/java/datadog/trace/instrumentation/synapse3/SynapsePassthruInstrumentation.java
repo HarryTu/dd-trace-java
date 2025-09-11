@@ -7,6 +7,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import java.util.Iterator;
 import java.util.Locale;
@@ -15,9 +16,9 @@ import net.bytebuddy.asm.Advice;
 import org.apache.axis2.context.MessageContext;
 
 /** Helps propagate parent spans over 'passthru' mechanism to synapse-client instrumentation. */
-@AutoService(Instrumenter.class)
-public final class SynapsePassthruInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class SynapsePassthruInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public SynapsePassthruInstrumentation() {
     super("synapse3-client", "synapse3");
@@ -29,8 +30,8 @@ public final class SynapsePassthruInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(final AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(final MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("submit"))
             .and(takesArgument(0, named("org.apache.axis2.context.MessageContext"))),

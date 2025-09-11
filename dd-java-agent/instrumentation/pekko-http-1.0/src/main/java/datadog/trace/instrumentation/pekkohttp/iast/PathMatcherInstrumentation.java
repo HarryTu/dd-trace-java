@@ -9,8 +9,10 @@ import com.google.auto.service.AutoService;
 import datadog.trace.advice.ActiveRequestContext;
 import datadog.trace.advice.RequiresRequestContext;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.gateway.RequestContext;
 import datadog.trace.api.gateway.RequestContextSlot;
+import datadog.trace.api.iast.IastContext;
 import datadog.trace.api.iast.InstrumentationBridge;
 import datadog.trace.api.iast.Source;
 import datadog.trace.api.iast.SourceTypes;
@@ -21,9 +23,9 @@ import net.bytebuddy.asm.Advice;
  * Taints request uri parameters by instrumenting the constructor of {@link
  * org.apache.pekko.http.scaladsl.server.PathMatcher.Matched}.
  */
-@AutoService(Instrumenter.class)
-public class PathMatcherInstrumentation extends Instrumenter.Iast
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class PathMatcherInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public PathMatcherInstrumentation() {
     super("pekko-http");
   }
@@ -34,8 +36,8 @@ public class PathMatcherInstrumentation extends Instrumenter.Iast
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isConstructor()
             .and(takesArguments(3))
             .and(takesArgument(0, named("org.apache.pekko.http.scaladsl.model.Uri$Path")))
@@ -54,23 +56,23 @@ public class PathMatcherInstrumentation extends Instrumenter.Iast
         return;
       }
 
-      PropagationModule module = InstrumentationBridge.PROPAGATION;
-      if (module == null) {
-        return;
-      }
-
       scala.Tuple1 tuple = (scala.Tuple1) extractions;
       Object value = tuple._1();
 
+      PropagationModule module = InstrumentationBridge.PROPAGATION;
+      if (module == null || !(value instanceof String)) {
+        return;
+      }
+      final String stringValue = (String) value;
+
+      final IastContext ctx = reqCtx.getData(RequestContextSlot.IAST);
+
       // in the test, 4 instances of PathMatcher$Match are created, all with the same value
-      if (module.isTainted(value)) {
+      if (module.isTainted(ctx, stringValue)) {
         return;
       }
 
-      if (value instanceof String) {
-        module.taint(
-            reqCtx.getData(RequestContextSlot.IAST), value, SourceTypes.REQUEST_PATH_PARAMETER);
-      }
+      module.taintString(ctx, stringValue, SourceTypes.REQUEST_PATH_PARAMETER);
     }
   }
 }

@@ -6,6 +6,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.InstrumentationContext;
 import java.util.Map;
 import net.bytebuddy.asm.Advice;
@@ -14,9 +15,9 @@ import org.eclipse.jetty.http.Generator;
 import org.eclipse.jetty.server.HttpConnection;
 import org.eclipse.jetty.server.Response;
 
-@AutoService(Instrumenter.class)
-public final class JettyGeneratorInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class JettyGeneratorInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public JettyGeneratorInstrumentation() {
     super("jetty");
@@ -34,8 +35,8 @@ public final class JettyGeneratorInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("setResponse").and(takesArgument(0, int.class)),
         JettyGeneratorInstrumentation.class.getName() + "$SetResponseAdvice");
   }

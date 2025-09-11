@@ -10,6 +10,7 @@ import static net.bytebuddy.matcher.ElementMatchers.isMethod;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import io.undertow.server.HttpServerExchange;
@@ -17,9 +18,9 @@ import io.undertow.servlet.handlers.ServletRequestContext;
 import jakarta.servlet.ServletRequest;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public final class JakartaServletInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class JakartaServletInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public JakartaServletInstrumentation() {
     super("undertow", "undertow-2.2");
@@ -31,8 +32,8 @@ public final class JakartaServletInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(named("dispatchRequest")), getClass().getName() + "$DispatchAdvice");
   }
 
@@ -57,7 +58,7 @@ public final class JakartaServletInstrumentation extends Instrumenter.Tracing
         @Advice.Argument(1) final ServletRequestContext servletRequestContext) {
       AgentScope.Continuation continuation = exchange.getAttachment(DD_UNDERTOW_CONTINUATION);
       if (continuation != null) {
-        AgentSpan undertowSpan = continuation.getSpan();
+        AgentSpan undertowSpan = continuation.span();
         ServletRequest request = servletRequestContext.getServletRequest();
         request.setAttribute(DD_SPAN_ATTRIBUTE, undertowSpan);
         undertowSpan.setSpanName(SERVLET_REQUEST);

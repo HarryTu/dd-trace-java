@@ -6,10 +6,22 @@ import datadog.trace.api.iast.SourceTypes
 import datadog.trace.api.iast.telemetry.IastMetric
 import datadog.trace.api.iast.telemetry.IastMetricCollector
 import groovy.transform.CompileDynamic
+import spock.lang.Shared
 import spock.lang.Specification
 
 @CompileDynamic
 class IastMetricPeriodicActionTest extends Specification {
+
+  @Shared
+  protected static final IastMetricCollector ORIGINAL_COLLECTOR = IastMetricCollector.INSTANCE
+
+  void setup() {
+    IastMetricCollector.register(new IastMetricCollector())
+  }
+
+  void cleanup() {
+    IastMetricCollector.register(ORIGINAL_COLLECTOR)
+  }
 
   void 'test metric'() {
     given:
@@ -34,7 +46,7 @@ class IastMetricPeriodicActionTest extends Specification {
     final service = Mock(TelemetryService)
     final iastMetric = IastMetric.INSTRUMENTED_SOURCE
     final tag = SourceTypes.REQUEST_PARAMETER_VALUE
-    final tagString = SourceTypes.REQUEST_PARAMETER_VALUE_STRING
+    final tagString = SourceTypes.toString(tag)
     final value = 23
 
     when:

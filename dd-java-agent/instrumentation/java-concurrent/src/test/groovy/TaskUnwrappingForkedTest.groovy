@@ -1,20 +1,20 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.bootstrap.instrumentation.api.TaskWrapper
 
 import java.util.concurrent.Callable
 import java.util.concurrent.ForkJoinTask
 import java.util.concurrent.FutureTask
 
-class TaskUnwrappingForkedTest extends AgentTestRunner {
+class TaskUnwrappingForkedTest extends InstrumentationSpecification {
 
   @Override
   protected void configurePreAgent() {
     injectSysConfig("dd.profiling.enabled", "true")
-    injectSysConfig("dd.profiling.experimental.queueing.time.enabled", "true")
+    injectSysConfig("dd.profiling.queueing.time.enabled", "true")
     super.configurePreAgent()
   }
 
-  def "check expected types instrumented and can be unwrapped"() {
+  def "check expected types instrumented and can be unwrapped (#iterationIndex)"() {
     expect:
     task instanceof TaskWrapper
     type.isAssignableFrom(TaskWrapper.getUnwrappedType(task))

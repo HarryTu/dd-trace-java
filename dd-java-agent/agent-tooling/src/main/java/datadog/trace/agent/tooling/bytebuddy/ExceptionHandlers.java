@@ -1,6 +1,7 @@
 package datadog.trace.agent.tooling.bytebuddy;
 
 import datadog.trace.api.InstrumenterConfig;
+import datadog.trace.api.ProductActivation;
 import datadog.trace.bootstrap.ExceptionLogger;
 import net.bytebuddy.ClassFileVersion;
 import net.bytebuddy.asm.Advice.ExceptionHandler;
@@ -24,6 +25,8 @@ public class ExceptionHandlers {
           new StackManipulation() {
             // Pops one Throwable off the stack. Maxes the stack to at least 3.
             private final Size size = new StackManipulation.Size(-1, 3);
+            private final boolean appSecEnabled =
+                InstrumenterConfig.get().getAppSecActivation() != ProductActivation.FULLY_DISABLED;
 
             @Override
             public boolean isValid() {
@@ -38,7 +41,9 @@ public class ExceptionHandlers {
 
               // Writes the following bytecode if exitOnFailure is false:
               //
+              // BlockingExceptionHandler.rethrowIfBlockingException(t);
               // try {
+              //   InstrumentationErrors.incrementErrorCount();
               //   org.slf4j.LoggerFactory.getLogger((Class)ExceptionLogger.class)
               //     .debug("Failed to handle exception in instrumentation for ...", t);
               // } catch (Throwable t2) {
@@ -46,7 +51,9 @@ public class ExceptionHandlers {
               //
               // And the following bytecode if exitOnFailure is true:
               //
+              // BlockingExceptionHandler.rethrowIfBlockingException(t);
               // try {
+              //   InstrumentationErrors.incrementErrorCount();
               //   org.slf4j.LoggerFactory.getLogger((Class)ExceptionLogger.class)
               //     .error("Failed to handle exception in instrumentation for ...", t);
               //   System.exit(1);
@@ -62,10 +69,25 @@ public class ExceptionHandlers {
               final boolean frames =
                   context.getClassFileVersion().isAtLeast(ClassFileVersion.JAVA_V6);
 
-              mv.visitTryCatchBlock(logStart, logEnd, eatException, "java/lang/Throwable");
+              if (appSecEnabled) {
+                // rethrow blocking exceptions
+                // stack: (top) throwable
+                mv.visitMethodInsn(
+                    Opcodes.INVOKESTATIC,
+                    "datadog/trace/bootstrap/blocking/BlockingExceptionHandler",
+                    "rethrowIfBlockingException",
+                    "(Ljava/lang/Throwable;)Ljava/lang/Throwable;");
+              }
 
-              // stack: (top) throwable
+              mv.visitTryCatchBlock(logStart, logEnd, eatException, "java/lang/Throwable");
               mv.visitLabel(logStart);
+              // invoke incrementAndGet on our exception counter
+              mv.visitMethodInsn(
+                  Opcodes.INVOKESTATIC,
+                  "datadog/trace/bootstrap/InstrumentationErrors",
+                  "incrementErrorCount",
+                  "()V");
+              // stack: (top) throwable
               mv.visitLdcInsn(Type.getType("L" + HANDLER_NAME + ";"));
               mv.visitMethodInsn(
                   Opcodes.INVOKESTATIC,
@@ -82,6 +104,7 @@ public class ExceptionHandlers {
                   logMethod,
                   "(Ljava/lang/String;Ljava/lang/Throwable;)V",
                   true);
+
               if (exitOnFailure) {
                 mv.visitInsn(Opcodes.ICONST_1);
                 mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "exit", "(I)V", false);

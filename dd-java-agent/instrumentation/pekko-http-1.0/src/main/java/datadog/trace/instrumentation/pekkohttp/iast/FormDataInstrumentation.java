@@ -9,6 +9,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import org.apache.pekko.http.scaladsl.model.FormData;
 import org.apache.pekko.http.scaladsl.model.Uri;
 
@@ -17,9 +18,9 @@ import org.apache.pekko.http.scaladsl.model.Uri;
  * through the unmarshaller tainting mechanism. See {@link MarshallingDirectivesInstrumentation} and
  * {@link UnmarshallerInstrumentation}.
  */
-@AutoService(Instrumenter.class)
-public class FormDataInstrumentation extends Instrumenter.Iast
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class FormDataInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public FormDataInstrumentation() {
     super("pekko-http");
   }
@@ -30,12 +31,12 @@ public class FormDataInstrumentation extends Instrumenter.Iast
   }
 
   /**
-   * @param transformation
+   * @param transformer
    * @see UriInstrumentation.TaintQueryAdvice
    */
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(not(isStatic()))
             .and(named("fields"))

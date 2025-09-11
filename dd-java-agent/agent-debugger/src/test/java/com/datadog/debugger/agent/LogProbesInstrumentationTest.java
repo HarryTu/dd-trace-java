@@ -4,15 +4,18 @@ import static com.datadog.debugger.util.LogProbeTestHelper.parseTemplate;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static utils.InstrumentationTestHelper.compileAndLoadClass;
+import static utils.InstrumentationTestHelper.getLineForLineProbe;
 
 import com.datadog.debugger.el.DSL;
 import com.datadog.debugger.el.ProbeCondition;
 import com.datadog.debugger.probe.LogProbe;
 import com.datadog.debugger.sink.ProbeStatusSink;
 import com.datadog.debugger.sink.Snapshot;
+import com.datadog.debugger.util.TestSnapshotListener;
 import datadog.trace.api.Config;
 import datadog.trace.bootstrap.debugger.DebuggerContext;
 import datadog.trace.bootstrap.debugger.MethodLocation;
@@ -23,7 +26,6 @@ import java.io.IOException;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
 import java.net.URISyntaxException;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import net.bytebuddy.agent.ByteBuddyAgent;
@@ -37,6 +39,10 @@ public class LogProbesInstrumentationTest {
   private static final ProbeId LOG_ID = new ProbeId("beae1807-f3b0-4ea8-a74f-826790c5e6f8", 0);
   private static final ProbeId LOG_ID1 = new ProbeId("beae1807-f3b0-4ea8-a74f-826790c5e6f8", 0);
   private static final ProbeId LOG_ID2 = new ProbeId("beae1807-f3b0-4ea8-a74f-826790c5e6f9", 0);
+  private static final ProbeId LINE_PROBE_ID1 =
+      new ProbeId("beae1817-f3b0-4ea8-a74f-000000000001", 0);
+  private static final ProbeId LINE_PROBE_ID2 =
+      new ProbeId("beae1817-f3b0-4ea8-a74f-000000000002", 0);
   private static final String SERVICE_NAME = "service-name";
   private static final String STR_8K =
       "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
@@ -55,21 +61,22 @@ public class LogProbesInstrumentationTest {
   @Test
   public void methodPlainLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe("this is log line", CLASS_NAME, "main", "int (java.lang.String)");
+    TestSnapshotListener listener =
+        installMethodProbe("this is log line", CLASS_NAME, "main", "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     Assertions.assertEquals(3, result);
     Snapshot snapshot = assertOneSnapshot(listener);
     assertCapturesNull(snapshot);
+    assertTrue(snapshot.getStack().isEmpty());
     assertEquals("this is log line", snapshot.getMessage());
   }
 
   @Test
   public void methodLargePlainLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe(STR_8K + "123", CLASS_NAME, "main", "int (java.lang.String)");
+    TestSnapshotListener listener =
+        installMethodProbe(STR_8K + "123", CLASS_NAME, "main", "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     Assertions.assertEquals(3, result);
@@ -81,8 +88,8 @@ public class LogProbesInstrumentationTest {
   @Test
   public void methodTemplateArgLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe(
+    TestSnapshotListener listener =
+        installMethodProbe(
             "this is log line with arg={arg}", CLASS_NAME, "main", "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
@@ -95,8 +102,8 @@ public class LogProbesInstrumentationTest {
   @Test
   public void methodTemplateArgLogLarge() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe(STR_8K + "{arg}", CLASS_NAME, "main", "int (java.lang.String)");
+    TestSnapshotListener listener =
+        installMethodProbe(STR_8K + "{arg}", CLASS_NAME, "main", "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     Assertions.assertEquals(3, result);
@@ -108,8 +115,8 @@ public class LogProbesInstrumentationTest {
   @Test
   public void methodTemplateLargeArgLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe(
+    TestSnapshotListener listener =
+        installMethodProbe(
             "this is log line with arg={arg}", CLASS_NAME, "main", "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", STR_8K).get();
@@ -125,8 +132,8 @@ public class LogProbesInstrumentationTest {
   @Test
   public void methodTemplateTooLargeArgLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe("{arg}", CLASS_NAME, "main", "int (java.lang.String)");
+    TestSnapshotListener listener =
+        installMethodProbe("{arg}", CLASS_NAME, "main", "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", STR_8K + "123").get();
     Assertions.assertEquals(3, result);
@@ -147,7 +154,7 @@ public class LogProbesInstrumentationTest {
                 "int (java.lang.String)")
             .evaluateAt(MethodLocation.EXIT)
             .build();
-    DebuggerTransformerTest.TestSnapshotListener listener = installProbes(CLASS_NAME, probe);
+    TestSnapshotListener listener = installProbes(probe);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     Assertions.assertEquals(3, result);
@@ -160,21 +167,20 @@ public class LogProbesInstrumentationTest {
   public void mergedMethodTemplateArgLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
     LogProbe logProbe1 =
-        createProbe(
+        createMethodProbe(
             LOG_ID1,
             "this is log line #1 with arg={arg}",
             CLASS_NAME,
             "main",
             "int (java.lang.String)");
     LogProbe logProbe2 =
-        createProbe(
+        createMethodProbe(
             LOG_ID2,
             "this is log line #2 with arg={arg}",
             CLASS_NAME,
             "main",
             "int (java.lang.String)");
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installProbes(CLASS_NAME, logProbe1, logProbe2);
+    TestSnapshotListener listener = installProbes(logProbe1, logProbe2);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     Assertions.assertEquals(3, result);
@@ -238,8 +244,7 @@ public class LogProbesInstrumentationTest {
                 "int (java.lang.String)")
             .captureSnapshot(additionalCapture)
             .build();
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installProbes(CLASS_NAME, logProbe1, logProbe2);
+    TestSnapshotListener listener = installProbes(logProbe1, logProbe2);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     Assertions.assertEquals(3, result);
@@ -250,12 +255,13 @@ public class LogProbesInstrumentationTest {
   @Test
   public void linePlainLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe("this is log line", CLASS_NAME, null, null, "9");
+    int line = getLineForLineProbe(CLASS_NAME, LINE_PROBE_ID2);
+    TestSnapshotListener listener =
+        installLineProbe(LINE_PROBE_ID2, "this is log line", CLASS_NAME, line);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     Assertions.assertEquals(3, result);
-    Snapshot snapshot = assertOneSnapshot(listener);
+    Snapshot snapshot = assertOneSnapshot(LINE_PROBE_ID2, listener);
     assertCapturesNull(snapshot);
     assertEquals("this is log line", snapshot.getMessage());
   }
@@ -263,12 +269,14 @@ public class LogProbesInstrumentationTest {
   @Test
   public void lineTemplateVarLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe("this is log line with local var={var1}", CLASS_NAME, null, null, "9");
+    int line = getLineForLineProbe(CLASS_NAME, LINE_PROBE_ID2);
+    TestSnapshotListener listener =
+        installLineProbe(
+            LINE_PROBE_ID2, "this is log line with local var={var1}", CLASS_NAME, line);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     Assertions.assertEquals(3, result);
-    Snapshot snapshot = assertOneSnapshot(listener);
+    Snapshot snapshot = assertOneSnapshot(LINE_PROBE_ID2, listener);
     assertCapturesNull(snapshot);
     assertEquals("this is log line with local var=3", snapshot.getMessage());
   }
@@ -276,17 +284,17 @@ public class LogProbesInstrumentationTest {
   @Test
   public void lineTemplateMultipleVarLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot04";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe(
+    int line = getLineForLineProbe(CLASS_NAME, LINE_PROBE_ID1);
+    TestSnapshotListener listener =
+        installLineProbe(
+            LINE_PROBE_ID1,
             "nullObject={nullObject} sdata={sdata.strValue} cdata={cdata.s1.intValue}",
             CLASS_NAME,
-            null,
-            null,
-            "25");
+            line);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     Assertions.assertEquals(143, result);
-    Snapshot snapshot = assertOneSnapshot(listener);
+    Snapshot snapshot = assertOneSnapshot(LINE_PROBE_ID1, listener);
     assertCapturesNull(snapshot);
     assertEquals("nullObject=null sdata=foo cdata=101", snapshot.getMessage());
   }
@@ -294,17 +302,17 @@ public class LogProbesInstrumentationTest {
   @Test
   public void lineTemplateEscapeLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe(
+    int line = getLineForLineProbe(CLASS_NAME, LINE_PROBE_ID2);
+    TestSnapshotListener listener =
+        installLineProbe(
+            LINE_PROBE_ID2,
             "this is log line with {{curly braces}} and with local var={{{var1}}}",
             CLASS_NAME,
-            null,
-            null,
-            "9");
+            line);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     Assertions.assertEquals(3, result);
-    Snapshot snapshot = assertOneSnapshot(listener);
+    Snapshot snapshot = assertOneSnapshot(LINE_PROBE_ID2, listener);
     assertCapturesNull(snapshot);
     assertEquals(
         "this is log line with {curly braces} and with local var={3}", snapshot.getMessage());
@@ -313,12 +321,14 @@ public class LogProbesInstrumentationTest {
   @Test
   public void lineTemplateInvalidVarLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe("this is log line with local var={var42}", CLASS_NAME, null, null, "9");
+    int line = getLineForLineProbe(CLASS_NAME, LINE_PROBE_ID2);
+    TestSnapshotListener listener =
+        installLineProbe(
+            LINE_PROBE_ID2, "this is log line with local var={var42}", CLASS_NAME, line);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     Assertions.assertEquals(3, result);
-    Snapshot snapshot = assertOneSnapshot(listener);
+    Snapshot snapshot = assertOneSnapshot(LINE_PROBE_ID2, listener);
     assertCapturesNull(snapshot);
     assertEquals(
         "this is log line with local var={Cannot find symbol: var42}", snapshot.getMessage());
@@ -330,34 +340,37 @@ public class LogProbesInstrumentationTest {
   @Test
   public void lineTemplateNullFieldLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot04";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe(
-            "this is log line with field={nullObject.intValue}", CLASS_NAME, null, null, "25");
+    int line = getLineForLineProbe(CLASS_NAME, LINE_PROBE_ID1);
+    TestSnapshotListener listener =
+        installLineProbe(
+            LINE_PROBE_ID1, "this is log line with field={nullObject.intValue}", CLASS_NAME, line);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "").get();
     Assertions.assertEquals(143, result);
-    Snapshot snapshot = assertOneSnapshot(listener);
+    Snapshot snapshot = assertOneSnapshot(LINE_PROBE_ID1, listener);
     assertCapturesNull(snapshot);
     assertEquals(
-        "this is log line with field={Cannot dereference to field: intValue}",
-        snapshot.getMessage());
+        "this is log line with field={Cannot dereference field: intValue}", snapshot.getMessage());
     assertEquals(1, snapshot.getEvaluationErrors().size());
     assertEquals("nullObject.intValue", snapshot.getEvaluationErrors().get(0).getExpr());
     assertEquals(
-        "Cannot dereference to field: intValue",
-        snapshot.getEvaluationErrors().get(0).getMessage());
+        "Cannot dereference field: intValue", snapshot.getEvaluationErrors().get(0).getMessage());
   }
 
   @Test
   public void lineTemplateIndexOutOfBoundsLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot06";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe(
-            "this is log line with element of list={strList[10]}", CLASS_NAME, null, null, "24");
+    int line = getLineForLineProbe(CLASS_NAME, LINE_PROBE_ID1);
+    TestSnapshotListener listener =
+        installLineProbe(
+            LINE_PROBE_ID1,
+            "this is log line with element of list={strList[10]}",
+            CLASS_NAME,
+            line);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "f").get();
     Assertions.assertEquals(42, result);
-    Snapshot snapshot = assertOneSnapshot(listener);
+    Snapshot snapshot = assertOneSnapshot(LINE_PROBE_ID1, listener);
     assertEquals(
         "this is log line with element of list={index[10] out of bounds: [0-3]}",
         snapshot.getMessage());
@@ -370,14 +383,15 @@ public class LogProbesInstrumentationTest {
   @Test
   public void lineTemplateThisLog() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot06";
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installSingleProbe("this is log line for this={this}", CLASS_NAME, null, null, "24");
+    int line = getLineForLineProbe(CLASS_NAME, LINE_PROBE_ID1);
+    TestSnapshotListener listener =
+        installLineProbe(LINE_PROBE_ID1, "this is log line for this={this}", CLASS_NAME, line);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "f").get();
     Assertions.assertEquals(42, result);
-    Snapshot snapshot = assertOneSnapshot(listener);
+    Snapshot snapshot = assertOneSnapshot(LINE_PROBE_ID1, listener);
     assertEquals(
-        "this is log line for this={STATIC_STR=strStatic, intValue=48, doubleValue=3.14, strValue=done, strList=...}, ...",
+        "this is log line for this={intValue=48, doubleValue=3.14, strValue=done, strList=..., strMap=...}",
         snapshot.getMessage());
   }
 
@@ -393,7 +407,7 @@ public class LogProbesInstrumentationTest {
             .template(LOG_TEMPLATE, parseTemplate(LOG_TEMPLATE))
             .captureSnapshot(true)
             .build();
-    DebuggerTransformerTest.TestSnapshotListener listener = installProbes(CLASS_NAME, logProbes);
+    TestSnapshotListener listener = installProbes(logProbes);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "5").get();
     Assertions.assertEquals(3, result);
@@ -403,7 +417,7 @@ public class LogProbesInstrumentationTest {
     Assertions.assertEquals(2, snapshot.getCaptures().getEntry().getArguments().size());
     Assertions.assertEquals(1, snapshot.getEvaluationErrors().size());
     Assertions.assertEquals(
-        "Cannot find symbol: typoArg", snapshot.getEvaluationErrors().get(0).getMessage());
+        "Cannot dereference field: typoArg", snapshot.getEvaluationErrors().get(0).getMessage());
   }
 
   @Test
@@ -490,8 +504,7 @@ public class LogProbesInstrumentationTest {
                 LOG_ID2, additionalTemplate, CLASS_NAME, "main", "int (java.lang.String)")
             .captureSnapshot(true)
             .build();
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        installProbes(CLASS_NAME, logProbe1, logProbe2);
+    TestSnapshotListener listener = installProbes(logProbe1, logProbe2);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     Assertions.assertEquals(3, result);
@@ -499,86 +512,88 @@ public class LogProbesInstrumentationTest {
     return listener.snapshots;
   }
 
-  private DebuggerTransformerTest.TestSnapshotListener installSingleProbe(
-      String template, String typeName, String methodName, String signature, String... lines) {
-    LogProbe logProbe = createProbe(LOG_ID, template, typeName, methodName, signature, lines);
-    return installProbes(
-        typeName, Configuration.builder().setService(SERVICE_NAME).add(logProbe).build());
+  private TestSnapshotListener installMethodProbe(
+      String template, String typeName, String methodName, String signature) {
+    LogProbe logProbe = createMethodProbe(LOG_ID, template, typeName, methodName, signature);
+    return installProbes(Configuration.builder().setService(SERVICE_NAME).add(logProbe).build());
   }
 
-  private DebuggerTransformerTest.TestSnapshotListener installProbes(
-      String expectedClassName, LogProbe... logProbes) {
-    return installProbes(
-        expectedClassName,
-        Configuration.builder()
-            .setService(SERVICE_NAME)
-            .addLogProbes(Arrays.asList(logProbes))
-            .build());
+  private TestSnapshotListener installLineProbe(
+      ProbeId probeId, String template, String sourceFile, int line) {
+    LogProbe logProbe = createLineProbe(probeId, template, sourceFile, line);
+    return installProbes(Configuration.builder().setService(SERVICE_NAME).add(logProbe).build());
+  }
+
+  private TestSnapshotListener installProbes(LogProbe... logProbes) {
+    return installProbes(Configuration.builder().setService(SERVICE_NAME).add(logProbes).build());
   }
 
   private static LogProbe.Builder createProbeBuilder(
-      ProbeId id,
-      String template,
-      String typeName,
-      String methodName,
-      String signature,
-      String... lines) {
+      ProbeId id, String template, String typeName, String methodName, String signature) {
     return LogProbe.builder()
         .language(LANGUAGE)
         .probeId(id)
-        .where(typeName, methodName, signature, lines)
+        .where(typeName, methodName, signature)
         .template(template, parseTemplate(template));
   }
 
-  private static LogProbe createProbe(
-      ProbeId id,
-      String template,
-      String typeName,
-      String methodName,
-      String signature,
-      String... lines) {
-    return createProbeBuilder(id, template, typeName, methodName, signature, lines).build();
+  private static LogProbe.Builder createProbeBuilder(
+      ProbeId id, String template, String sourceFile, int line) {
+    return LogProbe.builder()
+        .language(LANGUAGE)
+        .probeId(id)
+        .where(sourceFile, line)
+        .template(template, parseTemplate(template));
   }
 
-  private DebuggerTransformerTest.TestSnapshotListener installProbes(
-      String expectedClassName, Configuration configuration) {
+  private static LogProbe createMethodProbe(
+      ProbeId id, String template, String typeName, String methodName, String signature) {
+    return createProbeBuilder(id, template, typeName, methodName, signature).build();
+  }
+
+  private static LogProbe createLineProbe(
+      ProbeId id, String template, String sourceFile, int line) {
+    return createProbeBuilder(id, template, sourceFile, line).build();
+  }
+
+  private TestSnapshotListener installProbes(Configuration configuration) {
     Config config = mock(Config.class);
-    when(config.isDebuggerEnabled()).thenReturn(true);
-    when(config.isDebuggerClassFileDumpEnabled()).thenReturn(true);
+    when(config.isDynamicInstrumentationEnabled()).thenReturn(true);
+    when(config.isDynamicInstrumentationClassFileDumpEnabled()).thenReturn(true);
     when(config.getFinalDebuggerSnapshotUrl())
         .thenReturn("http://localhost:8126/debugger/v1/input");
     when(config.getFinalDebuggerSymDBUrl()).thenReturn("http://localhost:8126/symdb/v1/input");
-    when(config.getDebuggerUploadBatchSize()).thenReturn(100);
+    when(config.getDynamicInstrumentationUploadBatchSize()).thenReturn(100);
+    DebuggerContext.ProbeResolver resolver =
+        (encodedProbeId) -> resolver(encodedProbeId, configuration.getLogProbes());
     currentTransformer = new DebuggerTransformer(config, configuration);
     instr.addTransformer(currentTransformer);
-    DebuggerTransformerTest.TestSnapshotListener listener =
-        new DebuggerTransformerTest.TestSnapshotListener(config, mock(ProbeStatusSink.class));
+    TestSnapshotListener listener = new TestSnapshotListener(config, mock(ProbeStatusSink.class));
     DebuggerAgentHelper.injectSink(listener);
-    DebuggerContext.init(
-        (id, callingClass) ->
-            resolver(id, callingClass, expectedClassName, configuration.getLogProbes()),
-        null);
+    DebuggerContext.initProbeResolver(resolver);
     DebuggerContext.initClassFilter(new DenyListHelper(null));
     DebuggerContext.initValueSerializer(new JsonSnapshotSerializer());
     return listener;
   }
 
-  private ProbeImplementation resolver(
-      String id, Class<?> callingClass, String expectedClassName, Collection<LogProbe> logProbes) {
-    Assertions.assertEquals(expectedClassName, callingClass.getName());
+  private ProbeImplementation resolver(String encodedProbeId, Collection<LogProbe> logProbes) {
     for (LogProbe probe : logProbes) {
-      if (probe.getId().equals(id)) {
+      if (probe.getProbeId().getEncodedId().equals(encodedProbeId)) {
         return probe;
       }
     }
     return null;
   }
 
-  private Snapshot assertOneSnapshot(DebuggerTransformerTest.TestSnapshotListener listener) {
+  private Snapshot assertOneSnapshot(TestSnapshotListener listener) {
+    return assertOneSnapshot(LOG_ID, listener);
+  }
+
+  private Snapshot assertOneSnapshot(ProbeId probeId, TestSnapshotListener listener) {
     Assertions.assertFalse(listener.skipped, "Snapshot skipped because " + listener.cause);
     Assertions.assertEquals(1, listener.snapshots.size());
     Snapshot snapshot = listener.snapshots.get(0);
-    Assertions.assertEquals(LOG_ID.getId(), snapshot.getProbe().getId());
+    Assertions.assertEquals(probeId.getId(), snapshot.getProbe().getId());
     return snapshot;
   }
 

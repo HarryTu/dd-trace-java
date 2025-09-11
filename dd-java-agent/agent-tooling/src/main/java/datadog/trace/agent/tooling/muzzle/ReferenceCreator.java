@@ -3,7 +3,9 @@ package datadog.trace.agent.tooling.muzzle;
 import static datadog.trace.util.Strings.getClassName;
 import static datadog.trace.util.Strings.getResourceName;
 
+import datadog.trace.agent.tooling.AdviceShader;
 import datadog.trace.bootstrap.Constants;
+import de.thetaphi.forbiddenapis.SuppressForbidden;
 import java.io.InputStream;
 import java.util.ArrayDeque;
 import java.util.HashSet;
@@ -41,12 +43,15 @@ public class ReferenceCreator extends ClassVisitor {
    * Generate all references reachable from a given class.
    *
    * @param entryPointClassName Starting point for generating references.
+   * @param adviceShader Optional shading to apply to the advice.
    * @param loader Classloader used to read class bytes.
    * @return Map of [referenceClassName -> Reference]
    * @throws IllegalStateException if class is not found or unable to be loaded.
    */
+  @SuppressForbidden
   public static Map<String, Reference> createReferencesFrom(
-      final String entryPointClassName, final ClassLoader loader) throws IllegalStateException {
+      final String entryPointClassName, final AdviceShader adviceShader, final ClassLoader loader)
+      throws IllegalStateException {
     final Set<String> visitedSources = new HashSet<>();
     final Map<String, Reference> references = new LinkedHashMap<>();
 
@@ -64,7 +69,11 @@ public class ReferenceCreator extends ClassVisitor {
         }
         final ReferenceCreator cv = new ReferenceCreator(null);
         final ClassReader reader = new ClassReader(in);
-        reader.accept(cv, ClassReader.SKIP_FRAMES);
+        if (null == adviceShader) {
+          reader.accept(cv, ClassReader.SKIP_FRAMES);
+        } else {
+          reader.accept(adviceShader.shadeClass(cv), ClassReader.SKIP_FRAMES);
+        }
 
         final Map<String, Reference> instrumentationReferences = cv.getReferences();
         for (final Map.Entry<String, Reference> entry : instrumentationReferences.entrySet()) {
@@ -86,6 +95,11 @@ public class ReferenceCreator extends ClassVisitor {
       }
     }
     return references;
+  }
+
+  public static Map<String, Reference> createReferencesFrom(
+      final String entryPointClassName, final ClassLoader loader) {
+    return createReferencesFrom(entryPointClassName, null, loader);
   }
 
   private static boolean samePackage(String from, String to) {
@@ -378,6 +392,9 @@ public class ReferenceCreator extends ClassVisitor {
 
     @Override
     public void visitTypeInsn(final int opcode, final String stype) {
+      if (ignoreReference(stype)) {
+        return;
+      }
       Type type = underlyingType(Type.getObjectType(stype));
 
       if (ignoreReference(type.getInternalName())) {

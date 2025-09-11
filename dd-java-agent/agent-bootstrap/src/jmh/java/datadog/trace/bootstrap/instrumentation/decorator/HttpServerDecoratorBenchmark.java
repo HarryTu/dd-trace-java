@@ -1,8 +1,12 @@
 package datadog.trace.bootstrap.instrumentation.decorator;
 
+import static datadog.context.Context.root;
+import static datadog.trace.bootstrap.instrumentation.api.AgentSpan.fromContext;
+import static java.util.Collections.emptyMap;
 import static java.util.concurrent.TimeUnit.MICROSECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
+import datadog.context.Context;
 import datadog.trace.api.GlobalTracer;
 import datadog.trace.bootstrap.instrumentation.api.AgentPropagation;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
@@ -14,7 +18,6 @@ import datadog.trace.common.writer.Writer;
 import datadog.trace.core.CoreTracer;
 import datadog.trace.core.DDSpan;
 import java.net.URI;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -56,12 +59,13 @@ public class HttpServerDecoratorBenchmark {
             .build();
     GlobalTracer.forceRegister(tracer);
     decorator = new BenchmarkHttpServerDecorator();
-    span = decorator.startSpan(Collections.emptyMap(), null);
+    Context context = decorator.startSpan(emptyMap(), root());
+    span = fromContext(context);
   }
 
   @Benchmark
   public AgentSpan onRequest() {
-    return decorator.onRequest(span, null, request, null);
+    return decorator.onRequest(span, null, request, root());
   }
 
   public static class Request {
@@ -97,7 +101,7 @@ public class HttpServerDecoratorBenchmark {
 
     @Override
     protected String[] instrumentationNames() {
-      return new String[0];
+      return new String[] {"benchmark"};
     }
 
     @Override

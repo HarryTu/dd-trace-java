@@ -1,7 +1,8 @@
 package datadog.trace.instrumentation.synapse3;
 
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeScope;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.captureActiveSpan;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.noopContinuation;
 import static datadog.trace.instrumentation.synapse3.SynapseServerDecorator.DECORATE;
 import static datadog.trace.instrumentation.synapse3.SynapseServerDecorator.SYNAPSE_CONTINUATION_KEY;
 import static datadog.trace.instrumentation.synapse3.SynapseServerDecorator.SYNAPSE_SPAN_KEY;
@@ -12,15 +13,16 @@ import static net.bytebuddy.matcher.ElementMatchers.takesNoArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import net.bytebuddy.asm.Advice;
 import org.apache.http.HttpResponse;
 import org.apache.synapse.transport.passthru.SourceRequest;
 
-@AutoService(Instrumenter.class)
-public final class SynapseServerWorkerInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class SynapseServerWorkerInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public SynapseServerWorkerInstrumentation() {
     super("synapse3-server", "synapse3");
@@ -42,12 +44,12 @@ public final class SynapseServerWorkerInstrumentation extends Instrumenter.Traci
   }
 
   @Override
-  public void adviceTransformations(final AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(final MethodTransformer transformer) {
+    transformer.applyAdvice(
         isConstructor()
             .and(takesArgument(0, named("org.apache.synapse.transport.passthru.SourceRequest"))),
         getClass().getName() + "$NewServerWorkerAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod().and(named("run")).and(takesNoArguments()),
         getClass().getName() + "$ServerWorkerResponseAdvice");
   }
@@ -55,12 +57,9 @@ public final class SynapseServerWorkerInstrumentation extends Instrumenter.Traci
   public static final class NewServerWorkerAdvice {
     @Advice.OnMethodEnter(suppress = Throwable.class)
     public static void createWorker(@Advice.Argument(0) final SourceRequest request) {
-      AgentScope scope = activeScope();
-      if (null != scope) {
-        request
-            .getConnection()
-            .getContext()
-            .setAttribute(SYNAPSE_CONTINUATION_KEY, scope.capture());
+      AgentScope.Continuation continuation = captureActiveSpan();
+      if (continuation != noopContinuation()) {
+        request.getConnection().getContext().setAttribute(SYNAPSE_CONTINUATION_KEY, continuation);
       }
     }
   }

@@ -5,6 +5,7 @@ import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.nameSta
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeSpan;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.noopScope;
 import static datadog.trace.instrumentation.netty40.AttributeKeys.SPAN_ATTRIBUTE_KEY;
 import static datadog.trace.instrumentation.netty40.NettyChannelPipelineInstrumentation.ADDITIONAL_INSTRUMENTATION_NAMES;
 import static datadog.trace.instrumentation.netty40.NettyChannelPipelineInstrumentation.INSTRUMENTATION_NAME;
@@ -13,9 +14,9 @@ import static net.bytebuddy.matcher.ElementMatchers.isPublic;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
-import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import datadog.trace.instrumentation.netty40.client.NettyHttpClientDecorator;
 import datadog.trace.instrumentation.netty40.server.NettyHttpServerDecorator;
 import io.netty.channel.ChannelHandlerContext;
@@ -23,9 +24,9 @@ import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public class NettyChannelHandlerContextInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class NettyChannelHandlerContextInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   public NettyChannelHandlerContextInstrumentation() {
     super(INSTRUMENTATION_NAME, ADDITIONAL_INSTRUMENTATION_NAMES);
@@ -58,8 +59,8 @@ public class NettyChannelHandlerContextInstrumentation extends Instrumenter.Trac
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         // this may be overly aggressive:
         isMethod().and(nameStartsWith("fire")).and(isPublic()),
         NettyChannelHandlerContextInstrumentation.class.getName() + "$FireAdvice");
@@ -71,7 +72,7 @@ public class NettyChannelHandlerContextInstrumentation extends Instrumenter.Trac
       final AgentSpan channelSpan = ctx.channel().attr(SPAN_ATTRIBUTE_KEY).get();
       if (channelSpan == null || channelSpan == activeSpan()) {
         // don't modify the scope
-        return AgentTracer.NoopAgentScope.INSTANCE;
+        return noopScope();
       }
       return activateSpan(channelSpan);
     }

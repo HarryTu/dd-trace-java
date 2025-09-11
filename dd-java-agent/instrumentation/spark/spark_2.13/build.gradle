@@ -10,14 +10,20 @@ muzzle {
   pass {
     group = "org.apache.spark"
     module = "spark-sql_$scalaVersion"
-    versions = "[$sparkVersion,)"
-    assertInverse = true
+    versions = "[$sparkVersion,4.0.0)"
+  }
+  pass {
+    group = "org.apache.spark"
+    module = "spark-sql_$scalaVersion"
+    versions = "[4.0.0,)"
+    javaVersion = 17
   }
 }
 
 apply from: "$rootDir/gradle/java.gradle"
 
 addTestSuiteForDir('latestDepTest', 'test')
+addTestSuite('test_spark32')
 
 ext {
   // Hadoop does not behave correctly with OpenJ9 https://issues.apache.org/jira/browse/HADOOP-18174
@@ -27,7 +33,9 @@ ext {
   // Spark does not support Java > 11 until 3.3.0 https://issues.apache.org/jira/browse/SPARK-33772
   maxJavaVersionForTests = JavaVersion.VERSION_11
 }
-
+configurations.all {
+  resolutionStrategy.deactivateDependencyLocking()
+}
 dependencies {
   implementation project(':dd-java-agent:instrumentation:spark')
 
@@ -39,7 +47,16 @@ dependencies {
   testImplementation group: 'org.apache.spark', name: "spark-sql_$scalaVersion", version: "$sparkVersion"
   testImplementation group: 'org.apache.spark', name: "spark-yarn_$scalaVersion", version: "$sparkVersion"
 
-  latestDepTestImplementation group: 'org.apache.spark', name: "spark-core_$scalaVersion", version: '+'
-  latestDepTestImplementation group: 'org.apache.spark', name: "spark-sql_$scalaVersion", version: '+'
-  latestDepTestImplementation group: 'org.apache.spark', name: "spark-yarn_$scalaVersion", version: '+'
+  test_spark32Implementation group: 'org.apache.spark', name: "spark-core_$scalaVersion", version: "3.2.4"
+  test_spark32Implementation group: 'org.apache.spark', name: "spark-sql_$scalaVersion", version: "3.2.4"
+  test_spark32Implementation group: 'org.apache.spark', name: "spark-yarn_$scalaVersion", version: "3.2.4"
+
+  // FIXME: Currently not working on Spark 4.0.0 preview releases.
+  latestDepTestImplementation group: 'org.apache.spark', name: "spark-core_$scalaVersion", version: '3.+'
+  latestDepTestImplementation group: 'org.apache.spark', name: "spark-sql_$scalaVersion", version: '3.+'
+  latestDepTestImplementation group: 'org.apache.spark', name: "spark-yarn_$scalaVersion", version: '3.+'
+}
+
+tasks.named("test").configure {
+  dependsOn "test_spark32"
 }

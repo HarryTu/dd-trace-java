@@ -8,10 +8,12 @@ public enum RequestType {
   APP_HEARTBEAT("app-heartbeat"),
   APP_EXTENDED_HEARTBEAT("app-extended-heartbeat"),
   APP_CLOSING("app-closing"),
+  APP_PRODUCT_CHANGE("app-product-change"),
   GENERATE_METRICS("generate-metrics"),
   LOGS("logs"),
   DISTRIBUTIONS("distributions"),
-  MESSAGE_BATCH("message-batch");
+  MESSAGE_BATCH("message-batch"),
+  APP_ENDPOINTS("app-endpoints");
 
   private final String value;
 

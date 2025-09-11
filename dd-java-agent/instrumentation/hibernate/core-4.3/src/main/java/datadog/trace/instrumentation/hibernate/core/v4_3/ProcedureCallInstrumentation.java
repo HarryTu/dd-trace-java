@@ -8,6 +8,7 @@ import static net.bytebuddy.matcher.ElementMatchers.isMethod;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.ContextStore;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.instrumentation.hibernate.SessionMethodUtils;
@@ -18,9 +19,9 @@ import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 import org.hibernate.procedure.ProcedureCall;
 
-@AutoService(Instrumenter.class)
-public class ProcedureCallInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.CanShortcutTypeMatching {
+@AutoService(InstrumenterModule.class)
+public class ProcedureCallInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.CanShortcutTypeMatching, Instrumenter.HasMethodAdvice {
 
   public ProcedureCallInstrumentation() {
     super("hibernate", "hibernate-core");
@@ -61,8 +62,8 @@ public class ProcedureCallInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(named("getOutputs")),
         ProcedureCallInstrumentation.class.getName() + "$ProcedureCallMethodAdvice");
   }

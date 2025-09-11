@@ -1,6 +1,6 @@
 // The shadowJar of this project will be injected into the JVM's bootstrap classloader
 plugins {
-  id "com.github.johnrengelman.shadow"
+  id 'com.gradleup.shadow'
   id 'me.champeau.jmh'
 }
 
@@ -21,7 +21,10 @@ dependencies {
   api project(':internal-api')
   api project(':internal-api:internal-api-9')
   api project(':dd-java-agent:agent-logging')
-  api deps.slf4j
+  api project(':dd-java-agent:agent-debugger:debugger-bootstrap')
+  api project(':components:environment')
+  api project(':components:json')
+  api libs.slf4j
   // ^ Generally a bad idea for libraries, but we're shadowing.
 
   testImplementation project(':dd-java-agent:testing')
@@ -60,6 +63,14 @@ idea {
 }
 
 jmh {
-  jmhVersion = '1.32'
+  jmhVersion = libs.versions.jmh.get()
   duplicateClassesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+project.afterEvaluate {
+  tasks.withType(Test).configureEach {
+    if (javaLauncher.get().metadata.languageVersion.asInt() >= 16) {
+      jvmArgs += ['--add-opens', 'java.base/java.net=ALL-UNNAMED'] // for HostNameResolverForkedTest
+    }
+  }
 }

@@ -1,7 +1,7 @@
 package datadog.trace.bootstrap.instrumentation.decorator.http
 
 import datadog.trace.api.interceptor.MutableSpan
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext
 import spock.lang.Specification
 
 class ClientIpAddressResolverSpecification extends Specification {
@@ -9,7 +9,7 @@ class ClientIpAddressResolverSpecification extends Specification {
   void 'test with custom header value=#headerValue'() {
     setup:
     MutableSpan span = Stub()
-    def context = Mock(AgentSpan.Context.Extracted)
+    def context = Mock(AgentSpanContext.Extracted)
     1 * context.getCustomIpHeader() >> headerValue
 
     expect:
@@ -34,7 +34,7 @@ class ClientIpAddressResolverSpecification extends Specification {
     setup:
     MutableSpan span = Stub()
     def method = "get${headerToCamelCase(header)}"
-    def context = Mock(AgentSpan.Context.Extracted)
+    def context = Mock(AgentSpanContext.Extracted)
     1 * context."$method"() >> headerValue
 
     expect:
@@ -60,15 +60,6 @@ class ClientIpAddressResolverSpecification extends Specification {
     'x-real-ip' | '42' | '0.0.0.42'
 
     'x-client-ip' | '2.2.2.2' | '2.2.2.2'
-    'x-forwarded' | 'for="[2001::1]:1111"' | '2001::1'
-    'x-forwarded' | 'fOr="[2001::1]:1111"' | '2001::1'
-    'x-forwarded' | 'for=some_host' | null
-    'x-forwarded' | 'for=127.0.0.1, FOR=1.1.1.1' | '1.1.1.1'
-    'x-forwarded' |'for="\"foobar";proto=http,FOR="1.1.1.1"' | '1.1.1.1'
-    'x-forwarded' | 'for="8.8.8.8:2222",' | '8.8.8.8'
-    'x-forwarded' | 'for="8.8.8.8' | null  // quote not closed
-    'x-forwarded' | 'far="8.8.8.8",for=4.4.4.4;' | '4.4.4.4'
-    'x-forwarded' | '   for=127.0.0.1,for= for=,for=;"for = for="" ,; for=8.8.8.8;' | '8.8.8.8'
 
     'x-cluster-client-ip' | '2.2.2.2' | '2.2.2.2'
 
@@ -79,12 +70,28 @@ class ClientIpAddressResolverSpecification extends Specification {
     'fastly-client-ip' | '3.3.3.3' | '3.3.3.3'
     'cf-connecting-ip' | '4.4.4.4' | '4.4.4.4'
     'cf-connecting-ipv6' | '2001::2' | '2001::2'
+
+    'forwarded' | 'for="[2001::1]:1111"' | '2001::1'
+    'forwarded' | 'fOr="[2001::1]:1111"' | '2001::1'
+    'forwarded' | 'for=some_host' | null
+    'forwarded' | 'for=127.0.0.1, FOR=1.1.1.1' | '1.1.1.1'
+    'forwarded' |'for="\"foobar";proto=http,FOR="1.1.1.1"' | '1.1.1.1'
+    'forwarded' | 'for="8.8.8.8:2222",' | '8.8.8.8'
+    'forwarded' | 'for="8.8.8.8' | null  // quote not closed
+    'forwarded' | 'far="8.8.8.8",for=4.4.4.4;' | '4.4.4.4'
+    'forwarded' | '   for=127.0.0.1,for= for=,for=;"for = for="" ,; for=8.8.8.8;' | '8.8.8.8'
+    'forwarded' | 'for=192.0.2.60;proto=http;by=203.0.113.43' | '192.0.2.60'
+    'forwarded' | 'For="[2001:db8:cafe::17]:4711"' | '2001:db8:cafe::17'
+    'forwarded' | 'for=192.0.2.43;proto=https;by=203.0.113.43' | '192.0.2.43'
+    'forwarded' | 'for="_gazonk"' | null
+    'forwarded' | 'for=unknown, for=8.8.8.8' | '8.8.8.8'
+    'forwarded' | 'for="[::ffff:192.0.2.128]";proto=http' | '192.0.2.128'
   }
 
   void 'test recognition strategy with custom header'() {
     setup:
     MutableSpan span = Stub()
-    def context = Mock(AgentSpan.Context.Extracted)
+    def context = Mock(AgentSpanContext.Extracted)
 
     when:
     def ip = ClientIpAddressResolver.resolve(context, span)
@@ -99,7 +106,7 @@ class ClientIpAddressResolverSpecification extends Specification {
   void 'test recognition strategy without custom header'() {
     setup:
     MutableSpan span = Mock()
-    def context = Mock(AgentSpan.Context.Extracted)
+    def context = Mock(AgentSpanContext.Extracted)
 
     when:
     def ip = ClientIpAddressResolver.resolve(context, span)
@@ -120,7 +127,7 @@ class ClientIpAddressResolverSpecification extends Specification {
     1 * context.getXClientIp() >> null
 
     then:
-    1 * context.getXForwarded() >> null
+    1 * context.getForwarded() >> null
 
     then:
     1 * context.getForwardedFor() >> null
@@ -144,7 +151,7 @@ class ClientIpAddressResolverSpecification extends Specification {
   void 'no custom header public IP address is preferred'() {
     setup:
     MutableSpan span = Mock()
-    def context = Mock(AgentSpan.Context.Extracted)
+    def context = Mock(AgentSpanContext.Extracted)
 
     when:
     def ip = ClientIpAddressResolver.resolve(context, span)
@@ -162,7 +169,7 @@ class ClientIpAddressResolverSpecification extends Specification {
   void 'no custom header all headers are reported'() {
     setup:
     MutableSpan span = Mock()
-    def context = Mock(AgentSpan.Context.Extracted)
+    def context = Mock(AgentSpanContext.Extracted)
 
     when:
     def ip = ClientIpAddressResolver.resolve(context, span)
@@ -174,7 +181,7 @@ class ClientIpAddressResolverSpecification extends Specification {
     1 * context.getXForwardedFor() >> '127.0.0.1'
     1 * context.getXRealIp() >> '127.0.0.2'
     1 * context.getXClientIp() >> '127.0.0.3'
-    1 * context.getXForwarded() >> 'for=127.0.0.4'
+    1 * context.getForwarded() >> 'for=127.0.0.4'
     1 * context.getXClusterClientIp() >> '127.0.0.5'
     1 * context.getForwardedFor() >> '127.0.0.6'
     1 * context.getTrueClientIp() >> '127.0.0.9'

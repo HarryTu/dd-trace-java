@@ -1,13 +1,13 @@
 package datadog.trace.instrumentation.netty38.server;
 
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
+import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.spanFromContext;
 import static datadog.trace.instrumentation.netty38.server.NettyHttpServerDecorator.DECORATE;
 
+import datadog.context.Context;
+import datadog.context.ContextScope;
 import datadog.trace.api.gateway.Flow;
 import datadog.trace.bootstrap.ContextStore;
-import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan.Context;
 import datadog.trace.instrumentation.netty38.ChannelTraceContext;
 import org.jboss.netty.channel.Channel;
 import org.jboss.netty.channel.ChannelHandlerContext;
@@ -35,8 +35,7 @@ public class HttpServerRequestTracingHandler extends SimpleChannelUpstreamHandle
       if (span == null) {
         ctx.sendUpstream(msg); // superclass does not throw
       } else {
-        try (final AgentScope scope = activateSpan(span)) {
-          scope.setAsyncPropagation(true);
+        try (final ContextScope scope = span.attach()) {
           ctx.sendUpstream(msg); // superclass does not throw
         }
       }
@@ -45,17 +44,16 @@ public class HttpServerRequestTracingHandler extends SimpleChannelUpstreamHandle
 
     final HttpRequest request = (HttpRequest) msg.getMessage();
     final HttpHeaders headers = request.headers();
-    final Context.Extracted context = DECORATE.extract(headers);
-    final AgentSpan span = DECORATE.startSpan(headers, context);
+    final Context parentContext = DECORATE.extract(headers);
+    final Context context = DECORATE.startSpan(headers, parentContext);
 
     channelTraceContext.reset();
     channelTraceContext.setRequestHeaders(headers);
 
-    try (final AgentScope scope = activateSpan(span)) {
+    try (final ContextScope scope = context.attach()) {
+      final AgentSpan span = spanFromContext(context);
       DECORATE.afterStart(span);
-      DECORATE.onRequest(span, ctx.getChannel(), request, context);
-
-      scope.setAsyncPropagation(true);
+      DECORATE.onRequest(span, ctx.getChannel(), request, parentContext);
 
       channelTraceContext.setServerSpan(span);
 

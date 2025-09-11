@@ -1,3 +1,4 @@
+
 import static datadog.trace.agent.test.utils.TraceUtils.basicSpan
 
 import com.google.api.gax.core.NoCredentialsProvider
@@ -38,10 +39,6 @@ import spock.lang.Shared
 
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.CountDownLatch
-import java.util.function.Function
-import java.util.function.ToDoubleFunction
-import java.util.function.ToIntFunction
-import java.util.function.ToLongFunction
 
 abstract class PubSubTest extends VersionedNamingTestBase {
   private static final String PROJECT_ID = "dd-trace-java"
@@ -95,7 +92,7 @@ abstract class PubSubTest extends VersionedNamingTestBase {
   }
 
   def setupSpec() {
-    emulator = new PubSubEmulatorContainer(DockerImageName.parse("gcr.io/google.com/cloudsdktool/cloud-sdk:emulators"))
+    emulator = new PubSubEmulatorContainer(DockerImageName.parse("gcr.io/google.com/cloudsdktool/cloud-sdk:495.0.0-emulators"))
     emulator.start()
     channel = ManagedChannelBuilder.forTarget(emulator.getEmulatorEndpoint()).usePlaintext().build()
     transportChannelProvider = FixedTransportChannelProvider.create(GrpcTransportChannel.create(channel))
@@ -138,7 +135,10 @@ abstract class PubSubTest extends VersionedNamingTestBase {
     injectSysConfig(GeneralConfig.SERVICE_NAME, "A-service")
     injectSysConfig(GeneralConfig.DATA_STREAMS_ENABLED, isDataStreamsEnabled().toString())
     if (!shadowGrpcSpans()) {
-      injectSysConfig(TraceInstrumentationConfig.GOOGLE_PUBSUB_IGNORED_GRPC_METHODS, "")
+      // only keep Publish and Acknowledge to make this test deterministic
+      // (things might be called depending on the transport and the test will be flaky otherwise)
+      injectSysConfig(TraceInstrumentationConfig.GOOGLE_PUBSUB_IGNORED_GRPC_METHODS,
+      "google.pubsub.v1.Subscriber/ModifyAckDeadline,google.pubsub.v1.Subscriber/Pull,google.pubsub.v1.Subscriber/StreamingPull")
     }
   }
 
@@ -168,14 +168,13 @@ abstract class PubSubTest extends VersionedNamingTestBase {
     latch.await()
 
     then:
-    def sendSpan
-    assertTraces(shadowGrpcSpans() ? 2 : 4, [
+    assertTraces(shadowGrpcSpans() ? 2 : 3, [
       compare            : { List<DDSpan> o1, List<DDSpan> o2 ->
         // trace will never be empty
         o1[0].localRootSpan.getTag(Tags.SPAN_KIND) <=> o2[0].localRootSpan.getTag(Tags.SPAN_KIND)
       },
     ] as Comparator) {
-      trace(shadowGrpcSpans() ? 2 : 4) {
+      trace(shadowGrpcSpans() ? 2 : 3) {
         sortSpansByStart()
         basicSpan(it, "parent")
         span {
@@ -199,15 +198,13 @@ abstract class PubSubTest extends VersionedNamingTestBase {
         if (!shadowGrpcSpans()) {
           grpcSpans(it)
         }
-        sendSpan = span(1)
+
+        assert span(1) != null
       }
+
       if (!shadowGrpcSpans()) {
         // Acknowledge
-        trace(2) {
-          grpcSpans(it, "A-service", true)
-        }
-        // ModifyAckDeadline
-        trace(2) {
+        trace(1) {
           grpcSpans(it, "A-service", true)
         }
       }
@@ -237,13 +234,11 @@ abstract class PubSubTest extends VersionedNamingTestBase {
 
       StatsGroup sendStat = TEST_DATA_STREAMS_WRITER.groups.find { it.parentHash == 0}
       verifyAll (sendStat) {
-        edgeTags.containsAll(["direction:out" , "topic:test-topic", "type:google-pubsub"])
-        edgeTags.size() == 3
+        tags.hasAllTags("direction:out" , "topic:test-topic", "type:google-pubsub")
       }
       StatsGroup receiveStat = TEST_DATA_STREAMS_WRITER.groups.find { it.parentHash == sendStat.hash}
       verifyAll(receiveStat) {
-        edgeTags.containsAll(["direction:in" , "subscription:my-subscription", "type:google-pubsub"])
-        edgeTags.size() == 3
+        tags.hasAllTags("direction:in" , "subscription:my-subscription", "type:google-pubsub")
         pathwayLatency.count == 1
         pathwayLatency.minValue > 0.0
         edgeLatency.count == 1
@@ -277,29 +272,15 @@ abstract class PubSubTest extends VersionedNamingTestBase {
         "response.type" { String }
         "$Tags.RPC_SERVICE" { String }
         "status.code" { String }
+        "grpc.status.code" { String }
         if ({ isDataStreamsEnabled() }) {
           "$DDTags.PATHWAY_HASH" { String }
         }
-        "$Tags.PEER_HOSTNAME" "localhost"
+        "$Tags.PEER_HOSTNAME" emulator.getHost()
         "$Tags.PEER_HOST_IPV4" "127.0.0.1"
         "$Tags.PEER_PORT" { Integer }
         peerServiceFrom(Tags.RPC_SERVICE)
         defaultTags()
-      }
-    }
-    traceAssert.span {
-      serviceName service
-      operationName "grpc.message"
-      resourceName "grpc.message"
-      spanType DDSpanTypes.RPC
-      errored false
-      measured true
-      childOfPrevious()
-      tags {
-        "$Tags.COMPONENT" "grpc-client"
-        "$Tags.SPAN_KIND" Tags.SPAN_KIND_CLIENT
-        "message.type" { String }
-        defaultTagsNoPeerService()
       }
     }
   }
@@ -324,6 +305,19 @@ class PubSubNamingV0Test extends PubSubTest {
   @Override
   String service() {
     "google-pubsub"
+  }
+}
+
+class PubSubNamingV0NoLegacyTracingForkedTest extends PubSubNamingV0Test {
+  @Override
+  protected void configurePreAgent() {
+    super.configurePreAgent()
+    injectSysConfig("dd.google-pubsub.legacy.tracing.enabled", "false")
+  }
+
+  @Override
+  String service() {
+    "A-service"
   }
 }
 

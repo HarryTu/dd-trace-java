@@ -10,6 +10,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.State;
@@ -21,9 +22,9 @@ import org.elasticsearch.action.support.ThreadedActionListener;
  * Captures context at the point a request is made, and ensures it propagates into asynchronous
  * actions.
  */
-@AutoService(Instrumenter.class)
-public final class ThreadedActionListenerInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class ThreadedActionListenerInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public ThreadedActionListenerInstrumentation() {
     super("elasticsearch", "elasticsearch-transport");
@@ -41,10 +42,10 @@ public final class ThreadedActionListenerInstrumentation extends Instrumenter.Tr
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
+  public void methodAdvice(MethodTransformer transformer) {
     // only one constructor
-    transformation.applyAdvice(isConstructor(), getClass().getName() + "$Construct");
-    transformation.applyAdvice(
+    transformer.applyAdvice(isConstructor(), getClass().getName() + "$Construct");
+    transformer.applyAdvice(
         namedOneOf("onResponse", "onFailure").and(takesArguments(1)),
         getClass().getName() + "$OnResponse");
   }
@@ -53,8 +54,7 @@ public final class ThreadedActionListenerInstrumentation extends Instrumenter.Tr
   public static final class Construct {
     @Advice.OnMethodExit
     public static void after(@Advice.This ThreadedActionListener listener) {
-      capture(
-          InstrumentationContext.get(ThreadedActionListener.class, State.class), listener, true);
+      capture(InstrumentationContext.get(ThreadedActionListener.class, State.class), listener);
     }
   }
 

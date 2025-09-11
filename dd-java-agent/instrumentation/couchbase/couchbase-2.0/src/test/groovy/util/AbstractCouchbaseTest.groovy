@@ -23,9 +23,7 @@ import spock.lang.Shared
 
 import java.util.concurrent.TimeUnit
 
-import static datadog.trace.agent.test.utils.TraceUtils.runUnderTrace
 import static datadog.trace.api.config.TraceInstrumentationConfig.DB_CLIENT_HOST_SPLIT_BY_INSTANCE
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeSpan
 
 abstract class AbstractCouchbaseTest extends VersionedNamingTestBase {
 
@@ -114,25 +112,17 @@ abstract class AbstractCouchbaseTest extends VersionedNamingTestBase {
   }
 
   protected void cleanupCluster(CouchbaseAsyncCluster cluster, CouchbaseEnvironment environment) {
-    def cleanupSpan = runUnderTrace("cleanup") {
-      try {
-        cluster?.disconnect()?.timeout(10, TimeUnit.SECONDS)?.toBlocking()?.single()
-        environment.shutdown()
-      } catch (Throwable ex) {
-        // ignore
-      }
-      activeSpan()
+    try (def suppressScope = TEST_TRACER.muteTracing()) {
+      cluster?.disconnect()?.timeout(10, TimeUnit.SECONDS)?.toBlocking()?.single()
+      environment.shutdown()
     }
-    TEST_WRITER.waitUntilReported(cleanupSpan as DDSpan, 60, TimeUnit.SECONDS)
   }
 
   protected void cleanupCluster(CouchbaseCluster cluster, CouchbaseEnvironment environment) {
-    def cleanupSpan = runUnderTrace("cleanup") {
+    try (def suppressScope = TEST_TRACER.muteTracing()) {
       cluster?.disconnect()
       environment.shutdown()
-      activeSpan()
     }
-    TEST_WRITER.waitUntilReported(cleanupSpan as DDSpan)
   }
 
   void assertCouchbaseCall(TraceAssert trace, String name, String bucketName = null, Object parentSpan = null) {

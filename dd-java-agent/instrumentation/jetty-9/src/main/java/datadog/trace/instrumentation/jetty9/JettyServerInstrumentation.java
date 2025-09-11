@@ -3,7 +3,7 @@ package datadog.trace.instrumentation.jetty9;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.HierarchyMatchers.declaresMethod;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.namedOneOf;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
+import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.spanFromContext;
 import static datadog.trace.bootstrap.instrumentation.decorator.HttpServerDecorator.DD_SPAN_ATTRIBUTE;
 import static datadog.trace.bootstrap.instrumentation.java.concurrent.ExcludeFilter.ExcludeType.RUNNABLE;
 import static datadog.trace.instrumentation.jetty9.JettyDecorator.DECORATE;
@@ -15,13 +15,14 @@ import static net.bytebuddy.matcher.ElementMatchers.takesNoArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.appsec.api.blocking.BlockingException;
+import datadog.context.Context;
+import datadog.context.ContextScope;
 import datadog.trace.agent.tooling.ExcludeFilterProvider;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.Config;
 import datadog.trace.api.CorrelationIdentifier;
-import datadog.trace.api.GlobalTracer;
 import datadog.trace.api.ProductActivation;
-import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.ExcludeFilter;
@@ -44,9 +45,12 @@ import net.bytebuddy.pool.TypePool;
 import org.eclipse.jetty.server.HttpChannel;
 import org.eclipse.jetty.server.Request;
 
-@AutoService(Instrumenter.class)
-public final class JettyServerInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType, ExcludeFilterProvider {
+@AutoService(InstrumenterModule.class)
+public final class JettyServerInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType,
+        Instrumenter.HasTypeAdvice,
+        Instrumenter.HasMethodAdvice,
+        ExcludeFilterProvider {
 
   private boolean appSecNotFullyDisabled;
 
@@ -84,8 +88,13 @@ public final class JettyServerInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void typeAdvice(TypeTransformer transformer) {
+    transformer.applyAdvice(new HttpChannelHandleVisitorWrapper());
+  }
+
+  @Override
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         takesNoArguments()
             .and(
                 named("handle")
@@ -95,13 +104,13 @@ public final class JettyServerInstrumentation extends Instrumenter.Tracing
                         // (without the risk of double instrumenting).
                         named("run").and(isDeclaredBy(not(declaresMethod(named("handle"))))))),
         JettyServerInstrumentation.class.getName() + "$HandleAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         // name changed to recycle in 9.3.0
         namedOneOf("reset", "recycle").and(takesNoArguments()),
         JettyServerInstrumentation.class.getName() + "$ResetAdvice");
 
     if (appSecNotFullyDisabled) {
-      transformation.applyAdvice(
+      transformer.applyAdvice(
           named("handleException").and(takesArguments(1)).and(takesArgument(0, Throwable.class)),
           JettyServerInstrumentation.class.getName() + "$HandleExceptionAdvice");
     }
@@ -117,10 +126,6 @@ public final class JettyServerInstrumentation extends Instrumenter.Tracing
             "org.eclipse.jetty.io.ManagedSelector",
             "org.eclipse.jetty.util.thread.TimerScheduler",
             "org.eclipse.jetty.util.thread.TimerScheduler$SimpleTask"));
-  }
-
-  public AdviceTransformer transformer() {
-    return new VisitingTransformer(new HttpChannelHandleVisitorWrapper());
   }
 
   public static class HttpChannelHandleVisitorWrapper implements AsmVisitorWrapper {
@@ -156,30 +161,30 @@ public final class JettyServerInstrumentation extends Instrumenter.Tracing
   public static class HandleAdvice {
 
     @Advice.OnMethodEnter(suppress = Throwable.class)
-    public static AgentScope onEnter(
+    public static ContextScope onEnter(
         @Advice.This final HttpChannel<?> channel, @Advice.Local("agentSpan") AgentSpan span) {
       Request req = channel.getRequest();
 
       Object existingSpan = req.getAttribute(DD_SPAN_ATTRIBUTE);
       if (existingSpan instanceof AgentSpan) {
-        return activateSpan((AgentSpan) existingSpan);
+        return ((AgentSpan) existingSpan).attach();
       }
 
-      final AgentSpan.Context.Extracted extractedContext = DECORATE.extract(req);
-      span = DECORATE.startSpan(req, extractedContext);
-      final AgentScope scope = activateSpan(span);
-      scope.setAsyncPropagation(true);
+      final Context parentContext = DECORATE.extract(req);
+      final Context context = DECORATE.startSpan(req, parentContext);
+      final ContextScope scope = context.attach();
+      span = spanFromContext(context);
       DECORATE.afterStart(span);
-      DECORATE.onRequest(span, req, req, extractedContext);
+      DECORATE.onRequest(span, req, req, parentContext);
 
       req.setAttribute(DD_SPAN_ATTRIBUTE, span);
-      req.setAttribute(CorrelationIdentifier.getTraceIdKey(), GlobalTracer.get().getTraceId());
-      req.setAttribute(CorrelationIdentifier.getSpanIdKey(), GlobalTracer.get().getSpanId());
+      req.setAttribute(CorrelationIdentifier.getTraceIdKey(), CorrelationIdentifier.getTraceId());
+      req.setAttribute(CorrelationIdentifier.getSpanIdKey(), CorrelationIdentifier.getSpanId());
       return scope;
     }
 
     @Advice.OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
-    public static void closeScope(@Advice.Enter final AgentScope scope) {
+    public static void closeScope(@Advice.Enter final ContextScope scope) {
       scope.close();
     }
   }

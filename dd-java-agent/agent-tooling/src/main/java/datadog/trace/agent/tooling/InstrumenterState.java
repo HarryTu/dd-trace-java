@@ -2,13 +2,18 @@ package datadog.trace.agent.tooling;
 
 import datadog.trace.api.cache.DDCache;
 import datadog.trace.api.cache.DDCaches;
-import datadog.trace.util.Strings;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLongArray;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Tracks {@link Instrumenter} state, such as where it was applied and where it was blocked. */
+/**
+ * Tracks instrumentation state, such as where it was applied and where it was blocked.
+ *
+ * <p>Each {@link InstrumenterModule} is allocated a unique {@code instrumentationId} by {@code
+ * AgentInstaller} which it registers with {@link InstrumenterState} and uses to apply or block the
+ * instrumentation per-class-loader, for example if {@code MuzzleCheck} detects an incompatibility.
+ */
 public final class InstrumenterState {
   private static final Logger log = LoggerFactory.getLogger(InstrumenterState.class);
 
@@ -41,21 +46,20 @@ public final class InstrumenterState {
   private InstrumenterState() {}
 
   /** Pre-sizes internal structures to accommodate the highest expected id. */
-  public static void setMaxInstrumentationId(int maxInstrumentationId) {
-    instrumentationNames = Arrays.copyOf(instrumentationNames, maxInstrumentationId + 1);
+  public static void initialize(int instrumentationCount) {
+    instrumentationNames = Arrays.copyOf(instrumentationNames, instrumentationCount);
     instrumentationClasses = Arrays.copyOf(instrumentationClasses, instrumentationNames.length);
   }
 
   /** Registers an instrumentation's details. */
-  public static void registerInstrumentation(Instrumenter.Default instrumenter) {
-    int instrumentationId = instrumenter.instrumentationId();
+  public static void registerInstrumentation(InstrumenterModule module, int instrumentationId) {
     if (instrumentationId >= instrumentationNames.length) {
-      // note: setMaxInstrumentationId pre-sizes array to avoid repeated allocations here
+      // note: the 'initialize' method pre-sizes these arrays to avoid repeated allocations here
       instrumentationNames = Arrays.copyOf(instrumentationNames, instrumentationId + 16);
       instrumentationClasses = Arrays.copyOf(instrumentationClasses, instrumentationNames.length);
     }
-    instrumentationNames[instrumentationId] = instrumenter.names();
-    instrumentationClasses[instrumentationId] = instrumenter.getClass().getName();
+    instrumentationNames[instrumentationId] = module.names();
+    instrumentationClasses[instrumentationId] = module.getClass().getName();
   }
 
   /** Registers an observer to be notified whenever an instrumentation is applied. */
@@ -65,10 +69,10 @@ public final class InstrumenterState {
 
   /** Resets the default instrumentation state so nothing is blocked or applied. */
   public static void resetDefaultState() {
-    int maxInstrumentationCount = instrumentationNames.length;
+    int instrumentationCount = instrumentationNames.length;
 
     int wordsPerClassLoaderState =
-        ((maxInstrumentationCount << 1) + BITS_PER_WORD - 1) >> ADDRESS_BITS_PER_WORD;
+        ((instrumentationCount << 1) + BITS_PER_WORD - 1) >> ADDRESS_BITS_PER_WORD;
 
     if (defaultState.length > 0) { // optimization: skip clear if there's no old state
       classLoaderStates.clear();
@@ -125,7 +129,7 @@ public final class InstrumenterState {
   public static String describe(int instrumentationId) {
     if (instrumentationId >= 0 && instrumentationId < instrumentationNames.length) {
       return "instrumentation.names=["
-          + Strings.join(",", instrumentationNames[instrumentationId])
+          + String.join(",", instrumentationNames[instrumentationId])
           + "] instrumentation.class="
           + instrumentationClasses[instrumentationId];
     } else {
@@ -162,6 +166,39 @@ public final class InstrumenterState {
     long wordState = state.get(wordIndex);
     while (!state.compareAndSet(wordIndex, wordState, wordState | bitsToSet)) {
       wordState = state.get(wordIndex);
+    }
+  }
+
+  public static String summary() {
+    StringBuilder summary = new StringBuilder();
+    classLoaderStates.visit(
+        (loader, state) -> {
+          summary.append(loader.getClass().getName());
+          summarizeState(summary, state);
+          summary.append("\n\n");
+        });
+    return summary.toString();
+  }
+
+  private static void summarizeState(StringBuilder summary, AtomicLongArray state) {
+    for (int wordIndex = 0; wordIndex < state.length(); wordIndex++) {
+      int instrumentationId = wordIndex * (BITS_PER_WORD >> 1); // 2 bits per status
+      long wordState = state.get(wordIndex);
+      while (wordState != 0) {
+        if ((wordState & STATUS_BITS) != 0) {
+          if ((wordState & APPLIED) != 0) {
+            summary.append("\n    APPLIED  ");
+          } else {
+            summary.append("\n    BLOCKED  ");
+          }
+          summary
+              .append(instrumentationClasses[instrumentationId])
+              .append("  ")
+              .append(instrumentationNames[instrumentationId]);
+        }
+        instrumentationId++;
+        wordState >>>= 2; // move onto next 2 status bits
+      }
     }
   }
 }

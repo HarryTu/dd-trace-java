@@ -4,6 +4,7 @@ description = 'Spring Boot 3.0 Native Smoke Tests.'
 
 dependencies {
   testImplementation project(':dd-smoke-tests')
+  testImplementation libs.bundles.jmc
 }
 
 def testJvm = gradle.startParameter.projectProperties.getOrDefault('testJvm', '')
@@ -30,7 +31,7 @@ if (version >= 17) {
   tasks.register('springNativeBuild', Exec) {
     workingDir "$appDir"
     environment += [
-      'GRADLE_OPTS': "-Dorg.gradle.jvmargs='-Xmx512M'",
+      'GRADLE_OPTS': "-Dorg.gradle.jvmargs='-Xmx1024M'",
       'JAVA_HOME': javaHome,
       'GRAALVM_HOME': testJvmHome,
       'DD_TRACE_METHODS' : 'datadog.smoketest.springboot.controller.WebController[sayHello]',

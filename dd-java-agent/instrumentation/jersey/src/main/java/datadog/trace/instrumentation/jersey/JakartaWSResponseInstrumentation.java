@@ -7,6 +7,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.iast.InstrumentationBridge;
 import datadog.trace.api.iast.Sink;
 import datadog.trace.api.iast.VulnerabilityTypes;
@@ -17,22 +18,27 @@ import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public class JakartaWSResponseInstrumentation extends Instrumenter.Iast
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class JakartaWSResponseInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   public JakartaWSResponseInstrumentation() {
     super("jersey");
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("header").and(isPublic().and(takesArguments(String.class, Object.class))),
         JakartaWSResponseInstrumentation.class.getName() + "$HeaderAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         named("location").and(isPublic().and(takesArguments(URI.class))),
         JakartaWSResponseInstrumentation.class.getName() + "$RedirectionAdvice");
+  }
+
+  @Override
+  protected boolean isOptOutEnabled() {
+    return true;
   }
 
   @Override

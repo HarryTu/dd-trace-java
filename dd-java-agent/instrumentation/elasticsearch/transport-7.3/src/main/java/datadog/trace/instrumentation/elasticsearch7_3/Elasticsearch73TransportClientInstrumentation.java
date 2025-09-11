@@ -12,6 +12,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import net.bytebuddy.asm.Advice;
@@ -22,16 +23,16 @@ import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.action.ActionType;
 
 /** This class is identical to version 6's instrumentation, except Action is now ActionType. */
-@AutoService(Instrumenter.class)
-public class Elasticsearch73TransportClientInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class Elasticsearch73TransportClientInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public Elasticsearch73TransportClientInstrumentation() {
     super("elasticsearch", "elasticsearch-transport", "elasticsearch-transport-7");
   }
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     // Avoid matching pre-ES7 releases which have their own instrumentations.
     return hasClassNamed("org.elasticsearch.action.ActionType");
   }
@@ -52,8 +53,8 @@ public class Elasticsearch73TransportClientInstrumentation extends Instrumenter.
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("execute"))
             .and(takesArguments(3))

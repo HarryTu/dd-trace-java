@@ -5,21 +5,25 @@ def isTestingInstrumentation(Project project) {
   return [
     "junit-4.10",
     "cucumber-junit-4",
+    "junit-4.13",
     "munit-junit-4",
     "junit-5.3",
+    "junit-5.8",
     "cucumber-junit-5",
     "spock-junit-5",
     "testng-6",
     "testng-7",
-    "karate"
+    "karate",
+    "scalatest",
+    "weaver"
   ].contains(project.name)
 }
 
 def forkedTestLimit = gradle.sharedServices.registerIfAbsent("forkedTestLimit", BuildService) {
-  maxParallelUsages = 2
+  maxParallelUsages = 3
 }
 
-// Force timeout after 9 minutes (CircleCI defaults will fail after 10 minutes without output)
+// Force timeout after 9 minutes (The timeout is configurable per job, default job timeout is 1h)
 def testTimeoutDuration = Duration.of(9, ChronoUnit.MINUTES)
 
 testing {
@@ -57,15 +61,15 @@ tasks.withType(Test).configureEach {
     exclude "**/TestRepeated*"
     exclude "**/TestTemplate*"
     exclude "**/TestDisableTestTrace*"
-    exclude "**/TestAssumption*"
-    exclude "**/TestParameterized*"
+    exclude "**/TestAssumption*", "**/TestSuiteSetUpAssumption*"
+    exclude "**/TestUnskippable*"
+    exclude "**/TestWithSetup*"
   }
 
   // Split up tests that want to run forked in their own separate JVM for generated tasks
   if (name.startsWith("forkedTest") || name.endsWith("ForkedTest")) {
     setExcludes([])
     setIncludes(["**/*ForkedTest*"])
-    jvmArgs += ["-Xms256M", "-Xmx256M"]
     forkEvery 1
     // Limit the number of concurrent forked tests
     usesService(forkedTestLimit)
@@ -118,6 +122,16 @@ if (!project.property("activePartition")) {
   project.afterEvaluate {
     tasks.withType(Test).configureEach {
       enabled = false
+    }
+  }
+}
+
+tasks.withType(Test) {
+  // https://docs.gradle.com/develocity/flaky-test-detection/
+  // https://docs.gradle.com/develocity/gradle-plugin/current/#test_retry
+  develocity.testRetry {
+    if (System.getenv().containsKey("CI")) {
+      maxRetries = 3
     }
   }
 }

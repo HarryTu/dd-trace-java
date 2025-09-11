@@ -4,8 +4,8 @@ import static datadog.trace.agent.tooling.bytebuddy.matcher.HierarchyMatchers.ex
 import static datadog.trace.agent.tooling.bytebuddy.matcher.HierarchyMatchers.implementsInterface;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.propagate;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
+import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.getCurrentContext;
 import static datadog.trace.bootstrap.instrumentation.decorator.HttpServerDecorator.DD_SPAN_ATTRIBUTE;
 import static datadog.trace.instrumentation.jaxrs.v1.InjectAdapter.SETTER;
 import static datadog.trace.instrumentation.jaxrs.v1.JaxRsClientV1Decorator.DECORATE;
@@ -18,16 +18,16 @@ import com.sun.jersey.api.client.ClientHandler;
 import com.sun.jersey.api.client.ClientRequest;
 import com.sun.jersey.api.client.ClientResponse;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
-import datadog.trace.bootstrap.instrumentation.decorator.HttpClientDecorator;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public final class JaxRsClientV1Instrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public final class JaxRsClientV1Instrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   public JaxRsClientV1Instrumentation() {
     super("jax-rs", "jaxrs", "jax-rs-client");
@@ -51,8 +51,8 @@ public final class JaxRsClientV1Instrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("handle")
             .and(takesArgument(0, extendsClass(named("com.sun.jersey.api.client.ClientRequest"))))
             .and(returns(extendsClass(named("com.sun.jersey.api.client.ClientResponse")))),
@@ -73,11 +73,7 @@ public final class JaxRsClientV1Instrumentation extends Instrumenter.Tracing
         DECORATE.afterStart(span);
         DECORATE.onRequest(span, request);
         request.getProperties().put(DD_SPAN_ATTRIBUTE, span);
-
-        propagate().inject(span, request.getHeaders(), SETTER);
-        propagate()
-            .injectPathwayContext(
-                span, request.getHeaders(), SETTER, HttpClientDecorator.CLIENT_PATHWAY_EDGE_TAGS);
+        DECORATE.injectContext(getCurrentContext().with(span), request.getHeaders(), SETTER);
         return activateSpan(span);
       }
       return null;

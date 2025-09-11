@@ -6,6 +6,8 @@ import datadog.telemetry.api.LogMessage;
 import datadog.telemetry.api.Metric;
 import datadog.telemetry.dependency.Dependency;
 import datadog.trace.api.ConfigSetting;
+import datadog.trace.api.telemetry.Endpoint;
+import datadog.trace.api.telemetry.ProductChange;
 
 /**
  * A unified interface for telemetry event sink. It is used to buffer events polled from the queues
@@ -24,6 +26,10 @@ interface EventSink {
   void addDistributionSeriesEvent(DistributionSeries event);
 
   void addLogMessageEvent(LogMessage event);
+
+  void addProductChangeEvent(ProductChange event);
+
+  void addEndpointEvent(Endpoint event);
 
   EventSink NOOP = new Noop();
 
@@ -47,5 +53,11 @@ interface EventSink {
 
     @Override
     public void addLogMessageEvent(LogMessage event) {}
+
+    @Override
+    public void addProductChangeEvent(ProductChange event) {}
+
+    @Override
+    public void addEndpointEvent(Endpoint event) {}
   }
 }

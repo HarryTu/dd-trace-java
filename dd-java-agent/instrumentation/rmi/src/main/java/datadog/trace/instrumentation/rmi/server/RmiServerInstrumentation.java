@@ -14,16 +14,20 @@ import static net.bytebuddy.matcher.ElementMatchers.not;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext;
 import java.lang.reflect.Method;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public final class RmiServerInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForBootstrap, Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public final class RmiServerInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForBootstrap,
+        Instrumenter.ForTypeHierarchy,
+        Instrumenter.HasMethodAdvice {
 
   public RmiServerInstrumentation() {
     super("rmi", "rmi-server");
@@ -40,8 +44,8 @@ public final class RmiServerInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(isPublic()).and(not(isStatic())), getClass().getName() + "$ServerAdvice");
   }
 
@@ -49,7 +53,7 @@ public final class RmiServerInstrumentation extends Instrumenter.Tracing
     @Advice.OnMethodEnter(suppress = Throwable.class, inline = true)
     public static AgentScope onEnter(
         @Advice.This final Object thiz, @Advice.Origin final Method method) {
-      final AgentSpan.Context context = THREAD_LOCAL_CONTEXT.getAndResetContext();
+      final AgentSpanContext context = THREAD_LOCAL_CONTEXT.getAndResetContext();
 
       final AgentSpan span;
       if (context == null) {

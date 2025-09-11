@@ -1,10 +1,11 @@
 package datadog.trace.instrumentation.synapse3;
 
+import static datadog.context.propagation.Propagators.defaultPropagator;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.namedOneOf;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.propagate;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
+import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.getCurrentContext;
 import static datadog.trace.instrumentation.synapse3.SynapseClientDecorator.DECORATE;
 import static datadog.trace.instrumentation.synapse3.SynapseClientDecorator.SYNAPSE_REQUEST;
 import static datadog.trace.instrumentation.synapse3.SynapseClientDecorator.SYNAPSE_SPAN_KEY;
@@ -14,6 +15,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import net.bytebuddy.asm.Advice;
@@ -21,9 +23,9 @@ import org.apache.axis2.context.MessageContext;
 import org.apache.http.nio.NHttpClientConnection;
 import org.apache.synapse.transport.passthru.TargetContext;
 
-@AutoService(Instrumenter.class)
-public final class SynapseClientInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class SynapseClientInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public SynapseClientInstrumentation() {
     super("synapse3-client", "synapse3");
@@ -42,18 +44,18 @@ public final class SynapseClientInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(final AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(final MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("requestReady"))
             .and(takesArgument(0, named("org.apache.http.nio.NHttpClientConnection"))),
         getClass().getName() + "$ClientRequestAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(named("responseReceived"))
             .and(takesArgument(0, named("org.apache.http.nio.NHttpClientConnection"))),
         getClass().getName() + "$ClientResponseAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(namedOneOf("closed", "exception", "timeout"))
             .and(takesArgument(0, named("org.apache.http.nio.NHttpClientConnection"))),
@@ -85,7 +87,8 @@ public final class SynapseClientInstrumentation extends Instrumenter.Tracing
       DECORATE.afterStart(span);
 
       // add trace id to client-side request before it gets submitted as an HttpRequest
-      propagate().inject(span, TargetContext.getRequest(connection), SETTER);
+      defaultPropagator()
+          .inject(getCurrentContext().with(span), TargetContext.getRequest(connection), SETTER);
 
       // capture span to be finished by one of the various client response advices
       connection.getContext().setAttribute(SYNAPSE_SPAN_KEY, span);

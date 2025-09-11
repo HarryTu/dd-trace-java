@@ -7,15 +7,16 @@ import static net.bytebuddy.matcher.ElementMatchers.takesNoArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import net.bytebuddy.asm.Advice;
 import org.apache.catalina.connector.CoyoteAdapter;
 import org.apache.catalina.connector.Request;
 import org.apache.catalina.connector.Response;
 
-@AutoService(Instrumenter.class)
-public final class ResponseInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class ResponseInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public ResponseInstrumentation() {
     super("tomcat");
@@ -40,8 +41,8 @@ public final class ResponseInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("recycle").and(takesNoArguments()),
         ResponseInstrumentation.class.getName() + "$RecycleAdvice");
   }

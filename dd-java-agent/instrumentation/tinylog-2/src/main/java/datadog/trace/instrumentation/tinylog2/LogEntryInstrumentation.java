@@ -7,14 +7,14 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.agent.tooling.log.UnionMap;
 import datadog.trace.api.Config;
 import datadog.trace.api.CorrelationIdentifier;
 import datadog.trace.api.DDSpanId;
 import datadog.trace.api.DDTraceId;
-import datadog.trace.api.InstrumenterConfig;
 import datadog.trace.bootstrap.InstrumentationContext;
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import datadog.trace.bootstrap.instrumentation.api.Tags;
 import java.util.HashMap;
@@ -23,9 +23,9 @@ import net.bytebuddy.asm.Advice;
 import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import org.tinylog.core.LogEntry;
 
-@AutoService(Instrumenter.class)
-public class LogEntryInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class LogEntryInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public LogEntryInstrumentation() {
     super("tinylog");
   }
@@ -37,12 +37,12 @@ public class LogEntryInstrumentation extends Instrumenter.Tracing
 
   @Override
   public Map<String, String> contextStore() {
-    return singletonMap("org.tinylog.core.LogEntry", AgentSpan.Context.class.getName());
+    return singletonMap("org.tinylog.core.LogEntry", AgentSpanContext.class.getName());
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(named("getContext")).and(takesArguments(0)),
         LogEntryInstrumentation.class.getName() + "$GetContextAdvice");
   }
@@ -67,8 +67,8 @@ public class LogEntryInstrumentation extends Instrumenter.Tracing
         return;
       }
 
-      AgentSpan.Context context =
-          InstrumentationContext.get(LogEntry.class, AgentSpan.Context.class).get(event);
+      AgentSpanContext context =
+          InstrumentationContext.get(LogEntry.class, AgentSpanContext.class).get(event);
 
       // TinyLoggingProviderInstrumentation only populates the context if injection is enabled
       // Impossible for context to be not null while injection is disabled
@@ -82,7 +82,7 @@ public class LogEntryInstrumentation extends Instrumenter.Tracing
       if (context != null) {
         DDTraceId traceId = context.getTraceId();
         String traceIdValue =
-            InstrumenterConfig.get().isLogs128bTraceIdEnabled() && traceId.toHighOrderLong() != 0
+            Config.get().isLogs128bitTraceIdEnabled() && traceId.toHighOrderLong() != 0
                 ? traceId.toHexString()
                 : traceId.toString();
         correlationValues.put(CorrelationIdentifier.getTraceIdKey(), traceIdValue);

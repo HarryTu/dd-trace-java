@@ -3,7 +3,7 @@ package datadog.trace.instrumentation.grpc.client;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.namedOneOf;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeScope;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeSpan;
 import static datadog.trace.instrumentation.grpc.client.GrpcClientDecorator.DECORATE;
 import static net.bytebuddy.matcher.ElementMatchers.isConstructor;
 import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
@@ -11,6 +11,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
@@ -20,9 +21,9 @@ import java.util.Collections;
 import java.util.Map;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public class ClientStreamListenerImplInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class ClientStreamListenerImplInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public ClientStreamListenerImplInstrumentation() {
     super("grpc", "grpc-client");
@@ -49,25 +50,24 @@ public class ClientStreamListenerImplInstrumentation extends Instrumenter.Tracin
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(isConstructor(), getClass().getName() + "$Construct");
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(isConstructor(), getClass().getName() + "$Construct");
+    transformer.applyAdvice(
         named("exceptionThrown")
             .and(takesArgument(0, named("io.grpc.Status")))
             .and(takesArguments(1)),
         getClass().getName() + "$ExceptionThrown");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         namedOneOf("messageRead", "messagesAvailable"), getClass().getName() + "$RecordActivity");
-    transformation.applyAdvice(named("headersRead"), getClass().getName() + "$RecordHeaders");
+    transformer.applyAdvice(named("headersRead"), getClass().getName() + "$RecordHeaders");
   }
 
   public static final class Construct {
     @Advice.OnMethodExit
     public static void capture(@Advice.This ClientStreamListener listener) {
       // instrumentation of ClientCallImpl::start ensures this scope is present and valid
-      AgentScope scope = activeScope();
-      if (null != scope) {
-        AgentSpan span = scope.span();
+      AgentSpan span = activeSpan();
+      if (null != span) {
         InstrumentationContext.get(ClientStreamListener.class, AgentSpan.class).put(listener, span);
       }
     }

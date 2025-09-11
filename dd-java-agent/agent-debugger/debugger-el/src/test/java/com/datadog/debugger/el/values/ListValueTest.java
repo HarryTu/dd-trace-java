@@ -4,6 +4,7 @@ import static com.datadog.debugger.el.PrettyPrintVisitor.print;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.datadog.debugger.el.Value;
+import datadog.trace.bootstrap.debugger.el.Values;
 import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -53,8 +54,7 @@ class ListValueTest {
       Value<?> v = listValue.get(i);
       assertNotNull(v);
       if (expected != null) {
-        assertEquals(
-            ((Integer) array[i]).longValue(), v.getValue()); // int is automatically widened to long
+        assertEquals(array[i], v.getValue());
       } else {
         assertEquals(Value.nullValue(), v);
       }
@@ -78,11 +78,21 @@ class ListValueTest {
       ListValue collection = (ListValue) v;
       for (int j = 0; j < collection.count(); j++) {
         Value<?> v1 = collection.get(j);
-        assertEquals((long) intArray[i][j], v1.getValue()); // int is automatically widened to long
+        assertEquals(intArray[i][j], v1.getValue()); // int is automatically widened to long
       }
     }
     assertThrows(IllegalArgumentException.class, () -> listValue.get(-1));
     assertThrows(IllegalArgumentException.class, () -> listValue.get(intArray.length));
     assertEquals("int[][]", print(listValue));
+  }
+
+  @Test
+  void nullList() {
+    ListValue listValue = new ListValue(null);
+    assertTrue(listValue.isEmpty());
+    assertTrue(listValue.isNull());
+    listValue = new ListValue(Values.NULL_OBJECT);
+    assertTrue(listValue.isEmpty());
+    assertTrue(listValue.isNull());
   }
 }

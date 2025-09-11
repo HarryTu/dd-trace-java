@@ -11,6 +11,17 @@ public interface SamplingRule {
   /** The "match all" glob pattern . */
   String MATCH_ALL = "*";
 
+  enum Provenance {
+    /** Rules generated from local static config. */
+    LOCAL,
+
+    /** Rules generated from dynamic sampling via remote-config. */
+    DYNAMIC,
+
+    /** Rules supplied by the customer via remote-config. */
+    CUSTOMER
+  }
+
   /**
    * Gets the glob pattern the span service must match to validate the rule.
    *
@@ -50,25 +61,15 @@ public interface SamplingRule {
    */
   double getSampleRate();
 
-  /** This interface describes the criteria of a sampling rule that can match against a trace. */
-  interface TraceSamplingRule extends SamplingRule {
-    /**
-     * Gets the span type the rule must match against. If {@link TargetSpan#ROOT}, only the root
-     * span of the trace will be evaluated to validate the rule. If {@link TargetSpan#ANY}, all
-     * spans from the trace might be evaluated, and only one need to match to validate the rule.
-     *
-     * @return The span type the rule must be validated against.
-     */
-    TargetSpan getTargetSpan();
+  /**
+   * How this rule was generated; e.g. from local config, dynamic sampling, or the customer.
+   *
+   * @return How this rule was generated.
+   */
+  Provenance getProvenance();
 
-    /**
-     * This enumerate defines against which span of the trace must be validated the sampling rule.
-     */
-    enum TargetSpan {
-      ROOT,
-      ANY
-    }
-  }
+  /** This interface describes the criteria of a sampling rule that can match against a trace. */
+  interface TraceSamplingRule extends SamplingRule {}
 
   /** This interface describes the criteria of a sampling rule that can match against a span. */
   interface SpanSamplingRule extends SamplingRule {

@@ -29,7 +29,11 @@ class DatadogHttpExtractorTest extends DDSpecification {
   private HttpCodec.Extractor _extractor
 
   private HttpCodec.Extractor getExtractor() {
-    _extractor ?: (_extractor = DatadogHttpCodec.newExtractor(Config.get(), { dynamicConfig.captureTraceConfig() }))
+    _extractor ?: (_extractor = createExtractor(Config.get()))
+  }
+
+  private HttpCodec.Extractor createExtractor(Config config) {
+    DatadogHttpCodec.newExtractor(config, { dynamicConfig.captureTraceConfig() })
   }
 
   boolean origAppSecActive
@@ -47,20 +51,24 @@ class DatadogHttpExtractorTest extends DDSpecification {
 
   void cleanup() {
     ActiveSubsystems.APPSEC_ACTIVE = origAppSecActive
+    extractor.cleanup()
   }
 
   def "extract http headers"() {
     setup:
+    injectEnvConfig("DD_TRACE_REQUEST_HEADER_TAGS_COMMA_ALLOWED", "$allowComma")
+    def extractor = createExtractor(Config.get())
     def headers = [
       ""                                      : "empty key",
       (TRACE_ID_KEY.toUpperCase())            : traceId,
       (SPAN_ID_KEY.toUpperCase())             : spanId,
       (OT_BAGGAGE_PREFIX.toUpperCase() + "k1"): "v1",
       (OT_BAGGAGE_PREFIX.toUpperCase() + "k2"): "v2",
-      SOME_HEADER                             : "my-interesting-info",
+      SOME_HEADER                             : "my-interesting-info,and-more",
       SOME_CUSTOM_BAGGAGE_HEADER              : "my-interesting-baggage-info",
       SOME_CUSTOM_BAGGAGE_HEADER_2            : "my-interesting-baggage-info-2",
     ]
+    def expectedTagValue = allowComma ? "my-interesting-info,and-more" : "my-interesting-info"
 
     if (samplingPriority != PrioritySampling.UNSET) {
       headers.put(SAMPLING_PRIORITY_KEY, "$samplingPriority".toString())
@@ -80,16 +88,19 @@ class DatadogHttpExtractorTest extends DDSpecification {
       "k2"                        : "v2",
       "some-baggage"              : "my-interesting-baggage-info",
       "some-CaseSensitive-baggage": "my-interesting-baggage-info-2"]
-    context.tags == ["some-tag": "my-interesting-info"]
+    context.tags == ["some-tag": "$expectedTagValue"]
     context.samplingPriority == samplingPriority
     context.origin == origin
 
+    cleanup:
+    extractor.cleanup()
+
     where:
-    traceId               | spanId                | samplingPriority              | origin
-    "1"                   | "2"                   | PrioritySampling.UNSET        | null
-    "2"                   | "3"                   | PrioritySampling.SAMPLER_KEEP | "saipan"
-    "$TRACE_ID_MAX"       | "${TRACE_ID_MAX - 1}" | PrioritySampling.UNSET        | "saipan"
-    "${TRACE_ID_MAX - 1}" | "$TRACE_ID_MAX"       | PrioritySampling.SAMPLER_KEEP | "saipan"
+    traceId               | spanId                | samplingPriority              | origin   | allowComma
+    "1"                   | "2"                   | PrioritySampling.UNSET        | null     | true
+    "2"                   | "3"                   | PrioritySampling.SAMPLER_KEEP | "saipan" | false
+    "$TRACE_ID_MAX"       | "${TRACE_ID_MAX - 1}" | PrioritySampling.UNSET        | "saipan" | true
+    "${TRACE_ID_MAX - 1}" | "$TRACE_ID_MAX"       | PrioritySampling.SAMPLER_KEEP | "saipan" | false
   }
 
   def "extract header tags with no propagation"() {
@@ -427,7 +438,7 @@ class DatadogHttpExtractorTest extends DDSpecification {
       (HttpCodec.X_CLIENT_IP_KEY): '3.3.3.3',
       (HttpCodec.TRUE_CLIENT_IP_KEY): '4.4.4.4',
       (HttpCodec.FORWARDED_FOR_KEY): '5.5.5.5',
-      (HttpCodec.X_FORWARDED_KEY): '6.6.6.6',
+      (HttpCodec.FORWARDED_KEY): '6.6.6.6',
       (HttpCodec.FASTLY_CLIENT_IP_KEY): '7.7.7.7',
       (HttpCodec.CF_CONNECTING_IP_KEY): '8.8.8.8',
       (HttpCodec.CF_CONNECTING_IP_V6_KEY): '9.9.9.9',
@@ -443,7 +454,7 @@ class DatadogHttpExtractorTest extends DDSpecification {
     assert context.XClientIp == '3.3.3.3'
     assert context.trueClientIp == '4.4.4.4'
     assert context.forwardedFor == '5.5.5.5'
-    assert context.XForwarded == '6.6.6.6'
+    assert context.forwarded == '6.6.6.6'
     assert context.fastlyClientIp == '7.7.7.7'
     assert context.cfConnectingIp == '8.8.8.8'
     assert context.cfConnectingIpv6 == '9.9.9.9'

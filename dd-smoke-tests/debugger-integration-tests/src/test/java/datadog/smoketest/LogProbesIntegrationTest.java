@@ -16,19 +16,23 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadog.debugger.agent.JsonSnapshotSerializer;
+import com.datadog.debugger.agent.ProbeStatus;
 import com.datadog.debugger.el.DSL;
 import com.datadog.debugger.el.ProbeCondition;
 import com.datadog.debugger.probe.LogProbe;
 import com.datadog.debugger.sink.Snapshot;
 import com.squareup.moshi.JsonAdapter;
-import datadog.trace.api.Platform;
+import datadog.environment.JavaVirtualMachine;
 import datadog.trace.bootstrap.debugger.CapturedContext;
 import datadog.trace.bootstrap.debugger.MethodLocation;
 import datadog.trace.bootstrap.debugger.ProbeId;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -39,7 +43,7 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
   @DisplayName("testInaccessibleObject")
   void testInaccessibleObject() throws Exception {
     final String METHOD_NAME = "managementMethod";
-    final String EXPECTED_UPLOADS = "3";
+    final String EXPECTED_UPLOADS = "4"; // 3 statuses + 1 snapshot
     LogProbe probe =
         LogProbe.builder().probeId(PROBE_ID).where(MAIN_CLASS_NAME, METHOD_NAME).build();
     setCurrentConfiguration(createConfig(probe));
@@ -53,7 +57,7 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
   @DisplayName("testFullMethod")
   void testFullMethod() throws Exception {
     final String METHOD_NAME = "fullMethod";
-    final String EXPECTED_UPLOADS = "3";
+    final String EXPECTED_UPLOADS = "4"; // 3 statuses + 1 snapshot
     LogProbe probe =
         LogProbe.builder()
             .probeId(PROBE_ID)
@@ -62,34 +66,33 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
             .build();
     setCurrentConfiguration(createConfig(probe));
     targetProcess = createProcessBuilder(logFilePath, METHOD_NAME, EXPECTED_UPLOADS).start();
-    RecordedRequest request = retrieveSnapshotRequest();
-    assertNotNull(request);
-    assertFalse(logHasErrors(logFilePath, it -> false));
-    String bodyStr = request.getBody().readUtf8();
-    JsonAdapter<List<JsonSnapshotSerializer.IntakeRequest>> adapter = createAdapterForSnapshot();
-    System.out.println(bodyStr);
-    Snapshot snapshot = adapter.fromJson(bodyStr).get(0).getDebugger().getSnapshot();
-    assertEquals(PROBE_ID.getId(), snapshot.getProbe().getId());
-    assertFullMethodCaptureArgs(snapshot.getCaptures().getEntry());
-    assertEquals(0, snapshot.getCaptures().getEntry().getLocals().size());
-    assertNull(snapshot.getCaptures().getEntry().getThrowable());
-    assertNull(snapshot.getCaptures().getEntry().getFields());
-    assertFullMethodCaptureArgs(snapshot.getCaptures().getReturn());
-    assertCaptureReturnValue(
-        snapshot.getCaptures().getReturn(),
-        "java.lang.String",
-        "42, foobar, 3.42, {key1=val1, key2=val2, key3=val3}, var1,var2,var3");
-    assertNotNull(snapshot.getCaptures().getReturn().getLocals());
-    assertEquals(1, snapshot.getCaptures().getReturn().getLocals().size()); // @return
-    assertNull(snapshot.getCaptures().getReturn().getThrowable());
-    assertNull(snapshot.getCaptures().getReturn().getFields());
+    AtomicBoolean snapshotReceived = new AtomicBoolean();
+    registerSnapshotListener(
+        snapshot -> {
+          assertEquals(PROBE_ID.getId(), snapshot.getProbe().getId());
+          assertFullMethodCaptureArgs(snapshot.getCaptures().getEntry());
+          assertNull(snapshot.getCaptures().getEntry().getLocals());
+          assertNull(snapshot.getCaptures().getEntry().getCapturedThrowable());
+          assertFullMethodCaptureArgs(snapshot.getCaptures().getReturn());
+          assertCaptureReturnValue(
+              snapshot.getCaptures().getReturn(),
+              "java.lang.String",
+              "42, foobar, 3.42, {key1=val1, key2=val2, key3=val3}, var1,var2,var3");
+          assertNotNull(snapshot.getCaptures().getReturn().getLocals());
+          // @return is the only locals but ex is safely hoisted in the method
+          assertEquals(2, snapshot.getCaptures().getReturn().getLocals().size());
+          assertNull(snapshot.getCaptures().getReturn().getCapturedThrowable());
+          snapshotReceived.set(true);
+        });
+    AtomicBoolean statusResult = registerCheckReceivedInstalledEmitting();
+    processRequests(() -> snapshotReceived.get() && statusResult.get());
   }
 
   @Test
   @DisplayName("testFullMethodWithCondition")
   void testFullMethodWithCondition() throws Exception {
     final String METHOD_NAME = "fullMethod";
-    final String EXPECTED_UPLOADS = "3";
+    final String EXPECTED_UPLOADS = "4"; // 3 statuses + 1 snapshot
     LogProbe probe =
         LogProbe.builder()
             .probeId(PROBE_ID)
@@ -101,22 +104,22 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
             .build();
     setCurrentConfiguration(createConfig(probe));
     targetProcess = createProcessBuilder(logFilePath, METHOD_NAME, EXPECTED_UPLOADS).start();
-    RecordedRequest request = retrieveSnapshotRequest();
-    assertNotNull(request);
-    assertFalse(logHasErrors(logFilePath, it -> false));
-    String bodyStr = request.getBody().readUtf8();
-    JsonAdapter<List<JsonSnapshotSerializer.IntakeRequest>> adapter = createAdapterForSnapshot();
-    System.out.println(bodyStr);
-    Snapshot snapshot = adapter.fromJson(bodyStr).get(0).getDebugger().getSnapshot();
-    assertEquals(PROBE_ID.getId(), snapshot.getProbe().getId());
-    assertFullMethodCaptureArgs(snapshot.getCaptures().getEntry());
+    AtomicBoolean snapshotReceived = new AtomicBoolean();
+    registerSnapshotListener(
+        snapshot -> {
+          assertEquals(PROBE_ID.getId(), snapshot.getProbe().getId());
+          assertFullMethodCaptureArgs(snapshot.getCaptures().getEntry());
+          snapshotReceived.set(true);
+        });
+    AtomicBoolean statusResult = registerCheckReceivedInstalledEmitting();
+    processRequests(() -> snapshotReceived.get() && statusResult.get());
   }
 
   @Test
   @DisplayName("testFullMethodWithConditionAtExit")
   void testFullMethodWithConditionAtExit() throws Exception {
     final String METHOD_NAME = "fullMethod";
-    final String EXPECTED_UPLOADS = "3";
+    final String EXPECTED_UPLOADS = "4"; // 3 statuses + 1 snapshot
     LogProbe probe =
         LogProbe.builder()
             .probeId(PROBE_ID)
@@ -130,22 +133,22 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
             .build();
     setCurrentConfiguration(createConfig(probe));
     targetProcess = createProcessBuilder(logFilePath, METHOD_NAME, EXPECTED_UPLOADS).start();
-    RecordedRequest request = retrieveSnapshotRequest();
-    assertNotNull(request);
-    assertFalse(logHasErrors(logFilePath, it -> false));
-    String bodyStr = request.getBody().readUtf8();
-    JsonAdapter<List<JsonSnapshotSerializer.IntakeRequest>> adapter = createAdapterForSnapshot();
-    System.out.println(bodyStr);
-    Snapshot snapshot = adapter.fromJson(bodyStr).get(0).getDebugger().getSnapshot();
-    assertEquals(PROBE_ID.getId(), snapshot.getProbe().getId());
-    assertFullMethodCaptureArgs(snapshot.getCaptures().getReturn());
+    AtomicBoolean snapshotReceived = new AtomicBoolean();
+    registerSnapshotListener(
+        snapshot -> {
+          assertEquals(PROBE_ID.getId(), snapshot.getProbe().getId());
+          assertFullMethodCaptureArgs(snapshot.getCaptures().getReturn());
+          snapshotReceived.set(true);
+        });
+    AtomicBoolean statusResult = registerCheckReceivedInstalledEmitting();
+    processRequests(() -> snapshotReceived.get() && statusResult.get());
   }
 
   @Test
   @DisplayName("testFullMethodWithConditionFailed")
   void testFullMethodWithConditionFailed() throws Exception {
     final String METHOD_NAME = "fullMethod";
-    final String EXPECTED_UPLOADS = "3";
+    final String EXPECTED_UPLOADS = "4"; // 3 statuses + 1 snapshot
     LogProbe probe =
         LogProbe.builder()
             .probeId(PROBE_ID)
@@ -156,16 +159,17 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
             .build();
     setCurrentConfiguration(createConfig(probe));
     targetProcess = createProcessBuilder(logFilePath, METHOD_NAME, EXPECTED_UPLOADS).start();
-    RecordedRequest request = retrieveSnapshotRequest();
-    assertNotNull(request);
-    assertFalse(logHasErrors(logFilePath, it -> false));
-    String bodyStr = request.getBody().readUtf8();
-    JsonAdapter<List<JsonSnapshotSerializer.IntakeRequest>> adapter = createAdapterForSnapshot();
-    System.out.println(bodyStr);
-    Snapshot snapshot = adapter.fromJson(bodyStr).get(0).getDebugger().getSnapshot();
-    assertEquals(PROBE_ID.getId(), snapshot.getProbe().getId());
-    assertEquals(1, snapshot.getEvaluationErrors().size());
-    assertEquals("Cannot find symbol: noarg", snapshot.getEvaluationErrors().get(0).getMessage());
+    AtomicBoolean snapshotReceived = new AtomicBoolean();
+    registerSnapshotListener(
+        snapshot -> {
+          assertEquals(PROBE_ID.getId(), snapshot.getProbe().getId());
+          assertEquals(1, snapshot.getEvaluationErrors().size());
+          assertEquals(
+              "Cannot find symbol: noarg", snapshot.getEvaluationErrors().get(0).getMessage());
+          snapshotReceived.set(true);
+        });
+    AtomicBoolean statusResult = registerCheckReceivedInstalledEmitting();
+    processRequests(() -> snapshotReceived.get() && statusResult.get());
   }
 
   @Test
@@ -173,7 +177,7 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
   void testFullMethodWithLogTemplate() throws Exception {
     final String METHOD_NAME = "fullMethod";
     final String LOG_TEMPLATE = "log line {argInt} {argStr} {argDouble} {argMap} {argVar}";
-    final String EXPECTED_UPLOADS = "3";
+    final String EXPECTED_UPLOADS = "4"; // 3 statuses + 1 snapshot
     LogProbe probe =
         LogProbe.builder()
             .probeId(PROBE_ID)
@@ -182,17 +186,22 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
             .build();
     setCurrentConfiguration(createConfig(probe));
     targetProcess = createProcessBuilder(logFilePath, METHOD_NAME, EXPECTED_UPLOADS).start();
-    RecordedRequest request = retrieveSnapshotRequest();
-    assertNotNull(request);
-    assertFalse(logHasErrors(logFilePath, it -> false));
-    String bodyStr = request.getBody().readUtf8();
-    JsonAdapter<List<JsonSnapshotSerializer.IntakeRequest>> adapter = createAdapterForSnapshot();
-    System.out.println(bodyStr);
-    JsonSnapshotSerializer.IntakeRequest intakeRequest = adapter.fromJson(bodyStr).get(0);
-    assertEquals(PROBE_ID.getId(), intakeRequest.getDebugger().getSnapshot().getProbe().getId());
-    assertEquals(
-        "log line 42 foobar 3.42 {[key1=val1], [key2=val2], [key3=val3]} [var1, var2, var3]",
-        intakeRequest.getMessage());
+    AtomicBoolean snapshotReceived = new AtomicBoolean();
+    AtomicBoolean correctLogMessage = new AtomicBoolean();
+    registerIntakeRequestListener(
+        intakeRequest -> {
+          assertEquals(
+              "log line 42 foobar 3.42 {[key1=val1], [key2=val2], [key3=val3]} [var1, var2, var3]",
+              intakeRequest.getMessage());
+          correctLogMessage.set(true);
+        });
+    registerSnapshotListener(
+        snapshot -> {
+          assertEquals(PROBE_ID.getId(), snapshot.getProbe().getId());
+          snapshotReceived.set(true);
+        });
+    AtomicBoolean statusResult = registerCheckReceivedInstalledEmitting();
+    processRequests(() -> snapshotReceived.get() && correctLogMessage.get() && statusResult.get());
   }
 
   @Test
@@ -209,43 +218,79 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
               .build());
     }
     setCurrentConfiguration(createConfig(probes));
-    final int NB_SNAPSHOTS = 10;
-    int expectedSnapshotUploads = NB_SNAPSHOTS * 3;
+    final int NB_PROBES = 10;
+    int expectedSnapshotUploads = NB_PROBES * 4; // (3 statuses + 1 snapshot) * 10 probes
     targetProcess =
         createProcessBuilder(logFilePath, METHOD_NAME, String.valueOf(expectedSnapshotUploads))
             .start();
     Set<String> probeIds = new HashSet<>();
-    int snapshotCount = 0;
-    while (snapshotCount < NB_SNAPSHOTS) {
-      RecordedRequest request = retrieveSnapshotRequest();
-      assertNotNull(request);
-      String bodyStr = request.getBody().readUtf8();
-      JsonAdapter<List<JsonSnapshotSerializer.IntakeRequest>> adapter = createAdapterForSnapshot();
-      List<JsonSnapshotSerializer.IntakeRequest> intakeRequests = adapter.fromJson(bodyStr);
-      snapshotCount += intakeRequests.size();
-      System.out.println("received " + intakeRequests.size() + " snapshots");
-      for (JsonSnapshotSerializer.IntakeRequest intakeRequest : intakeRequests) {
-        Snapshot snapshot = intakeRequest.getDebugger().getSnapshot();
-        probeIds.add(snapshot.getProbe().getId());
-      }
-    }
-    assertEquals(NB_SNAPSHOTS, probeIds.size());
-    for (int i = 0; i < NB_SNAPSHOTS; i++) {
+    AtomicBoolean allSnapshotReceived = new AtomicBoolean();
+    AtomicBoolean allStatusEmitting = new AtomicBoolean();
+    registerSnapshotListener(
+        snapshot -> {
+          probeIds.add(snapshot.getProbe().getId());
+          allSnapshotReceived.set(probeIds.size() == NB_PROBES);
+        });
+    Map<String, ProbeStatus.Status> statuses = new HashMap<>();
+    registerProbeStatusListener(
+        probeStatus -> {
+          statuses.put(
+              probeStatus.getDiagnostics().getProbeId().getId(),
+              probeStatus.getDiagnostics().getStatus());
+          allStatusEmitting.set(
+              statuses.size() == NB_PROBES
+                  && statuses.values().stream()
+                      .allMatch(status -> status == ProbeStatus.Status.EMITTING));
+        });
+    processRequests(() -> allSnapshotReceived.get() && allStatusEmitting.get());
+    assertEquals(NB_PROBES, probeIds.size());
+    for (int i = 0; i < NB_PROBES; i++) {
       assertTrue(probeIds.contains(String.valueOf(i)));
     }
     assertFalse(logHasErrors(logFilePath, it -> false));
   }
 
   @Test
+  @DisplayName("testLineProbe")
+  void testLineProbe() throws Exception {
+    final String METHOD_NAME = "fullMethod";
+    final String EXPECTED_UPLOADS = "4"; // 3 statuses + 1 snapshot
+    LogProbe probe =
+        LogProbe.builder()
+            .probeId(LINE_PROBE_ID1)
+            .where("DebuggerTestApplication.java", 88)
+            .captureSnapshot(true)
+            .build();
+    setCurrentConfiguration(createConfig(probe));
+    targetProcess = createProcessBuilder(logFilePath, METHOD_NAME, EXPECTED_UPLOADS).start();
+    AtomicBoolean snapshotReceived = new AtomicBoolean();
+    registerSnapshotListener(
+        snapshot -> {
+          assertEquals(LINE_PROBE_ID1.getId(), snapshot.getProbe().getId());
+          CapturedContext capturedContext = snapshot.getCaptures().getLines().get(88);
+          assertFullMethodCaptureArgs(capturedContext);
+          assertNull(capturedContext.getLocals());
+          assertNull(capturedContext.getCapturedThrowable());
+          snapshotReceived.set(true);
+        });
+    AtomicBoolean statusResult = registerCheckReceivedInstalledEmitting();
+    processRequests(() -> snapshotReceived.get() && statusResult.get());
+  }
+
+  @Test
   @DisplayName("testSamplingSnapshotDefault")
-  @DisabledIf(value = "datadog.trace.api.Platform#isJ9", disabledReason = "Flaky on J9 JVMs")
+  @DisabledIf(
+      value = "datadog.environment.JavaVirtualMachine#isJ9",
+      disabledReason = "Flaky on J9 JVMs")
   void testSamplingSnapshotDefault() throws Exception {
     doSamplingSnapshot(null, MethodLocation.EXIT);
   }
 
   @Test
   @DisplayName("testSamplingSnapshotDefaultWithConditionAtEntry")
-  @DisabledIf(value = "datadog.trace.api.Platform#isJ9", disabledReason = "Flaky on J9 JVMs")
+  @DisabledIf(
+      value = "datadog.environment.JavaVirtualMachine#isJ9",
+      disabledReason = "Flaky on J9 JVMs")
   void testSamplingSnapshotDefaultWithConditionAtEntry() throws Exception {
     doSamplingSnapshot(
         new ProbeCondition(DSL.when(DSL.eq(value(1), value(1))), "1 == 1"), MethodLocation.ENTRY);
@@ -253,7 +298,9 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
 
   @Test
   @DisplayName("testSamplingSnapshotDefaultWithConditionAtExit")
-  @DisabledIf(value = "datadog.trace.api.Platform#isJ9", disabledReason = "Flaky on J9 JVMs")
+  @DisabledIf(
+      value = "datadog.environment.JavaVirtualMachine#isJ9",
+      disabledReason = "Flaky on J9 JVMs")
   void testSamplingSnapshotDefaultWithConditionAtExit() throws Exception {
     doSamplingSnapshot(
         new ProbeCondition(DSL.when(DSL.eq(value(1), value(1))), "1 == 1"), MethodLocation.EXIT);
@@ -262,7 +309,7 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
   private void doSamplingSnapshot(ProbeCondition probeCondition, MethodLocation evaluateAt)
       throws Exception {
     final int LOOP_COUNT = 1000;
-    final String EXPECTED_UPLOADS = "4";
+    final String EXPECTED_UPLOADS = "4"; // 3 statuses + 1 snapshot
     LogProbe probe =
         LogProbe.builder()
             .probeId(PROBE_ID)
@@ -282,12 +329,14 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
 
   @Test
   @DisplayName("testSamplingLogDefault")
-  @DisabledIf(value = "datadog.trace.api.Platform#isJ9", disabledReason = "Flaky on J9 JVMs")
+  @DisabledIf(
+      value = "datadog.environment.JavaVirtualMachine#isJ9",
+      disabledReason = "Flaky on J9 JVMs")
   void testSamplingLogDefault() throws Exception {
     batchSize = 100;
     final int LOOP_COUNT = 1000;
     final String LOG_TEMPLATE = "log line {argInt} {argStr} {argDouble} {argMap} {argVar}";
-    final String EXPECTED_UPLOADS = String.valueOf(LOOP_COUNT / batchSize + 2);
+    final String EXPECTED_UPLOADS = String.valueOf(LOOP_COUNT / batchSize + 3); // +3 statuses
     LogProbe probe =
         LogProbe.builder()
             .probeId(PROBE_ID)
@@ -306,11 +355,13 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
 
   @Test
   @DisplayName("testSamplingLogCustom")
-  @DisabledIf(value = "datadog.trace.api.Platform#isJ9", disabledReason = "Flaky on J9 JVMs")
+  @DisabledIf(
+      value = "datadog.environment.JavaVirtualMachine#isJ9",
+      disabledReason = "Flaky on J9 JVMs")
   void testSamplingLogCustom() throws Exception {
     final int LOOP_COUNT = 1000;
     final String LOG_TEMPLATE = "log line {argInt} {argStr} {argDouble} {argMap} {argVar}";
-    final String EXPECTED_UPLOADS = "120";
+    final String EXPECTED_UPLOADS = "170";
     LogProbe probe =
         LogProbe.builder()
             .probeId(PROBE_ID)
@@ -324,13 +375,13 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
         createProcessBuilder(
                 logFilePath, "loopingFullMethod", EXPECTED_UPLOADS, String.valueOf(LOOP_COUNT))
             .start();
-    assertTrue(countSnapshots() < 120);
+    assertTrue(countSnapshots() < 200);
   }
 
   @Test
   @DisplayName("testUncaughtException")
   void testUncaughtException() throws Exception {
-    final String EXPECTED_UPLOADS = "3";
+    final String EXPECTED_UPLOADS = "4"; // 3 statuses + 1 snapshot
     final String METHOD_NAME = "exceptionMethod";
     LogProbe probe =
         LogProbe.builder()
@@ -351,7 +402,8 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
     JsonSnapshotSerializer.IntakeRequest intakeRequest = adapter.fromJson(bodyStr).get(0);
     Snapshot snapshot = intakeRequest.getDebugger().getSnapshot();
     assertEquals("123356536", snapshot.getProbe().getId());
-    CapturedContext.CapturedThrowable throwable = snapshot.getCaptures().getReturn().getThrowable();
+    CapturedContext.CapturedThrowable throwable =
+        snapshot.getCaptures().getReturn().getCapturedThrowable();
     assertEquals("oops uncaught!", throwable.getMessage());
     assertTrue(throwable.getStacktrace().size() > 0);
     assertEquals(
@@ -362,7 +414,7 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
   @Test
   @DisplayName("testCaughtException")
   void testCaughtException() throws Exception {
-    final String EXPECTED_UPLOADS = "3";
+    final String EXPECTED_UPLOADS = "4"; // 3 statuses + 1 snapshot
     final String METHOD_NAME = "exceptionMethod";
     LogProbe probe =
         LogProbe.builder()
@@ -418,7 +470,7 @@ public class LogProbesIntegrationTest extends SimpleAppDebuggerIntegrationTest {
   }
 
   private void assertFullMethodCaptureArgs(CapturedContext context) {
-    if (Platform.isJ9()) {
+    if (JavaVirtualMachine.isJ9()) {
       // skip for J9/OpenJ9 as we cannot get local variable debug info.
       return;
     }

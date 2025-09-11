@@ -5,7 +5,7 @@ import datadog.trace.api.DDSpanId
 import datadog.trace.api.DDTraceId
 import datadog.trace.api.StatsDClient
 import datadog.trace.api.sampling.PrioritySampling
-import datadog.trace.bootstrap.instrumentation.api.AgentTracer.NoopPathwayContext
+import datadog.trace.api.datastreams.NoopPathwayContext
 import datadog.trace.common.writer.ddagent.DDAgentApi
 import datadog.trace.common.writer.ddagent.DDAgentMapperDiscovery
 import datadog.trace.core.CoreTracer
@@ -35,7 +35,7 @@ class DDAgentWriterTest extends DDCoreSpecification {
   def dispatcher = new PayloadDispatcherImpl(new DDAgentMapperDiscovery(discovery), api, monitor, monitoring)
 
   @Subject
-  def writer = new DDAgentWriter(worker, dispatcher, monitor, false)
+  def writer = new DDAgentWriter(worker, dispatcher, monitor, 1, TimeUnit.SECONDS, false)
 
   // Only used to create spans
   def dummyTracer = tracerBuilder().writer(new ListWriter()).build()
@@ -176,7 +176,7 @@ class DDAgentWriterTest extends DDCoreSpecification {
     def worker = Mock(TraceProcessingWorker)
     def monitor = Stub(HealthMetrics)
     def dispatcher = Mock(PayloadDispatcherImpl)
-    def writer = new DDAgentWriter(worker, dispatcher, monitor, false)
+    def writer = new DDAgentWriter(worker, dispatcher, monitor, 1, TimeUnit.SECONDS, false)
     def p0 = newSpan()
     p0.setSamplingPriority(PrioritySampling.SAMPLER_DROP)
     def trace = [p0, newSpan()]
@@ -193,8 +193,8 @@ class DDAgentWriterTest extends DDCoreSpecification {
   }
 
   def newSpan() {
-    CoreTracer tracer = Mock(CoreTracer)
-    PendingTrace trace = Mock(PendingTrace)
+    CoreTracer tracer = Stub(CoreTracer)
+    PendingTrace trace = Stub(PendingTrace)
     trace.mapServiceName(_) >> { String serviceName -> serviceName }
     trace.getTracer() >> tracer
     def context = new DDSpanContext(

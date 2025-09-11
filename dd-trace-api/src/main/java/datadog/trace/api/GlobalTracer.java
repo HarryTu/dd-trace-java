@@ -1,7 +1,8 @@
 package datadog.trace.api;
 
 import datadog.trace.api.interceptor.TraceInterceptor;
-import datadog.trace.api.internal.InternalTracer;
+import datadog.trace.context.NoopTraceScope;
+import datadog.trace.context.TraceScope;
 import java.util.ArrayList;
 import java.util.Collection;
 
@@ -28,6 +29,24 @@ public class GlobalTracer {
         public boolean addTraceInterceptor(TraceInterceptor traceInterceptor) {
           return false;
         }
+
+        @Override
+        public TraceScope muteTracing() {
+          return NoopTraceScope.INSTANCE;
+        }
+
+        @Override
+        public TraceScope.Continuation captureActiveSpan() {
+          return NoopTraceScope.NoopContinuation.INSTANCE;
+        }
+
+        @Override
+        public boolean isAsyncPropagationEnabled() {
+          return false;
+        }
+
+        @Override
+        public void setAsyncPropagationEnabled(boolean asyncPropagationEnabled) {}
       };
 
   private static final Collection<Callback> installationCallbacks = new ArrayList<>();
@@ -66,13 +85,20 @@ public class GlobalTracer {
     return provider;
   }
 
+  /** @deprecated use static methods in {@link EventTrackerV2} directly */
+  @Deprecated
   public static EventTracker getEventTracker() {
-    if (eventTracker == EventTracker.NO_EVENT_TRACKER) {
-      if (provider instanceof InternalTracer) {
-        eventTracker = new EventTracker((InternalTracer) provider);
-      }
-    }
     return eventTracker;
+  }
+
+  /**
+   * Controls the implementation for the event tracker. The AppSec subsystem calls this method on
+   * startup. This can be called explicitly for e.g. testing purposes.
+   *
+   * @param tracker the implementation for the event tracker.
+   */
+  public static void setEventTracker(final EventTracker tracker) {
+    eventTracker = tracker;
   }
 
   // --------------------------------------------------------------------------------

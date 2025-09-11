@@ -2,6 +2,8 @@ package datadog.trace.bootstrap.instrumentation.decorator
 
 
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext
+import datadog.trace.bootstrap.instrumentation.api.ErrorPriorities
 import datadog.trace.bootstrap.instrumentation.api.Tags
 import datadog.trace.test.util.DDSpecification
 import spock.lang.Shared
@@ -15,6 +17,7 @@ class BaseDecoratorTest extends DDSpecification {
   def errorPriority = null as Byte
 
   def span = Mock(AgentSpan)
+  def spanContext = Mock(AgentSpanContext)
 
   def "test afterStart"() {
     when:
@@ -23,6 +26,8 @@ class BaseDecoratorTest extends DDSpecification {
     then:
     1 * span.setSpanType(decorator.spanType())
     1 * span.setTag(Tags.COMPONENT, "test-component")
+    1 * span.context() >> spanContext
+    1 * spanContext.setIntegrationName("test-component")
     _ * span.setTag(_, _) // Want to allow other calls from child implementations.
     _ * span.setMeasured(true)
     _ * span.setMetric(_, _)
@@ -62,11 +67,7 @@ class BaseDecoratorTest extends DDSpecification {
 
     then:
     if (error) {
-      if (errorPriority != null) {
-        1 * span.addThrowable(error, errorPriority)
-      } else {
-        1 * span.addThrowable(error)
-      }
+      1 * span.addThrowable(error, errorPriority != null ? errorPriority : ErrorPriorities.DEFAULT)
     }
     0 * _
 

@@ -13,12 +13,13 @@ import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.QUERY_
 import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.QUERY_ENCODED_QUERY;
 import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.QUERY_PARAM;
 import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.REDIRECT;
+import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.SESSION_ID;
 import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.SUCCESS;
 import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.UNKNOWN;
 import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.USER_BLOCK;
 import static datadog.trace.agent.test.utils.TraceUtils.runnableUnderTraceAsync;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeScope;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeSpan;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.isAsyncPropagationEnabled;
 
 import datadog.appsec.api.blocking.Blocking;
 import datadog.trace.agent.test.base.HttpServerTest;
@@ -31,10 +32,19 @@ import io.vertx.core.json.JsonObject;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BodyHandler;
+import io.vertx.ext.web.handler.SessionHandler;
+import io.vertx.ext.web.sstore.LocalSessionStore;
 
 public class VertxTestServer extends AbstractVerticle {
   public static final String CONFIG_HTTP_SERVER_PORT = "http.server.port";
   public static final String PORT_DATA_ADDRESS = "PORT_DATA";
+
+  int fibonacci(int n) {
+    if (n <= 1) {
+      return n;
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2);
+  }
 
   @Override
   public void start(final Promise<Void> startPromise) {
@@ -50,8 +60,10 @@ public class VertxTestServer extends AbstractVerticle {
                 controller(
                     ctx,
                     SUCCESS,
-                    () ->
-                        ctx.response().setStatusCode(SUCCESS.getStatus()).end(SUCCESS.getBody())));
+                    () -> {
+                      fibonacci(40);
+                      ctx.response().setStatusCode(SUCCESS.getStatus()).end(SUCCESS.getBody());
+                    }));
     router
         .route(FORWARDED.getPath())
         .handler(
@@ -115,7 +127,8 @@ public class VertxTestServer extends AbstractVerticle {
                     BODY_JSON,
                     () -> {
                       JsonObject json = ctx.getBodyAsJson();
-                      ctx.response().setStatusCode(BODY_JSON.getStatus()).end(json.toString());
+                      ctx.response().setStatusCode(BODY_JSON.getStatus());
+                      ctx.json(json);
                     }));
     router
         .route(QUERY_ENCODED_BOTH.getRawPath())
@@ -198,6 +211,14 @@ public class VertxTestServer extends AbstractVerticle {
         .route(EXCEPTION.getPath())
         .handler(ctx -> controller(ctx, EXCEPTION, VertxTestServer::exception));
 
+    router
+        .route(SESSION_ID.getPath())
+        .handler(SessionHandler.create(LocalSessionStore.create(vertx)));
+    router
+        .route(SESSION_ID.getPath())
+        .handler(
+            ctx -> ctx.response().setStatusCode(SESSION_ID.getStatus()).end(ctx.session().id()));
+
     router = customizeAfterRoutes(router);
 
     vertx
@@ -261,7 +282,7 @@ public class VertxTestServer extends AbstractVerticle {
   private static void controller(
       RoutingContext ctx, final ServerEndpoint endpoint, final Runnable runnable) {
     assert activeSpan() != null : "Controller should have a parent span.";
-    assert activeScope().isAsyncPropagating() : "Scope should be propagating async.";
+    assert isAsyncPropagationEnabled() : "Span should be propagating async.";
     ctx.response()
         .putHeader(
             HttpServerTest.getIG_RESPONSE_HEADER(), HttpServerTest.getIG_RESPONSE_HEADER_VALUE());

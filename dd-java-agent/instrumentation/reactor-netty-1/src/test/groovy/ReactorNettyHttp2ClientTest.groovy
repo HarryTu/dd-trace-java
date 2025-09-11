@@ -1,17 +1,21 @@
-import static datadog.trace.agent.test.utils.TraceUtils.basicSpan
-import static datadog.trace.agent.test.utils.TraceUtils.runUnderTrace
-
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.environment.JavaVirtualMachine
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.DDSpanTypes
 import datadog.trace.bootstrap.instrumentation.api.Tags
 import reactor.netty.DisposableServer
 import reactor.netty.http.HttpProtocol
 import reactor.netty.http.client.HttpClient
 import reactor.netty.http.server.HttpServer
+import spock.lang.IgnoreIf
 import spock.lang.Shared
-import spock.lang.Unroll
 
-class ReactorNettyHttp2ClientTest extends AgentTestRunner {
+import static datadog.trace.agent.test.utils.TraceUtils.basicSpan
+import static datadog.trace.agent.test.utils.TraceUtils.runUnderTrace
+
+@IgnoreIf(reason = "TLS issues with OpenJ9", value = {
+  JavaVirtualMachine.isJ9()
+})
+class ReactorNettyHttp2ClientTest extends InstrumentationSpecification {
   @Shared
   DisposableServer server = HttpServer.create()
   .protocol(HttpProtocol.H2C, HttpProtocol.HTTP11)
@@ -30,7 +34,6 @@ class ReactorNettyHttp2ClientTest extends AgentTestRunner {
     server?.disposeNow()
   }
 
-  @Unroll
   def "test http2 client/server propagation"() {
     setup:
     HttpClient httpClient = HttpClient.create()

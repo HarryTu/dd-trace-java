@@ -2,9 +2,10 @@ package datadog.trace.agent.tooling;
 
 import static datadog.trace.bootstrap.AgentClassLoading.INJECTING_HELPERS;
 
-import datadog.trace.util.Strings;
+import datadog.trace.bootstrap.instrumentation.api.EagerHelper;
 import java.io.IOException;
 import java.lang.ref.WeakReference;
+import java.security.CodeSource;
 import java.security.ProtectionDomain;
 import java.util.Arrays;
 import java.util.Collections;
@@ -19,14 +20,20 @@ import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.ClassFileLocator;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.dynamic.loading.ClassInjector;
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.utility.JavaModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** Injects instrumentation helper classes into the user's classloader. */
-public class HelperInjector implements Instrumenter.AdviceTransformer {
+public class HelperInjector implements Instrumenter.TransformingAdvice {
   private static final Logger log = LoggerFactory.getLogger(HelperInjector.class);
 
+  private static final ClassFileLocator classFileLocator =
+      ClassFileLocator.ForClassLoader.of(Utils.getExtendedClassLoader());
+
+  private final boolean useAgentCodeSource;
+  private final AdviceShader adviceShader;
   private final String requestingName;
 
   private final Set<String> helperClassNames;
@@ -36,23 +43,44 @@ public class HelperInjector implements Instrumenter.AdviceTransformer {
       Collections.synchronizedMap(new WeakHashMap<ClassLoader, Boolean>());
 
   private final List<WeakReference<Object>> helperModules = new CopyOnWriteArrayList<>();
+
   /**
    * Construct HelperInjector.
    *
+   * @param useAgentCodeSource whether helper classes should be injected with the agent's {@link
+   *     CodeSource}.
    * @param helperClassNames binary names of the helper classes to inject. These class names must be
    *     resolvable by the classloader returned by
    *     datadog.trace.agent.tooling.Utils#getAgentClassLoader(). Classes are injected in the order
    *     provided. This is important if there is interdependency between helper classes that
    *     requires them to be injected in a specific order.
    */
-  public HelperInjector(final String requestingName, final String... helperClassNames) {
+  public HelperInjector(
+      final boolean useAgentCodeSource,
+      final String requestingName,
+      final String... helperClassNames) {
+    this(useAgentCodeSource, null, requestingName, helperClassNames);
+  }
+
+  public HelperInjector(
+      final boolean useAgentCodeSource,
+      final AdviceShader adviceShader,
+      final String requestingName,
+      final String... helperClassNames) {
+    this.useAgentCodeSource = useAgentCodeSource;
     this.requestingName = requestingName;
+    this.adviceShader = adviceShader;
 
     this.helperClassNames = new LinkedHashSet<>(Arrays.asList(helperClassNames));
   }
 
-  public HelperInjector(final String requestingName, final Map<String, byte[]> helperMap) {
+  public HelperInjector(
+      final boolean useAgentCodeSource,
+      final String requestingName,
+      final Map<String, byte[]> helperMap) {
+    this.useAgentCodeSource = useAgentCodeSource;
     this.requestingName = requestingName;
+    this.adviceShader = null;
 
     helperClassNames = helperMap.keySet();
     dynamicTypeMap.putAll(helperMap);
@@ -61,13 +89,13 @@ public class HelperInjector implements Instrumenter.AdviceTransformer {
   private Map<String, byte[]> getHelperMap() throws IOException {
     if (dynamicTypeMap.isEmpty()) {
       final Map<String, byte[]> classnameToBytes = new LinkedHashMap<>();
-
-      final ClassFileLocator locator =
-          ClassFileLocator.ForClassLoader.of(Utils.getAgentClassLoader());
-
-      for (final String helperClassName : helperClassNames) {
-        final byte[] classBytes = locator.locate(helperClassName).resolve();
-        classnameToBytes.put(helperClassName, classBytes);
+      for (String helperName : helperClassNames) {
+        byte[] classBytes = classFileLocator.locate(helperName).resolve();
+        if (adviceShader != null) {
+          classBytes = adviceShader.shadeClass(classBytes);
+          helperName = adviceShader.uniqueHelper(helperName);
+        }
+        classnameToBytes.put(helperName, classBytes);
       }
 
       return classnameToBytes;
@@ -87,7 +115,7 @@ public class HelperInjector implements Instrumenter.AdviceTransformer {
       if (classLoader == null) {
         throw new UnsupportedOperationException(
             "Cannot inject helper classes onto boot-class-path; move "
-                + Strings.join(",", helperClassNames)
+                + String.join(",", helperClassNames)
                 + " to agent-bootstrap");
       }
 
@@ -98,7 +126,7 @@ public class HelperInjector implements Instrumenter.AdviceTransformer {
                 "Injecting helper classes - instrumentation.class={} instrumentation.target.classloader={} instrumentation.helper_classes=[{}]",
                 requestingName,
                 classLoader,
-                Strings.join(",", helperClassNames));
+                String.join(",", helperClassNames));
           }
 
           final Map<String, byte[]> classnameToBytes = getHelperMap();
@@ -111,11 +139,25 @@ public class HelperInjector implements Instrumenter.AdviceTransformer {
             final JavaModule javaModule = JavaModule.ofType(classes.values().iterator().next());
             helperModules.add(new WeakReference<>(javaModule.unwrap()));
           }
+
+          // forcibly initialize any eager helpers
+          for (Class<?> clazz : classes.values()) {
+            if (EagerHelper.class.isAssignableFrom(clazz)) {
+              try {
+                clazz.getMethod("init").invoke(null);
+              } catch (Throwable e) {
+                log.debug("Problem initializing {}", clazz, e);
+              }
+            }
+          }
+
         } catch (final Exception e) {
           if (log.isErrorEnabled()) {
+            // requestingName is concatenated to ensure it is sent to telemetry
             log.error(
-                "Failed to inject helper classes - instrumentation.class={} instrumentation.target.classloader={} instrumentation.target.class={}",
-                requestingName,
+                "Failed to inject helper classes - instrumentation.class="
+                    + requestingName
+                    + " instrumentation.target.classloader={} instrumentation.target.class={}",
                 classLoader,
                 typeDescription,
                 e);
@@ -135,9 +177,20 @@ public class HelperInjector implements Instrumenter.AdviceTransformer {
       final ClassLoader classLoader, final Map<String, byte[]> classnameToBytes) {
     INJECTING_HELPERS.begin();
     try {
-      return new ClassInjector.UsingReflection(classLoader).injectRaw(classnameToBytes);
+      ProtectionDomain protectionDomain = createProtectionDomain(classLoader);
+      return new ClassInjector.UsingReflection(classLoader, protectionDomain)
+          .injectRaw(classnameToBytes);
     } finally {
       INJECTING_HELPERS.end();
+    }
+  }
+
+  private ProtectionDomain createProtectionDomain(final ClassLoader classLoader) {
+    if (useAgentCodeSource) {
+      CodeSource codeSource = HelperInjector.class.getProtectionDomain().getCodeSource();
+      return new ProtectionDomain(codeSource, null, classLoader, null);
+    } else {
+      return ClassLoadingStrategy.NO_PROTECTION_DOMAIN;
     }
   }
 

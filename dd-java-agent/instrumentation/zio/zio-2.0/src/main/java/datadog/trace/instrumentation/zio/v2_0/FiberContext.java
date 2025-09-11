@@ -1,70 +1,38 @@
 package datadog.trace.instrumentation.zio.v2_0;
 
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.captureActiveSpan;
+
+import datadog.context.Context;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
-import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
-import datadog.trace.bootstrap.instrumentation.api.ScopeState;
 
 public class FiberContext {
+  private Context context;
+  private final AgentScope.Continuation continuation;
 
-  private final ScopeState state;
-  private AgentScope.Continuation continuation;
-  private AgentScope scope;
-  private ScopeState oldState;
+  private Context originalContext;
 
-  private FiberContext(ScopeState state, AgentScope.Continuation continuation) {
-    this.state = state;
-    this.continuation = continuation;
-    this.scope = null;
-    this.oldState = null;
-  }
-
-  public static FiberContext create() {
-    final ScopeState state = AgentTracer.get().newScopeState();
-    final AgentScope scope = AgentTracer.get().activeScope();
-    final AgentScope.Continuation continuation;
-
-    if (scope != null && scope.isAsyncPropagating()) {
-      continuation = scope.capture();
-    } else {
-      continuation = null;
-    }
-
-    return new FiberContext(state, continuation);
-  }
-
-  public void onEnd() {
-    if (this.scope != null) {
-      this.scope.close();
-      this.scope = null;
-    }
-
-    if (this.continuation != null) {
-      this.continuation.cancel();
-      this.continuation = null;
-    }
-
-    if (this.oldState != null) {
-      this.oldState.activate();
-      this.oldState = null;
-    }
-  }
-
-  public void onSuspend() {
-    if (this.oldState != null) {
-      this.oldState.activate();
-      this.oldState = null;
-    }
+  public FiberContext() {
+    // record context to use for this coroutine
+    this.context = Context.current();
+    // stop enclosing trace from finishing early
+    this.continuation = captureActiveSpan();
   }
 
   public void onResume() {
-    this.oldState = AgentTracer.get().newScopeState();
-    this.oldState.fetchFromActive();
+    originalContext = context.swap();
+  }
 
-    this.state.activate();
+  public void onSuspend() {
+    if (originalContext != null) {
+      context = originalContext.swap();
+      originalContext = null;
+    }
+  }
 
-    if (this.continuation != null && this.scope == null) {
-      this.scope = this.continuation.activate();
-      this.continuation = null;
+  public void onEnd() {
+    if (continuation != null) {
+      // release enclosing trace now the fiber has ended
+      continuation.cancel();
     }
   }
 }

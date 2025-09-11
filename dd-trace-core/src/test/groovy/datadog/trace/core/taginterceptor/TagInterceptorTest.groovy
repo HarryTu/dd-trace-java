@@ -3,12 +3,14 @@ package datadog.trace.core.taginterceptor
 import static datadog.trace.api.ConfigDefaults.DEFAULT_SERVICE_NAME
 import static datadog.trace.api.ConfigDefaults.DEFAULT_SERVLET_ROOT_CONTEXT_SERVICE_NAME
 import static datadog.trace.api.DDTags.ANALYTICS_SAMPLE_RATE
+import datadog.trace.api.ProductTraceSource
 import static datadog.trace.api.config.TracerConfig.SPLIT_BY_TAGS
 
 import datadog.trace.api.DDSpanTypes
 import datadog.trace.api.DDTags
 import datadog.trace.api.config.GeneralConfig
 import datadog.trace.api.env.CapturedEnvironment
+import datadog.trace.api.remoteconfig.ServiceNameCollector
 import datadog.trace.api.sampling.PrioritySampling
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan
 import datadog.trace.bootstrap.instrumentation.api.InstrumentationTags
@@ -17,6 +19,7 @@ import datadog.trace.common.sampling.AllSampler
 import datadog.trace.common.writer.ListWriter
 import datadog.trace.common.writer.LoggingWriter
 import datadog.trace.core.CoreSpan
+import datadog.trace.core.DDSpanContext
 import datadog.trace.core.test.DDCoreSpecification
 
 class TagInterceptorTest extends DDCoreSpecification {
@@ -175,33 +178,34 @@ class TagInterceptorTest extends DDCoreSpecification {
       .sampler(new AllSampler())
       // equivalent to split-by-tags: tag
       .tagInterceptor(new TagInterceptor(true, "my-service",
-      Collections.singleton(tag), new RuleFlags()))
+      Collections.singleton(tag), new RuleFlags(), false))
       .build()
   }
 
-  def "split-by-tags for servlet.context"() {
+  def "split-by-tags for servlet.context and experimental jee split by deployment is #jeeActive"() {
     setup:
-    def tracer = createSplittingTracer(InstrumentationTags.SERVLET_CONTEXT)
-
+    def tracer = tracerBuilder()
+      .serviceName("my-service")
+      .writer(new LoggingWriter())
+      .sampler(new AllSampler())
+      .tagInterceptor(new TagInterceptor(false, "my-service",
+      Collections.emptySet(), new RuleFlags(), jeeActive))
+      .build()
     when:
-    def span = tracer.buildSpan("some span")
-      .withTag(InstrumentationTags.SERVLET_CONTEXT, "some-context")
-      .start()
-    span.finish()
-
-    then:
-    span.serviceName == "some-context"
-
-    when:
-    span = tracer.buildSpan("some span").start()
+    def span = tracer.buildSpan("some span").start()
     span.setTag(InstrumentationTags.SERVLET_CONTEXT, "some-context")
     span.finish()
 
     then:
-    span.serviceName == "some-context"
+    span.serviceName == expected
 
     cleanup:
     tracer.close()
+
+    where:
+    expected       | jeeActive
+    "some-context" | false
+    "my-service"   | true
   }
 
   def "peer.service then split-by-tags via builder"() {
@@ -405,18 +409,34 @@ class TagInterceptorTest extends DDCoreSpecification {
     tracer.close()
 
     where:
-    tag                | value   | expected
-    DDTags.MANUAL_KEEP | true    | PrioritySampling.USER_KEEP
-    DDTags.MANUAL_KEEP | false   | null
-    DDTags.MANUAL_KEEP | "true"  | PrioritySampling.USER_KEEP
-    DDTags.MANUAL_KEEP | "false" | null
-    DDTags.MANUAL_KEEP | "asdf"  | null
+    tag                    | value   | expected
+    DDTags.MANUAL_KEEP     | true    | PrioritySampling.USER_KEEP
+    DDTags.MANUAL_KEEP     | false   | null
+    DDTags.MANUAL_KEEP     | "true"  | PrioritySampling.USER_KEEP
+    DDTags.MANUAL_KEEP     | "false" | null
+    DDTags.MANUAL_KEEP     | "asdf"  | null
 
-    DDTags.MANUAL_DROP | true    | PrioritySampling.USER_DROP
-    DDTags.MANUAL_DROP | false   | null
-    DDTags.MANUAL_DROP | "true"  | PrioritySampling.USER_DROP
-    DDTags.MANUAL_DROP | "false" | null
-    DDTags.MANUAL_DROP | "asdf"  | null
+    DDTags.MANUAL_DROP     | true    | PrioritySampling.USER_DROP
+    DDTags.MANUAL_DROP     | false   | null
+    DDTags.MANUAL_DROP     | "true"  | PrioritySampling.USER_DROP
+    DDTags.MANUAL_DROP     | "false" | null
+    DDTags.MANUAL_DROP     | "asdf"  | null
+
+    Tags.ASM_KEEP          | true    | PrioritySampling.USER_KEEP
+    Tags.ASM_KEEP          | false   | null
+    Tags.ASM_KEEP          | "true"  | PrioritySampling.USER_KEEP
+    Tags.ASM_KEEP          | "false" | null
+    Tags.ASM_KEEP          | "asdf"  | null
+
+    Tags.SAMPLING_PRIORITY | -1      | PrioritySampling.USER_DROP
+    Tags.SAMPLING_PRIORITY | 0       | PrioritySampling.USER_DROP
+    Tags.SAMPLING_PRIORITY | 1       | PrioritySampling.USER_KEEP
+    Tags.SAMPLING_PRIORITY | 2       | PrioritySampling.USER_KEEP
+    Tags.SAMPLING_PRIORITY | "-1"    | PrioritySampling.USER_DROP
+    Tags.SAMPLING_PRIORITY | "0"     | PrioritySampling.USER_DROP
+    Tags.SAMPLING_PRIORITY | "1"     | PrioritySampling.USER_KEEP
+    Tags.SAMPLING_PRIORITY | "2"     | PrioritySampling.USER_KEEP
+    Tags.SAMPLING_PRIORITY | "asdf"  | null
   }
 
   def "set error flag when error tag reported"() {
@@ -673,5 +693,55 @@ class TagInterceptorTest extends DDCoreSpecification {
     cleanup:
     span.finish()
     tracer.close()
+  }
+
+  void "when interceptServiceName extraServiceProvider is called"() {
+    setup:
+    final extraServiceProvider = Mock(ServiceNameCollector)
+    ServiceNameCollector.INSTANCE = extraServiceProvider
+    final ruleFlags = Mock(RuleFlags)
+    ruleFlags.isEnabled(_) >> true
+    final interceptor = new TagInterceptor(true, "my-service", Collections.singleton(DDTags.SERVICE_NAME), ruleFlags, false)
+
+    when:
+    interceptor.interceptServiceName(null, Mock(DDSpanContext), "some-service")
+
+    then:
+    1 * extraServiceProvider.addService("some-service")
+  }
+
+  void "when interceptServletContext extraServiceProvider is called"() {
+    setup:
+    final extraServiceProvider = Mock(ServiceNameCollector)
+    ServiceNameCollector.INSTANCE = extraServiceProvider
+    final ruleFlags = Mock(RuleFlags)
+    ruleFlags.isEnabled(_) >> true
+    final interceptor = new TagInterceptor(true, "my-service", Collections.singleton("servlet.context"), ruleFlags, false)
+
+    when:
+    interceptor.interceptServletContext(Mock(DDSpanContext), value)
+
+    then:
+    1 * extraServiceProvider.addService(expected)
+
+    where:
+    value   | expected
+    "/"     | "root-servlet"
+    "/test" | "test"
+    "test"  | "test"
+  }
+
+  void "When intercepts product trace source propagation tag updatePropagatedTraceSource is called"() {
+    setup:
+    final ruleFlags = Mock(RuleFlags)
+    ruleFlags.isEnabled(_) >> true
+    final interceptor = new TagInterceptor(ruleFlags)
+    final context = Mock(DDSpanContext)
+
+    when:
+    interceptor.interceptTag(context, Tags.PROPAGATED_TRACE_SOURCE, ProductTraceSource.ASM)
+
+    then:
+    1 * context.addPropagatedTraceSource(ProductTraceSource.ASM)
   }
 }

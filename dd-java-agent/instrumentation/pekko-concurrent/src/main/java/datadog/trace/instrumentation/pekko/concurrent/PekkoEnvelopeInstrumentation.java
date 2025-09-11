@@ -6,15 +6,16 @@ import static net.bytebuddy.matcher.ElementMatchers.isConstructor;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.State;
 import java.util.Map;
 import net.bytebuddy.asm.Advice;
 import org.apache.pekko.dispatch.Envelope;
 
-@AutoService(Instrumenter.class)
-public class PekkoEnvelopeInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class PekkoEnvelopeInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public PekkoEnvelopeInstrumentation() {
     super("pekko_actor_send", "pekko_actor", "pekko_concurrent", "java_concurrent");
@@ -31,14 +32,14 @@ public class PekkoEnvelopeInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(isConstructor(), getClass().getName() + "$ConstructAdvice");
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(isConstructor(), getClass().getName() + "$ConstructAdvice");
   }
 
   public static class ConstructAdvice {
     @Advice.OnMethodExit(suppress = Throwable.class)
     public static void afterInit(@Advice.This Envelope zis) {
-      capture(InstrumentationContext.get(Envelope.class, State.class), zis, true);
+      capture(InstrumentationContext.get(Envelope.class, State.class), zis);
     }
   }
 }

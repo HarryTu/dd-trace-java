@@ -2,21 +2,26 @@ package datadog.telemetry;
 
 import datadog.communication.ddagent.DDAgentFeaturesDiscovery;
 import datadog.communication.ddagent.SharedCommunicationObjects;
+import datadog.communication.http.HttpRetryPolicy;
 import datadog.telemetry.TelemetryRunnable.TelemetryPeriodicAction;
 import datadog.telemetry.dependency.DependencyPeriodicAction;
 import datadog.telemetry.dependency.DependencyService;
+import datadog.telemetry.endpoint.EndpointPeriodicAction;
 import datadog.telemetry.integration.IntegrationPeriodicAction;
 import datadog.telemetry.log.LogPeriodicAction;
+import datadog.telemetry.metric.CiVisibilityMetricPeriodicAction;
+import datadog.telemetry.metric.ConfigInversionMetricPeriodicAction;
 import datadog.telemetry.metric.CoreMetricsPeriodicAction;
 import datadog.telemetry.metric.IastMetricPeriodicAction;
+import datadog.telemetry.metric.OtelEnvMetricPeriodicAction;
 import datadog.telemetry.metric.WafMetricPeriodicAction;
+import datadog.telemetry.products.ProductChangeAction;
 import datadog.trace.api.Config;
 import datadog.trace.api.iast.telemetry.Verbosity;
 import datadog.trace.util.AgentThreadFactory;
 import java.lang.instrument.Instrumentation;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,14 +48,18 @@ public class TelemetrySystem {
       DependencyService dependencyService,
       boolean telemetryMetricsEnabled) {
     DEPENDENCY_SERVICE = dependencyService;
-
     List<TelemetryPeriodicAction> actions = new ArrayList<>();
     if (telemetryMetricsEnabled) {
       actions.add(new CoreMetricsPeriodicAction());
+      actions.add(new OtelEnvMetricPeriodicAction());
+      actions.add(new ConfigInversionMetricPeriodicAction());
       actions.add(new IntegrationPeriodicAction());
       actions.add(new WafMetricPeriodicAction());
       if (Verbosity.OFF != Config.get().getIastTelemetryVerbosity()) {
         actions.add(new IastMetricPeriodicAction());
+      }
+      if (Config.get().isCiVisibilityEnabled() && Config.get().isCiVisibilityTelemetryEnabled()) {
+        actions.add(new CiVisibilityMetricPeriodicAction());
       }
     }
     if (null != dependencyService) {
@@ -59,6 +68,10 @@ public class TelemetrySystem {
     if (Config.get().isTelemetryLogCollectionEnabled()) {
       actions.add(new LogPeriodicAction());
       log.debug("Telemetry log collection enabled");
+    }
+    actions.add(new ProductChangeAction());
+    if (Config.get().isApiSecurityEndpointCollectionEnabled()) {
+      actions.add(new EndpointPeriodicAction());
     }
 
     TelemetryRunnable telemetryRunnable = new TelemetryRunnable(telemetryService, actions);
@@ -75,14 +88,20 @@ public class TelemetrySystem {
     boolean debug = config.isTelemetryDebugRequestsEnabled();
     DDAgentFeaturesDiscovery ddAgentFeaturesDiscovery = sco.featuresDiscovery(config);
 
-    TelemetryClient agentClient = TelemetryClient.buildAgentClient(sco.okHttpClient, sco.agentUrl);
-    TelemetryClient intakeClient =
-        TelemetryClient.buildIntakeClient(
-            config.getSite(),
-            TimeUnit.SECONDS.toMillis(config.getAgentTimeout()),
-            config.getApiKey());
+    HttpRetryPolicy.Factory httpRetryPolicy =
+        config.isCiVisibilityEnabled()
+            ? new HttpRetryPolicy.Factory(2, 100, 2.0, true)
+            : HttpRetryPolicy.Factory.NEVER_RETRY;
+
+    TelemetryClient agentClient =
+        TelemetryClient.buildAgentClient(sco.okHttpClient, sco.agentUrl, httpRetryPolicy);
+    TelemetryClient intakeClient = TelemetryClient.buildIntakeClient(config, httpRetryPolicy);
+
+    boolean useIntakeClientByDefault =
+        config.isCiVisibilityEnabled() && config.isCiVisibilityAgentlessEnabled();
     TelemetryService telemetryService =
-        TelemetryService.build(ddAgentFeaturesDiscovery, agentClient, intakeClient, debug);
+        TelemetryService.build(
+            ddAgentFeaturesDiscovery, agentClient, intakeClient, useIntakeClientByDefault, debug);
 
     boolean telemetryMetricsEnabled = config.isTelemetryMetricsEnabled();
     TELEMETRY_THREAD =

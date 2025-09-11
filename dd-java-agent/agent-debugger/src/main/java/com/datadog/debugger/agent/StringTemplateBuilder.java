@@ -53,12 +53,13 @@ public class StringTemplateBuilder {
                   sb, segment.getParsedExpr().getDsl(), result.getValue(), status, limits);
             }
           } catch (EvaluationException ex) {
-            LOGGER.debug("Evaluation error: ", ex);
             status.addError(new EvaluationError(ex.getExpr(), ex.getMessage()));
-            status.setLogTemplateErrors(true);
             String msg =
                 ex instanceof RedactedException ? Redaction.REDACTED_VALUE : ex.getMessage();
-            sb.append("{").append(msg).append("}");
+            sb.append('{').append(msg).append('}');
+          }
+          if (!status.getErrors().isEmpty()) {
+            status.setLogTemplateErrors(true);
           }
         }
       }

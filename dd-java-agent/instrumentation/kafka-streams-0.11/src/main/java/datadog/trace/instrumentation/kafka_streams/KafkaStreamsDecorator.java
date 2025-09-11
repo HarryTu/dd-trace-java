@@ -14,6 +14,7 @@ import datadog.trace.bootstrap.instrumentation.api.InternalSpanTypes;
 import datadog.trace.bootstrap.instrumentation.api.Tags;
 import datadog.trace.bootstrap.instrumentation.api.UTF8BytesString;
 import datadog.trace.bootstrap.instrumentation.decorator.MessagingClientDecorator;
+import java.util.function.Supplier;
 import org.apache.kafka.streams.processor.internals.ProcessorNode;
 import org.apache.kafka.streams.processor.internals.ProcessorRecordContext;
 import org.apache.kafka.streams.processor.internals.StampedRecord;
@@ -26,15 +27,14 @@ public class KafkaStreamsDecorator extends MessagingClientDecorator {
           SpanNaming.instance().namingSchema().messaging().inboundOperation(KAFKA));
   public static final CharSequence KAFKA_DELIVER = UTF8BytesString.create("kafka.deliver");
 
-  public static final boolean KAFKA_LEGACY_TRACING =
-      Config.get().isLegacyTracingEnabled(true, KAFKA);
+  public static final boolean KAFKA_LEGACY_TRACING = Config.get().isKafkaLegacyTracingEnabled();
   public static final boolean TIME_IN_QUEUE_ENABLED =
       Config.get().isTimeInQueueEnabled(!KAFKA_LEGACY_TRACING, KAFKA);
   public static final String KAFKA_PRODUCED_KEY = "x_datadog_kafka_produced";
 
   private final String spanKind;
   private final CharSequence spanType;
-  private final String serviceName;
+  private final Supplier<String> serviceNameSupplier;
 
   private static final DDCache<CharSequence, CharSequence> RESOURCE_NAME_CACHE =
       DDCaches.newFixedSizeCache(32);
@@ -55,10 +55,11 @@ public class KafkaStreamsDecorator extends MessagingClientDecorator {
           InternalSpanTypes.MESSAGE_BROKER,
           SpanNaming.instance().namingSchema().messaging().timeInQueueService(KAFKA));
 
-  protected KafkaStreamsDecorator(String spanKind, CharSequence spanType, String serviceName) {
+  protected KafkaStreamsDecorator(
+      String spanKind, CharSequence spanType, Supplier<String> serviceNameSupplier) {
     this.spanKind = spanKind;
     this.spanType = spanType;
-    this.serviceName = serviceName;
+    this.serviceNameSupplier = serviceNameSupplier;
   }
 
   @Override
@@ -68,7 +69,7 @@ public class KafkaStreamsDecorator extends MessagingClientDecorator {
 
   @Override
   protected String service() {
-    return serviceName;
+    return serviceNameSupplier.get();
   }
 
   @Override

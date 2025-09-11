@@ -1,59 +1,65 @@
 package datadog.trace.civisibility.ipc;
 
+import datadog.trace.api.DDTraceId;
+import datadog.trace.civisibility.ipc.serialization.Serializer;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
-import java.util.List;
 import java.util.Objects;
-import javax.annotation.Nullable;
 
-public class ModuleExecutionResult implements Signal {
+public class ModuleExecutionResult extends ModuleSignal {
 
-  private static final int FIXED_LENGTH = Long.BYTES + Long.BYTES + Long.BYTES + 1;
   private static final int COVERAGE_ENABLED_FLAG = 1;
-  private static final int ITR_ENABLED_FLAG = 2;
+  private static final int TEST_SKIPPING_ENABLED_FLAG = 2;
+  private static final int EARLY_FLAKE_DETECTION_ENABLED_FLAG = 4;
+  private static final int EARLY_FLAKE_DETECTION_FAULTY_FLAG = 8;
+  private static final int TEST_MANAGEMENT_ENABLED_FLAG = 16;
 
-  private final long sessionId;
-  private final long moduleId;
   private final boolean coverageEnabled;
-  private final boolean itrEnabled;
+  private final boolean testSkippingEnabled;
+  private final boolean earlyFlakeDetectionEnabled;
+  private final boolean earlyFlakeDetectionFaulty;
+  private final boolean testManagementEnabled;
   private final long testsSkippedTotal;
   private final Collection<TestFramework> testFrameworks;
-  @Nullable private final byte[] coverageData;
 
   public ModuleExecutionResult(
-      long sessionId,
+      DDTraceId sessionId,
       long moduleId,
       boolean coverageEnabled,
-      boolean itrEnabled,
+      boolean testSkippingEnabled,
+      boolean earlyFlakeDetectionEnabled,
+      boolean earlyFlakeDetectionFaulty,
+      boolean testManagementEnabled,
       long testsSkippedTotal,
-      Collection<TestFramework> testFrameworks,
-      @Nullable byte[] coverageData) {
-    this.sessionId = sessionId;
-    this.moduleId = moduleId;
+      Collection<TestFramework> testFrameworks) {
+    super(sessionId, moduleId);
     this.coverageEnabled = coverageEnabled;
-    this.itrEnabled = itrEnabled;
+    this.testSkippingEnabled = testSkippingEnabled;
+    this.earlyFlakeDetectionEnabled = earlyFlakeDetectionEnabled;
+    this.earlyFlakeDetectionFaulty = earlyFlakeDetectionFaulty;
+    this.testManagementEnabled = testManagementEnabled;
     this.testsSkippedTotal = testsSkippedTotal;
     this.testFrameworks = testFrameworks;
-    this.coverageData = coverageData;
-  }
-
-  public long getSessionId() {
-    return sessionId;
-  }
-
-  public long getModuleId() {
-    return moduleId;
   }
 
   public boolean isCoverageEnabled() {
     return coverageEnabled;
   }
 
-  public boolean isItrEnabled() {
-    return itrEnabled;
+  public boolean isTestSkippingEnabled() {
+    return testSkippingEnabled;
+  }
+
+  public boolean isEarlyFlakeDetectionEnabled() {
+    return earlyFlakeDetectionEnabled;
+  }
+
+  public boolean isEarlyFlakeDetectionFaulty() {
+    return earlyFlakeDetectionFaulty;
+  }
+
+  public boolean isTestManagementEnabled() {
+    return testManagementEnabled;
   }
 
   public long getTestsSkippedTotal() {
@@ -62,11 +68,6 @@ public class ModuleExecutionResult implements Signal {
 
   public Collection<TestFramework> getTestFrameworks() {
     return testFrameworks;
-  }
-
-  @Nullable
-  public byte[] getCoverageData() {
-    return coverageData;
   }
 
   @Override
@@ -78,13 +79,13 @@ public class ModuleExecutionResult implements Signal {
       return false;
     }
     ModuleExecutionResult that = (ModuleExecutionResult) o;
-    return sessionId == that.sessionId
+    return sessionId.toLong() == that.sessionId.toLong()
+        && sessionId.toHighOrderLong() == that.sessionId.toHighOrderLong()
         && moduleId == that.moduleId
         && coverageEnabled == that.coverageEnabled
-        && itrEnabled == that.itrEnabled
+        && testSkippingEnabled == that.testSkippingEnabled
         && testsSkippedTotal == that.testsSkippedTotal
-        && Objects.equals(testFrameworks, that.testFrameworks)
-        && Arrays.equals(coverageData, that.coverageData);
+        && Objects.equals(testFrameworks, that.testFrameworks);
   }
 
   @Override
@@ -93,10 +94,9 @@ public class ModuleExecutionResult implements Signal {
         sessionId,
         moduleId,
         coverageEnabled,
-        itrEnabled,
+        testSkippingEnabled,
         testsSkippedTotal,
-        testFrameworks,
-        Arrays.hashCode(coverageData));
+        testFrameworks);
   }
 
   @Override
@@ -108,8 +108,8 @@ public class ModuleExecutionResult implements Signal {
         + moduleId
         + ", coverageEnabled="
         + coverageEnabled
-        + ", itrEnabled="
-        + itrEnabled
+        + ", testSkippingEnabled="
+        + testSkippingEnabled
         + ", itrTestsSkipped="
         + testsSkippedTotal
         + '}';
@@ -122,124 +122,58 @@ public class ModuleExecutionResult implements Signal {
 
   @Override
   public ByteBuffer serialize() {
-    int coverageDataLength = coverageData != null ? coverageData.length : 0;
-    int variableLength = Integer.BYTES * 2 + coverageDataLength;
-
-    for (TestFramework testFramework : testFrameworks) {
-      String testFrameworkName = testFramework.getName();
-      String testFrameworkVersion = testFramework.getVersion();
-      int testFrameworkNameBytes =
-          testFrameworkName != null ? testFrameworkName.getBytes(StandardCharsets.UTF_8).length : 0;
-      int testFrameworkVersionBytes =
-          testFrameworkVersion != null
-              ? testFrameworkVersion.getBytes(StandardCharsets.UTF_8).length
-              : 0;
-      variableLength += Integer.BYTES * 2 + testFrameworkNameBytes + testFrameworkVersionBytes;
-    }
-
-    ByteBuffer buffer = ByteBuffer.allocate(FIXED_LENGTH + variableLength);
-    buffer.putLong(sessionId);
-    buffer.putLong(moduleId);
-    buffer.putLong(testsSkippedTotal);
+    Serializer s = new Serializer();
+    s.write(sessionId.toHexString());
+    s.write(moduleId);
 
     byte flags = 0;
     if (coverageEnabled) {
       flags |= COVERAGE_ENABLED_FLAG;
     }
-    if (itrEnabled) {
-      flags |= ITR_ENABLED_FLAG;
+    if (testSkippingEnabled) {
+      flags |= TEST_SKIPPING_ENABLED_FLAG;
     }
-    buffer.put(flags);
-
-    buffer.putInt(testFrameworks.size());
-    for (TestFramework testFramework : testFrameworks) {
-      String testFrameworkName = testFramework.getName();
-      if (testFrameworkName != null) {
-        byte[] testFrameworkNameBytes = testFrameworkName.getBytes(StandardCharsets.UTF_8);
-        buffer.putInt(testFrameworkNameBytes.length);
-        buffer.put(testFrameworkNameBytes);
-      } else {
-        buffer.putInt(0);
-      }
-
-      String testFrameworkVersion = testFramework.getVersion();
-      if (testFrameworkVersion != null) {
-        byte[] testFrameworkVersionBytes = testFrameworkVersion.getBytes(StandardCharsets.UTF_8);
-        buffer.putInt(testFrameworkVersionBytes.length);
-        buffer.put(testFrameworkVersionBytes);
-      } else {
-        buffer.putInt(0);
-      }
+    if (earlyFlakeDetectionEnabled) {
+      flags |= EARLY_FLAKE_DETECTION_ENABLED_FLAG;
     }
-
-    buffer.putInt(coverageDataLength);
-    if (coverageDataLength != 0) {
-      buffer.put(coverageData);
+    if (earlyFlakeDetectionFaulty) {
+      flags |= EARLY_FLAKE_DETECTION_FAULTY_FLAG;
     }
+    if (testManagementEnabled) {
+      flags |= TEST_MANAGEMENT_ENABLED_FLAG;
+    }
+    s.write(flags);
 
-    buffer.flip();
-    return buffer;
+    s.write(testsSkippedTotal);
+    s.write(testFrameworks, TestFramework::serialize);
+
+    return s.flush();
   }
 
   public static ModuleExecutionResult deserialize(ByteBuffer buffer) {
-    if (buffer.remaining() < FIXED_LENGTH) {
-      throw new IllegalArgumentException(
-          "Expected at least "
-              + FIXED_LENGTH
-              + " bytes, got "
-              + buffer.remaining()
-              + ", "
-              + buffer);
-    }
-    long sessionId = buffer.getLong();
-    long moduleId = buffer.getLong();
-    long testsSkippedTotal = buffer.getLong();
-    int flags = buffer.get();
+    DDTraceId sessionId = DDTraceId.fromHex(Serializer.readString(buffer));
+    long moduleId = Serializer.readLong(buffer);
+
+    int flags = Serializer.readByte(buffer);
     boolean coverageEnabled = (flags & COVERAGE_ENABLED_FLAG) != 0;
-    boolean itrEnabled = (flags & ITR_ENABLED_FLAG) != 0;
+    boolean testSkippingEnabled = (flags & TEST_SKIPPING_ENABLED_FLAG) != 0;
+    boolean earlyFlakeDetectionEnabled = (flags & EARLY_FLAKE_DETECTION_ENABLED_FLAG) != 0;
+    boolean earlyFlakeDetectionFaulty = (flags & EARLY_FLAKE_DETECTION_FAULTY_FLAG) != 0;
+    boolean testManagementEnabled = (flags & TEST_MANAGEMENT_ENABLED_FLAG) != 0;
 
-    int testFrameworksSize = buffer.getInt();
-    List<TestFramework> testFrameworks = new ArrayList<>(testFrameworksSize);
-    for (int i = 0; i < testFrameworksSize; i++) {
-      int testFrameworkNameLength = buffer.getInt();
-      String testFrameworkName;
-      if (testFrameworkNameLength != 0) {
-        byte[] testFrameworkNameBytes = new byte[testFrameworkNameLength];
-        buffer.get(testFrameworkNameBytes);
-        testFrameworkName = new String(testFrameworkNameBytes, StandardCharsets.UTF_8);
-      } else {
-        testFrameworkName = null;
-      }
-
-      int testFrameworkVersionLength = buffer.getInt();
-      String testFrameworkVersion;
-      if (testFrameworkVersionLength != 0) {
-        byte[] testFrameworkVersionBytes = new byte[testFrameworkVersionLength];
-        buffer.get(testFrameworkVersionBytes);
-        testFrameworkVersion = new String(testFrameworkVersionBytes, StandardCharsets.UTF_8);
-      } else {
-        testFrameworkVersion = null;
-      }
-
-      testFrameworks.add(new TestFramework(testFrameworkName, testFrameworkVersion));
-    }
-
-    byte[] coverageData;
-    int coverageDataLength = buffer.getInt();
-    if (coverageDataLength != 0) {
-      coverageData = new byte[coverageDataLength];
-      buffer.get(coverageData);
-    } else {
-      coverageData = null;
-    }
+    long testsSkippedTotal = Serializer.readLong(buffer);
+    Collection<TestFramework> testFrameworks =
+        Serializer.readList(buffer, TestFramework::deserialize);
 
     return new ModuleExecutionResult(
         sessionId,
         moduleId,
         coverageEnabled,
-        itrEnabled,
+        testSkippingEnabled,
+        earlyFlakeDetectionEnabled,
+        earlyFlakeDetectionFaulty,
+        testManagementEnabled,
         testsSkippedTotal,
-        testFrameworks,
-        coverageData);
+        testFrameworks);
   }
 }

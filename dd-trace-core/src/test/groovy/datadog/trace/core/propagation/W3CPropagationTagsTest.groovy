@@ -1,6 +1,7 @@
 package datadog.trace.core.propagation
 
 import datadog.trace.api.Config
+import datadog.trace.api.ProductTraceSource
 import datadog.trace.api.sampling.PrioritySampling
 import datadog.trace.api.sampling.SamplingMechanism
 import datadog.trace.core.test.DDCoreSpecification
@@ -237,6 +238,9 @@ class W3CPropagationTagsTest extends DDCoreSpecification {
     null                                                                   | null                                                 | [:]
     ''                                                                     | null                                                 | [:]
     'dd=s:0;t.dm:934086a686-4'                                             | 'dd=s:0;t.dm:934086a686-4'                           | ['_dd.p.dm': '934086a686-4']
+    'dd=s:0;t.ts:02'                                                       | 'dd=s:0;t.ts:02'                                     | ['_dd.p.ts': '02']
+    'dd=s:0;t.ts:00'                                                       | 'dd=s:0'                                             | [:]
+    'dd=s:0;t.dm:934086a686-4;t.ts:02'                                     | 'dd=s:0;t.dm:934086a686-4;t.ts:02'                   | ['_dd.p.dm': '934086a686-4', '_dd.p.ts': '02']
     'other=whatever,dd=s:0;t.dm:934086a686-4'                              | 'dd=s:0;t.dm:934086a686-4,other=whatever'            | ['_dd.p.dm': '934086a686-4']
     'dd=s:0;t.dm:934086a687-3,other=whatever'                              | 'dd=s:0;t.dm:934086a687-3,other=whatever'            | ['_dd.p.dm': '934086a687-3']
     'some=thing,dd=s:0;t.dm:934086a687-3,other=whatever'                   | 'dd=s:0;t.dm:934086a687-3,some=thing,other=whatever' | ['_dd.p.dm': '934086a687-3']
@@ -275,10 +279,15 @@ class W3CPropagationTagsTest extends DDCoreSpecification {
     propagationTags.createTagMap() == tags
 
     where:
-    headerValue                                          | expectedHeaderValue                    | tags
-    'dd=s:0;t.dm:934086a686-4'                           | '_dd.p.dm=934086a686-4'                | ['_dd.p.dm': '934086a686-4']
-    'other=whatever,dd=s:0;t.dm:934086a686-4;t.f:w00t~~' | '_dd.p.dm=934086a686-4,_dd.p.f=w00t==' | ['_dd.p.dm': '934086a686-4', '_dd.p.f': 'w00t==']
-    'some=thing,other=whatever'                          |  null                                  | [:]
+    headerValue                                                  | expectedHeaderValue                                | tags
+    'dd=s:0;t.dm:934086a686-4'                                   | '_dd.p.dm=934086a686-4'                            | ['_dd.p.dm': '934086a686-4']
+    'other=whatever,dd=s:0;t.dm:934086a686-4;t.f:w00t~~'         | '_dd.p.dm=934086a686-4,_dd.p.f=w00t=='             | ['_dd.p.dm': '934086a686-4', '_dd.p.f': 'w00t==']
+    'dd=s:0;t.ts:02'                                             | '_dd.p.ts=02'                                      | ['_dd.p.ts': '02']
+    'dd=s:0;t.ts:00'                                             | null                                               | [:]
+    'dd=s:0;t.ts:0'                                              | null                                               | [:]
+    'dd=s:0;t.ts:invalid'                                        | null                                               | [:]
+    'other=whatever,dd=s:0;t.dm:934086a686-4;t.f:w00t~~;t.ts:02' | '_dd.p.dm=934086a686-4,_dd.p.ts=02,_dd.p.f=w00t==' | ['_dd.p.dm': '934086a686-4', '_dd.p.f': 'w00t==', '_dd.p.ts': '02']
+    'some=thing,other=whatever'                                  | null                                               | [:]
   }
 
   def "propagation tags should be updated by sampling and origin #headerValue #priority #mechanism #origin"() {
@@ -304,10 +313,37 @@ class W3CPropagationTagsTest extends DDCoreSpecification {
     where:
     headerValue                       | priority                      | mechanism                           | origin  | expectedHeaderValue                | tags
     'dd=s:0;o:some;t.dm:934086a686-4' | PrioritySampling.SAMPLER_KEEP | SamplingMechanism.DEFAULT           | "other" | 'dd=s:0;o:other;t.dm:934086a686-4' | ['_dd.p.dm': '934086a686-4']
-    'dd=s:0;o:some;x:unknown'         | PrioritySampling.USER_KEEP    | SamplingMechanism.RULE              | "same"  | 'dd=s:2;o:same;t.dm:-3;x:unknown'  | ['_dd.p.dm': '-3']
+    'dd=s:0;o:some;x:unknown'         | PrioritySampling.USER_KEEP    | SamplingMechanism.LOCAL_USER_RULE   | "same"  | 'dd=s:2;o:same;t.dm:-3;x:unknown'  | ['_dd.p.dm': '-3']
     'dd=s:0;o:some;x:unknown'         | PrioritySampling.USER_DROP    | SamplingMechanism.MANUAL            | null    | 'dd=s:-1;x:unknown'                | [:]
     'dd=s:0;o:some;t.dm:934086a686-4' | PrioritySampling.SAMPLER_KEEP | SamplingMechanism.EXTERNAL_OVERRIDE | "other" | 'dd=s:1;o:other;t.dm:-0'           | ['_dd.p.dm': '-0']
     'dd=s:1;o:some;t.dm:934086a686-4' | PrioritySampling.SAMPLER_DROP | SamplingMechanism.EXTERNAL_OVERRIDE | "other" | 'dd=s:0;o:other'                   | [:]
+  }
+
+  def "propagation tags should be updated by product trace source propagation #product"() {
+    setup:
+    def config = Mock(Config)
+    config.getxDatadogTagsMaxLength() >> 512
+    def propagationTagsFactory = PropagationTags.factory(config)
+
+    when:
+    def propagationTags = propagationTagsFactory.fromHeaderValue(HeaderType.W3C, headerValue)
+
+    then:
+    propagationTags.headerValue(HeaderType.W3C) != expectedHeaderValue
+
+    when:
+    propagationTags.addTraceSource(product)
+
+    then:
+    propagationTags.headerValue(HeaderType.W3C) == expectedHeaderValue
+    propagationTags.createTagMap() == tags
+
+    where:
+    headerValue            | product                | expectedHeaderValue    | tags
+    'dd=x:unknown'         | ProductTraceSource.ASM | 'dd=t.ts:02;x:unknown' | ['_dd.p.ts': '02']
+    'dd=t.ts:02;x:unknown' | ProductTraceSource.DBM | 'dd=t.ts:12;x:unknown' | ['_dd.p.ts': '12']
+    "dd=t.ts:00"           | ProductTraceSource.ASM | 'dd=t.ts:02'           | ["_dd.p.ts": "02"]
+    "dd=t.ts:FFC00000"     | ProductTraceSource.ASM | 'dd=t.ts:02'           | ["_dd.p.ts": "02"]
   }
 
   static private String toLcAlpha(String cs) {

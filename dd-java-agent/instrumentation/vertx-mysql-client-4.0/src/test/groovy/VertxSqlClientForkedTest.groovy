@@ -1,5 +1,5 @@
 import TestDatabases.TestDBInfo
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.agent.test.asserts.TraceAssert
 import datadog.trace.bootstrap.instrumentation.api.Tags
 import datadog.trace.core.DDSpan
@@ -21,7 +21,6 @@ import io.vertx.sqlclient.Tuple
 import io.vertx.sqlclient.impl.ArrayTuple
 import spock.lang.AutoCleanup
 import spock.lang.Shared
-import spock.lang.Unroll
 
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -30,7 +29,7 @@ import java.util.concurrent.atomic.AtomicReference
 import static datadog.trace.agent.test.utils.TraceUtils.basicSpan
 import static datadog.trace.agent.test.utils.TraceUtils.runUnderTrace
 
-class VertxSqlClientForkedTest extends AgentTestRunner {
+class VertxSqlClientForkedTest extends InstrumentationSpecification {
   @AutoCleanup
   @Shared
   // This database name must match up with the name in the CircleCI MySQL Docker definition
@@ -40,7 +39,13 @@ class VertxSqlClientForkedTest extends AgentTestRunner {
   @Shared
   def vertx = Vertx.vertx(new VertxOptions())
 
-  @Unroll
+  @Override
+  boolean useStrictTraceWrites() {
+    // given how the test without parent is done, we cannot guarantee that the handler callback finishes always
+    // after the sql span since things are going asynchronously. Indeed we should not enforce that unbuffered write.
+    false
+  }
+
   def "test #type"() {
     when:
     AsyncResult<RowSet<Row>> asyncResult = runUnderTrace("parent") {
@@ -74,7 +79,6 @@ class VertxSqlClientForkedTest extends AgentTestRunner {
     'prepared statement' | pool() | prepare(connection(pool), "SELECT ?").query() | true
   }
 
-  @Unroll
   def "test #type without parent"() {
     when:
     AsyncResult<RowSet<Row>> asyncResult = executeQueryWithHandler(query)
@@ -107,7 +111,6 @@ class VertxSqlClientForkedTest extends AgentTestRunner {
     'prepared statement' | pool() | prepare(connection(pool), "SELECT ?").query() | true
   }
 
-  @Unroll
   def "test #type mapped"() {
     setup:
     def mapped = query.mapping({ row ->
@@ -146,7 +149,6 @@ class VertxSqlClientForkedTest extends AgentTestRunner {
     'prepared statement' | pool() | prepare(connection(pool), "SELECT ?").query() | true
   }
 
-  @Unroll
   def "test #type mapped without parent"() {
     setup:
     def mapped = query.mapping({ row ->

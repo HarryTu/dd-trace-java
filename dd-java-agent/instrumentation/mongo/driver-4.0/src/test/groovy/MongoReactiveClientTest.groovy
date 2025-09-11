@@ -1,5 +1,6 @@
 import com.mongodb.client.result.DeleteResult
 import com.mongodb.client.result.UpdateResult
+import com.mongodb.internal.build.MongoDriverVersion
 import com.mongodb.reactivestreams.client.MongoClient
 import com.mongodb.reactivestreams.client.MongoClients
 import com.mongodb.reactivestreams.client.MongoCollection
@@ -10,6 +11,7 @@ import org.bson.BsonString
 import org.bson.Document
 import org.reactivestreams.Subscriber
 import org.reactivestreams.Subscription
+import org.spockframework.util.VersionNumber
 import spock.lang.Shared
 
 import java.util.concurrent.CompletableFuture
@@ -25,13 +27,23 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
   MongoClient client
 
   def setup() throws Exception {
-    client = MongoClients.create("mongodb://localhost:$port/?appname=some-description")
+    client = MongoClients.create("mongodb://${mongoDbContainer.getHost()}:$port/?appname=some-description")
   }
 
   def cleanup() throws Exception {
     client?.close()
     client = null
   }
+
+  @Shared
+  String query = {
+    def version  = VersionNumber.parse(MongoDriverVersion.VERSION)
+    if (version.major == 4 && version.minor < 3) {
+      // query is returned for versions < 4.3
+      return ',"query":{}'
+    }
+    return ''
+  }.call()
 
   MongoCollection<Document> setupCollection(String collectionName) {
     DDSpan setupSpan = null
@@ -68,6 +80,7 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
 
   def "test create collection"() {
     setup:
+    String collectionName = randomCollectionName()
     MongoDatabase db = client.getDatabase(databaseName)
 
     when:
@@ -79,13 +92,11 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
         mongoSpan(it, 0, "create", "{\"create\":\"$collectionName\",\"capped\":\"?\"}")
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test create collection with parent"() {
     setup:
+    String collectionName = randomCollectionName()
     MongoDatabase db = client.getDatabase(databaseName)
 
     when:
@@ -101,14 +112,12 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
         mongoSpan(it, 1, "create", "{\"create\":\"$collectionName\",\"capped\":\"?\"}", false, "some-description", span(0))
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test create collection no description"() {
     setup:
-    MongoDatabase db = MongoClients.create("mongodb://localhost:$port").getDatabase(databaseName)
+    String collectionName = randomCollectionName()
+    MongoDatabase db = MongoClients.create("mongodb://${mongoDbContainer.getHost()}:$port").getDatabase(databaseName)
 
     when:
     db.createCollection(collectionName).subscribe(toSubscriber {})
@@ -119,14 +128,12 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
         mongoSpan(it, 0, "create", "{\"create\":\"$collectionName\",\"capped\":\"?\"}", false, databaseName)
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test create collection no description with parent"() {
     setup:
-    MongoDatabase db = MongoClients.create("mongodb://localhost:$port").getDatabase(databaseName)
+    String collectionName = randomCollectionName()
+    MongoDatabase db = MongoClients.create("mongodb://${mongoDbContainer.getHost()}:$port").getDatabase(databaseName)
 
     when:
     runUnderTrace("parent") {
@@ -141,13 +148,11 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
         mongoSpan(it, 1, "create", "{\"create\":\"$collectionName\",\"capped\":\"?\"}", false, databaseName, span(0))
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test get collection"() {
     setup:
+    String collectionName = randomCollectionName()
     MongoDatabase db = client.getDatabase(databaseName)
 
     when:
@@ -158,16 +163,14 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
     count.get() == 0
     assertTraces(1) {
       trace(1) {
-        mongoSpan(it, 0, "count", "{\"count\":\"$collectionName\",\"query\":{}}")
+        mongoSpan(it, 0, "count", "{\"count\":\"$collectionName\"$query}")
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test get collection with parent"() {
     setup:
+    String collectionName = randomCollectionName()
     MongoDatabase db = client.getDatabase(databaseName)
 
     when:
@@ -182,16 +185,14 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
       trace(2) {
         sortSpansByStart()
         basicSpan(it, 0,"parent")
-        mongoSpan(it, 1, "count", "{\"count\":\"$collectionName\",\"query\":{}}", false, "some-description", span(0))
+        mongoSpan(it, 1, "count", "{\"count\":\"$collectionName\"$query}", false, "some-description", span(0))
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test insert"() {
     setup:
+    String collectionName = randomCollectionName()
     def collection = setupCollection(collectionName)
 
     when:
@@ -207,16 +208,14 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
         mongoSpan(it, 0, "insert", "{\"insert\":\"$collectionName\",\"ordered\":true,\"documents\":[]}")
       }
       trace(1) {
-        mongoSpan(it, 0, "count", "{\"count\":\"$collectionName\",\"query\":{}}")
+        mongoSpan(it, 0, "count", "{\"count\":\"$collectionName\"$query}")
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test insert with parent"() {
     setup:
+    String collectionName = randomCollectionName()
     def collection = setupCollection(collectionName)
 
     when:
@@ -234,16 +233,14 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
         sortSpansByStart()
         basicSpan(it, 0,"parent")
         mongoSpan(it, 1, "insert", "{\"insert\":\"$collectionName\",\"ordered\":true,\"documents\":[]}", false, "some-description", span(0))
-        mongoSpan(it, 2, "count", "{\"count\":\"$collectionName\",\"query\":{}}", false, "some-description", span(0))
+        mongoSpan(it, 2, "count", "{\"count\":\"$collectionName\"$query}", false, "some-description", span(0))
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test update"() {
     setup:
+    String collectionName = randomCollectionName()
     MongoCollection<Document> collection = setupCollection(collectionName)
     insertDocument(collection, new Document("password", "OLDPW"), null)
 
@@ -265,16 +262,14 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
         mongoSpan(it, 0, "update", "{\"update\":\"$collectionName\",\"ordered\":true,\"updates\":[]}")
       }
       trace(1) {
-        mongoSpan(it, 0, "count", "{\"count\":\"$collectionName\",\"query\":{}}")
+        mongoSpan(it, 0, "count", "{\"count\":\"$collectionName\"$query}")
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test update with parent"() {
     setup:
+    String collectionName = randomCollectionName()
     MongoCollection<Document> collection = setupCollection(collectionName)
     insertDocument(collection, new Document("password", "OLDPW"), null)
 
@@ -298,16 +293,14 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
         sortSpansByStart()
         basicSpan(it, 0,"parent")
         mongoSpan(it, 1, "update", "{\"update\":\"$collectionName\",\"ordered\":true,\"updates\":[]}", false, "some-description", span(0))
-        mongoSpan(it, 2, "count", "{\"count\":\"$collectionName\",\"query\":{}}", false, "some-description", span(0))
+        mongoSpan(it, 2, "count", "{\"count\":\"$collectionName\"$query}", false, "some-description", span(0))
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test delete"() {
     setup:
+    String collectionName = randomCollectionName()
     MongoCollection<Document> collection = setupCollection(collectionName)
     insertDocument(collection, new Document("password", "SECRET"), null)
 
@@ -327,16 +320,14 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
         mongoSpan(it, 0, "delete", "{\"delete\":\"$collectionName\",\"ordered\":true,\"deletes\":[]}")
       }
       trace(1) {
-        mongoSpan(it, 0, "count", "{\"count\":\"$collectionName\",\"query\":{}}")
+        mongoSpan(it, 0, "count", "{\"count\":\"$collectionName\"$query}")
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test delete with parent"() {
     setup:
+    String collectionName = randomCollectionName()
     MongoCollection<Document> collection = setupCollection(collectionName)
     insertDocument(collection, new Document("password", "SECRET"), null)
 
@@ -358,12 +349,9 @@ abstract class MongoReactiveClientTest extends MongoBaseTest {
         sortSpansByStart()
         basicSpan(it, 0,"parent")
         mongoSpan(it, 1, "delete", "{\"delete\":\"$collectionName\",\"ordered\":true,\"deletes\":[]}", false, "some-description", span(0))
-        mongoSpan(it, 2, "count", "{\"count\":\"$collectionName\",\"query\":{}}", false, "some-description", span(0))
+        mongoSpan(it, 2, "count", "{\"count\":\"$collectionName\"$query}", false, "some-description", span(0))
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def Subscriber<?> toSubscriber(Closure closure) {

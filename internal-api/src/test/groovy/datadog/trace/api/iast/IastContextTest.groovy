@@ -57,11 +57,15 @@ class IastContextTest extends DDSpecification {
     context == iastCtx
   }
 
-  void 'test get context with request context'() {
+  void 'test get context with provider instance'() {
+    given:
+    final provider = Mock(IastContext.Provider)
+    IastContext.Provider.register(provider)
+
     when:
-    final context = IastContext.Provider.get(reqCtx)
+    IastContext.Provider.get()
 
     then:
-    context == iastCtx
+    1 * provider.resolve() >> null
   }
 }

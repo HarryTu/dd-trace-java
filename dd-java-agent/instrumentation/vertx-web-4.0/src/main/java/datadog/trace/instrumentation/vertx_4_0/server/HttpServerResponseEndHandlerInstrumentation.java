@@ -7,11 +7,12 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.agent.tooling.muzzle.Reference;
 
-@AutoService(Instrumenter.class)
-public class HttpServerResponseEndHandlerInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForKnownTypes {
+@AutoService(InstrumenterModule.class)
+public class HttpServerResponseEndHandlerInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForKnownTypes, Instrumenter.HasMethodAdvice {
   public HttpServerResponseEndHandlerInstrumentation() {
     super("vertx", "vertx-4.0");
   }
@@ -27,7 +28,6 @@ public class HttpServerResponseEndHandlerInstrumentation extends Instrumenter.Tr
       packageName + ".EndHandlerWrapper",
       packageName + ".RouteHandlerWrapper",
       packageName + ".VertxDecorator",
-      packageName + ".VertxDecorator$VertxURIDataAdapter",
     };
   }
 
@@ -39,8 +39,8 @@ public class HttpServerResponseEndHandlerInstrumentation extends Instrumenter.Tr
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("endHandler"))
             .and(isPublic())

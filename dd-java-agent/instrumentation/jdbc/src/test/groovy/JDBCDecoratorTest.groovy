@@ -1,18 +1,16 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.bootstrap.instrumentation.jdbc.DBInfo
-import spock.lang.Unroll
 
 import static datadog.trace.api.config.TraceInstrumentationConfig.DB_DBM_PROPAGATION_MODE_MODE
 import static datadog.trace.instrumentation.jdbc.JDBCDecorator.DECORATE
 
-abstract class JDBCDecoratorTest extends AgentTestRunner {
+abstract class JDBCDecoratorTest extends InstrumentationSpecification {
   @Override
   protected void configurePreAgent() {
     super.configurePreAgent()
     setupPropagationMode()
   }
 
-  @Unroll
   def "Full integration disabled for unsupported DB types (#dbType)"() {
     setup:
     DBInfo dbInfo = new DBInfo.Builder().type(dbType).build()
@@ -22,8 +20,8 @@ abstract class JDBCDecoratorTest extends AgentTestRunner {
 
     where:
     dbType       | expectedByType
-    "oracle"     | false
-    "sqlserver"  | false
+    "oracle"     | true
+    "sqlserver"  | true
     "mysql"      | true
     "postgresql" | true
   }

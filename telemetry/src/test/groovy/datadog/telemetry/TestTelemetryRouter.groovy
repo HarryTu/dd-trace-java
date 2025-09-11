@@ -8,6 +8,8 @@ import datadog.telemetry.api.LogMessage
 import datadog.telemetry.api.Metric
 import datadog.telemetry.api.RequestType
 import datadog.trace.api.ConfigSetting
+import datadog.trace.api.telemetry.Endpoint
+import datadog.trace.api.telemetry.ProductChange
 import groovy.json.JsonSlurper
 import okhttp3.Request
 import okio.Buffer
@@ -17,7 +19,7 @@ class TestTelemetryRouter extends TelemetryRouter {
   private Queue<RequestAssertions> requests = new LinkedList<>()
 
   TestTelemetryRouter() {
-    super(null, null, null)
+    super(null, null, null, false)
   }
 
   @Override
@@ -76,20 +78,22 @@ class TestTelemetryRouter extends TelemetryRouter {
 
     RequestAssertions headers(RequestType requestType) {
       assert this.request.method() == 'POST'
-      assert this.request.headers().names() == [
+      assert this.request.headers().names().containsAll([
         'Content-Type',
         'Content-Length',
         'DD-Client-Library-Language',
         'DD-Client-Library-Version',
         'DD-Telemetry-API-Version',
         'DD-Telemetry-Request-Type'
-      ] as Set
+      ])
       assert this.request.header('Content-Type') == 'application/json; charset=utf-8'
       assert this.request.header('Content-Length').toInteger() > 0
       assert this.request.header('DD-Client-Library-Language') == 'jvm'
       assert this.request.header('DD-Client-Library-Version') == TracerVersion.TRACER_VERSION
       assert this.request.header('DD-Telemetry-API-Version') == 'v2'
       assert this.request.header('DD-Telemetry-Request-Type') == requestType.toString()
+      def entityId = this.request.header('Datadog-Entity-ID')
+      assert entityId == null || entityId.startsWith("in-") || entityId.startsWith("cin-")
       return this
     }
 
@@ -233,15 +237,81 @@ class TestTelemetryRouter extends TelemetryRouter {
       def expected = configuration == null ? null : []
       if (configuration != null) {
         for (ConfigSetting cs : configuration) {
-          expected.add([name: cs.key, value: cs.value, origin: cs.origin.value])
+          expected.add([name: cs.normalizedKey(), value: cs.stringValue(), origin: cs.origin.value])
         }
       }
       assert this.payload['configuration'] == expected
       return this
     }
 
-    PayloadAssertions products(boolean appsecEnabled = true, boolean profilerEnabled = false) {
-      def expected = [appsec: [enabled: appsecEnabled], profiler: [enabled: profilerEnabled]]
+    PayloadAssertions instrumentationConfigId(String id) {
+      boolean checked = false
+      this.payload['configuration'].each { v ->
+        if (v['name'] == 'instrumentation_config_id') {
+          assert v['value'] == id
+          checked = true
+        }
+      }
+
+      if (!checked) {
+        assert id == null
+      }
+
+      return this
+    }
+
+    PayloadAssertions productChange(ProductChange product) {
+      def name = product.getProductType().getName()
+      def expected = [
+        (name) : [enabled: product.isEnabled()]
+      ]
+      assert this.payload['products'] == expected
+      return this
+    }
+
+    PayloadAssertions endpoint(final Endpoint... endpoints) {
+      def expected = []
+      endpoints.each {
+        final item = [
+          'operation_name': it.operation,
+          'resource_name' : it.method + ' ' + it.path,
+        ] as Map<String, Object>
+        if (it.type) {
+          item['type'] = it.type
+        }
+        if (it.method) {
+          item['method'] = it.method
+        }
+        if (it.path) {
+          item['path'] = it.path
+        }
+        if (it.requestBodyType) {
+          item['request_body_type'] = it.requestBodyType
+        }
+        if (it.responseBodyType) {
+          item['response_body_type'] = it.responseBodyType
+        }
+        if (it.authentication) {
+          item['authentication'] = it.authentication
+        }
+        if (it.responseCode) {
+          item['response_code'] = it.responseCode
+        }
+        if (it.metadata) {
+          item['metadata'] = it.metadata
+        }
+        expected.add(item)
+      }
+      assert this.payload['endpoints'] == expected
+      return this
+    }
+
+    PayloadAssertions products(boolean appsecEnabled = true, boolean profilerEnabled = false, boolean dynamicInstrumentationEnabled = false) {
+      def expected = [
+        appsec: [enabled: appsecEnabled],
+        profiler: [enabled: profilerEnabled],
+        dynamic_instrumentation: [enabled: dynamicInstrumentationEnabled]
+      ]
       assert this.payload['products'] == expected
       return this
     }
@@ -326,6 +396,7 @@ class TestTelemetryRouter extends TelemetryRouter {
         if (l.getTracerTime() != null) {
           map.put("tracer_time", l.getTracerTime())
         }
+        map.put("count", l.getCount())
         expected.add(map)
       }
       assert this.payload['logs'] == expected
@@ -338,6 +409,24 @@ class TestTelemetryRouter extends TelemetryRouter {
 
     void assertNoMoreMessages() {
       batch.assertNoMoreMessages()
+    }
+
+    void installSignature(String installId, String installType, String installTime) {
+      if (installId == null && installType == null && installTime == null) {
+        assert this.payload['install_signature'] == null
+        return
+      }
+      LinkedHashMap<String, String> expected = [:]
+      if (installId != null) {
+        expected.put("install_id", installId)
+      }
+      if (installType != null) {
+        expected.put("install_type", installType)
+      }
+      if (installTime != null) {
+        expected.put("install_time", installTime)
+      }
+      assert this.payload['install_signature'] == expected
     }
   }
 }

@@ -1,280 +1,57 @@
 package datadog.trace.civisibility.events;
 
-import static datadog.trace.util.Strings.toJson;
-
+import datadog.json.JsonWriter;
 import datadog.trace.api.DisableTestTrace;
-import datadog.trace.api.civisibility.InstrumentationBridge;
-import datadog.trace.api.civisibility.config.SkippableTest;
+import datadog.trace.api.civisibility.CIConstants;
+import datadog.trace.api.civisibility.DDTest;
+import datadog.trace.api.civisibility.DDTestSuite;
+import datadog.trace.api.civisibility.config.TestIdentifier;
+import datadog.trace.api.civisibility.config.TestSourceData;
 import datadog.trace.api.civisibility.events.TestEventsHandler;
+import datadog.trace.api.civisibility.execution.TestExecutionHistory;
+import datadog.trace.api.civisibility.execution.TestExecutionPolicy;
+import datadog.trace.api.civisibility.execution.TestStatus;
+import datadog.trace.api.civisibility.telemetry.CiVisibilityCountMetric;
+import datadog.trace.api.civisibility.telemetry.CiVisibilityMetricCollector;
+import datadog.trace.api.civisibility.telemetry.tag.EventType;
+import datadog.trace.api.civisibility.telemetry.tag.RetryReason;
+import datadog.trace.api.civisibility.telemetry.tag.SkipReason;
+import datadog.trace.api.civisibility.telemetry.tag.TestFrameworkInstrumentation;
+import datadog.trace.bootstrap.ContextStore;
 import datadog.trace.bootstrap.instrumentation.api.Tags;
-import datadog.trace.civisibility.DDTestFrameworkModule;
-import datadog.trace.civisibility.DDTestFrameworkSession;
-import datadog.trace.civisibility.DDTestImpl;
-import datadog.trace.civisibility.DDTestSuiteImpl;
-import java.lang.reflect.Method;
+import datadog.trace.civisibility.domain.TestFrameworkModule;
+import datadog.trace.civisibility.domain.TestFrameworkSession;
+import datadog.trace.civisibility.domain.TestImpl;
+import datadog.trace.civisibility.domain.TestSuiteImpl;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import org.objectweb.asm.Type;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class TestEventsHandlerImpl implements TestEventsHandler {
+public class TestEventsHandlerImpl<SuiteKey, TestKey>
+    implements TestEventsHandler<SuiteKey, TestKey> {
 
   private static final Logger log = LoggerFactory.getLogger(TestEventsHandlerImpl.class);
 
-  private final DDTestFrameworkSession testSession;
-  private final DDTestFrameworkModule testModule;
-
-  private final ConcurrentMap<TestSuiteDescriptor, Integer> testSuiteNestedCallCounters =
-      new ConcurrentHashMap<>();
-
-  private final ConcurrentMap<TestSuiteDescriptor, DDTestSuiteImpl> inProgressTestSuites =
-      new ConcurrentHashMap<>();
-
-  private final ConcurrentMap<TestDescriptor, DDTestImpl> inProgressTests =
-      new ConcurrentHashMap<>();
+  private final CiVisibilityMetricCollector metricCollector;
+  private final TestFrameworkSession testSession;
+  private final TestFrameworkModule testModule;
+  private final ContextStore<SuiteKey, TestSuiteImpl> inProgressTestSuites;
+  private final ContextStore<TestKey, TestImpl> inProgressTests;
 
   public TestEventsHandlerImpl(
-      DDTestFrameworkSession testSession, DDTestFrameworkModule testModule) {
+      CiVisibilityMetricCollector metricCollector,
+      TestFrameworkSession testSession,
+      TestFrameworkModule testModule,
+      ContextStore<SuiteKey, DDTestSuite> suiteStore,
+      ContextStore<TestKey, DDTest> testStore) {
+    this.metricCollector = metricCollector;
     this.testSession = testSession;
     this.testModule = testModule;
-  }
-
-  @Override
-  public void onTestSuiteStart(
-      final String testSuiteName,
-      final @Nullable String testFramework,
-      final @Nullable String testFrameworkVersion,
-      final @Nullable Class<?> testClass,
-      final @Nullable Collection<String> categories,
-      boolean parallelized) {
-    if (skipTrace(testClass)) {
-      return;
-    }
-
-    TestSuiteDescriptor descriptor = new TestSuiteDescriptor(testSuiteName, testClass);
-    if (!tryTestSuiteStart(descriptor)) {
-      return;
-    }
-
-    DDTestSuiteImpl testSuite =
-        testModule.testSuiteStart(testSuiteName, testClass, null, parallelized);
-
-    if (testFramework != null) {
-      testSuite.setTag(Tags.TEST_FRAMEWORK, testFramework);
-    }
-    if (testFrameworkVersion != null) {
-      testSuite.setTag(Tags.TEST_FRAMEWORK_VERSION, testFrameworkVersion);
-    }
-    if (categories != null && !categories.isEmpty()) {
-      testSuite.setTag(
-          Tags.TEST_TRAITS, toJson(Collections.singletonMap("category", toJson(categories)), true));
-    }
-
-    inProgressTestSuites.put(descriptor, testSuite);
-  }
-
-  @Override
-  public void onTestSuiteFinish(final String testSuiteName, final @Nullable Class<?> testClass) {
-    if (skipTrace(testClass)) {
-      return;
-    }
-
-    TestSuiteDescriptor descriptor = new TestSuiteDescriptor(testSuiteName, testClass);
-    if (!tryTestSuiteFinish(descriptor)) {
-      return;
-    }
-
-    DDTestSuiteImpl testSuite = inProgressTestSuites.remove(descriptor);
-    testSuite.end(null);
-  }
-
-  private boolean tryTestSuiteStart(TestSuiteDescriptor descriptor) {
-    return testSuiteNestedCallCounters.merge(descriptor, 1, Integer::sum) == 1;
-  }
-
-  private boolean tryTestSuiteFinish(TestSuiteDescriptor descriptor) {
-    return testSuiteNestedCallCounters.merge(descriptor, -1, (a, b) -> a + b > 0 ? a + b : null)
-        == null;
-  }
-
-  @Override
-  public void onTestSuiteSkip(String testSuiteName, Class<?> testClass, @Nullable String reason) {
-    TestSuiteDescriptor descriptor = new TestSuiteDescriptor(testSuiteName, testClass);
-    DDTestSuiteImpl testSuite = inProgressTestSuites.get(descriptor);
-    if (testSuite == null) {
-      log.debug(
-          "Ignoring skip event, could not find test suite with name {} and class {}",
-          testSuiteName,
-          testClass);
-      return;
-    }
-    testSuite.setSkipReason(reason);
-  }
-
-  @Override
-  public void onTestSuiteFailure(
-      String testSuiteName, Class<?> testClass, @Nullable Throwable throwable) {
-    TestSuiteDescriptor descriptor = new TestSuiteDescriptor(testSuiteName, testClass);
-    DDTestSuiteImpl testSuite = inProgressTestSuites.get(descriptor);
-    if (testSuite == null) {
-      log.debug(
-          "Ignoring fail event, could not find test suite with name {} and class {}",
-          testSuiteName,
-          testClass);
-      return;
-    }
-    testSuite.setErrorInfo(throwable);
-  }
-
-  @Override
-  public void onTestStart(
-      final String testSuiteName,
-      final String testName,
-      final @Nullable Object testQualifier,
-      final @Nullable String testFramework,
-      final @Nullable String testFrameworkVersion,
-      final @Nullable String testParameters,
-      final @Nullable Collection<String> categories,
-      final @Nullable Class<?> testClass,
-      final @Nullable String testMethodName,
-      final @Nullable Method testMethod) {
-    if (skipTrace(testClass)) {
-      return;
-    }
-
-    TestSuiteDescriptor suiteDescriptor = new TestSuiteDescriptor(testSuiteName, testClass);
-    DDTestSuiteImpl testSuite = inProgressTestSuites.get(suiteDescriptor);
-    DDTestImpl test = testSuite.testStart(testName, testMethod, null);
-
-    if (testFramework != null) {
-      test.setTag(Tags.TEST_FRAMEWORK, testFramework);
-    }
-    if (testFrameworkVersion != null) {
-      test.setTag(Tags.TEST_FRAMEWORK_VERSION, testFrameworkVersion);
-    }
-    if (testParameters != null) {
-      test.setTag(Tags.TEST_PARAMETERS, testParameters);
-    }
-    if (testMethodName != null && testMethod != null) {
-      test.setTag(Tags.TEST_SOURCE_METHOD, testMethodName + Type.getMethodDescriptor(testMethod));
-    }
-    if (categories != null && !categories.isEmpty()) {
-      String json = toJson(Collections.singletonMap("category", toJson(categories)), true);
-      test.setTag(Tags.TEST_TRAITS, json);
-
-      for (String category : categories) {
-        if (category.endsWith(InstrumentationBridge.ITR_UNSKIPPABLE_TAG)) {
-          test.setTag(Tags.TEST_ITR_UNSKIPPABLE, true);
-
-          SkippableTest thisTest = new SkippableTest(testSuiteName, testName, testParameters, null);
-          if (testModule.isSkippable(thisTest)) {
-            test.setTag(Tags.TEST_ITR_FORCED_RUN, true);
-          }
-          break;
-        }
-      }
-    }
-
-    TestDescriptor descriptor =
-        new TestDescriptor(testSuiteName, testClass, testName, testParameters, testQualifier);
-    inProgressTests.put(descriptor, test);
-  }
-
-  @Override
-  public void onTestSkip(
-      String testSuiteName,
-      Class<?> testClass,
-      String testName,
-      @Nullable Object testQualifier,
-      @Nullable String testParameters,
-      @Nullable String reason) {
-    TestDescriptor descriptor =
-        new TestDescriptor(testSuiteName, testClass, testName, testParameters, testQualifier);
-    DDTestImpl test = inProgressTests.get(descriptor);
-    if (test == null) {
-      log.debug(
-          "Ignoring skip event, could not find test with name {}, suite name{} and class {}",
-          testName,
-          testSuiteName,
-          testClass);
-      return;
-    }
-    test.setSkipReason(reason);
-  }
-
-  @Override
-  public void onTestFailure(
-      String testSuiteName,
-      Class<?> testClass,
-      String testName,
-      @Nullable Object testQualifier,
-      @Nullable String testParameters,
-      @Nullable Throwable throwable) {
-    TestDescriptor descriptor =
-        new TestDescriptor(testSuiteName, testClass, testName, testParameters, testQualifier);
-    DDTestImpl test = inProgressTests.get(descriptor);
-    if (test == null) {
-      log.debug(
-          "Ignoring fail event, could not find test with name {}, suite name{} and class {}",
-          testName,
-          testSuiteName,
-          testClass);
-      return;
-    }
-    test.setErrorInfo(throwable);
-  }
-
-  @Override
-  public void onTestFinish(
-      final String testSuiteName,
-      final Class<?> testClass,
-      final String testName,
-      final @Nullable Object testQualifier,
-      final @Nullable String testParameters) {
-    TestDescriptor descriptor =
-        new TestDescriptor(testSuiteName, testClass, testName, testParameters, testQualifier);
-    DDTestImpl test = inProgressTests.remove(descriptor);
-    if (test == null) {
-      log.debug(
-          "Ignoring finish event, could not find test with name {}, suite name{} and class {}",
-          testName,
-          testSuiteName,
-          testClass);
-      return;
-    }
-    test.end(null);
-  }
-
-  @Override
-  public void onTestIgnore(
-      final String testSuiteName,
-      final String testName,
-      final @Nullable Object testQualifier,
-      final @Nullable String testFramework,
-      final @Nullable String testFrameworkVersion,
-      final @Nullable String testParameters,
-      final @Nullable Collection<String> categories,
-      final @Nullable Class<?> testClass,
-      final @Nullable String testMethodName,
-      final @Nullable Method testMethod,
-      final @Nullable String reason) {
-    onTestStart(
-        testSuiteName,
-        testName,
-        testQualifier,
-        testFramework,
-        testFrameworkVersion,
-        testParameters,
-        categories,
-        testClass,
-        testMethodName,
-        testMethod);
-    onTestSkip(testSuiteName, testClass, testName, testQualifier, testParameters, reason);
-    onTestFinish(testSuiteName, testClass, testName, testQualifier, testParameters);
+    this.inProgressTestSuites = (ContextStore) suiteStore;
+    this.inProgressTests = (ContextStore) testStore;
   }
 
   private static boolean skipTrace(final Class<?> testClass) {
@@ -282,8 +59,268 @@ public class TestEventsHandlerImpl implements TestEventsHandler {
   }
 
   @Override
-  public boolean skip(SkippableTest test) {
-    return testModule.skip(test);
+  public void onTestSuiteStart(
+      final SuiteKey descriptor,
+      final String testSuiteName,
+      final @Nullable String testFramework,
+      final @Nullable String testFrameworkVersion,
+      final @Nullable Class<?> testClass,
+      final @Nullable Collection<String> categories,
+      boolean parallelized,
+      TestFrameworkInstrumentation instrumentation,
+      @Nullable Long startTime) {
+    if (skipTrace(testClass)) {
+      return;
+    }
+
+    TestSuiteImpl testSuite =
+        testModule.testSuiteStart(
+            testSuiteName, testClass, startTime, parallelized, instrumentation);
+
+    if (testFramework != null) {
+      testSuite.setTag(Tags.TEST_FRAMEWORK, testFramework);
+      if (testFrameworkVersion != null) {
+        testSuite.setTag(Tags.TEST_FRAMEWORK_VERSION, testFrameworkVersion);
+      }
+    }
+    if (categories != null && !categories.isEmpty()) {
+      testSuite.setTag(Tags.TEST_TRAITS, getTestTraits(categories));
+    }
+
+    inProgressTestSuites.put(descriptor, testSuite);
+  }
+
+  private String getTestTraits(Collection<String> categories) {
+    try (JsonWriter writer = new JsonWriter()) {
+      writer.beginObject().name("category").beginArray();
+      for (String category : categories) {
+        writer.value(category);
+      }
+      writer.endArray().endObject();
+      return writer.toString();
+    }
+  }
+
+  @Override
+  public void onTestSuiteFinish(SuiteKey descriptor, @Nullable Long endTime) {
+    if (skipTrace(descriptor.getClass())) {
+      return;
+    }
+
+    TestSuiteImpl testSuite = inProgressTestSuites.remove(descriptor);
+    testSuite.end(endTime);
+  }
+
+  @Override
+  public void onTestSuiteSkip(SuiteKey descriptor, @Nullable String reason) {
+    TestSuiteImpl testSuite = inProgressTestSuites.get(descriptor);
+    if (testSuite == null) {
+      log.debug("Ignoring skip event, could not find test suite {}", descriptor);
+      return;
+    }
+    testSuite.setSkipReason(reason);
+  }
+
+  @Override
+  public void onTestSuiteFailure(SuiteKey descriptor, @Nullable Throwable throwable) {
+    TestSuiteImpl testSuite = inProgressTestSuites.get(descriptor);
+    if (testSuite == null) {
+      log.debug("Ignoring fail event, could not find test suite {}", descriptor);
+      return;
+    }
+    testSuite.setErrorInfo(throwable);
+  }
+
+  @Override
+  public void onTestStart(
+      final SuiteKey suiteDescriptor,
+      final TestKey descriptor,
+      final String testName,
+      final @Nullable String testFramework,
+      final @Nullable String testFrameworkVersion,
+      final @Nullable String testParameters,
+      final @Nullable Collection<String> categories,
+      final @Nonnull TestSourceData testSourceData,
+      final @Nullable Long startTime,
+      final @Nullable TestExecutionHistory testExecutionHistory) {
+    if (skipTrace(testSourceData.getTestClass())) {
+      return;
+    }
+
+    TestSuiteImpl testSuite = inProgressTestSuites.get(suiteDescriptor);
+    if (testSuite == null) {
+      throw new IllegalStateException(
+          "Could not find test suite with descriptor "
+              + suiteDescriptor
+              + "; test descriptor: "
+              + descriptor);
+    }
+
+    TestImpl test =
+        testSuite.testStart(testName, testParameters, testSourceData.getTestMethod(), startTime);
+
+    TestIdentifier thisTest = test.getIdentifier();
+    if (testModule.isNew(thisTest)) {
+      test.setTag(Tags.TEST_IS_NEW, true);
+    }
+
+    if (testModule.isModified(testSourceData)) {
+      test.setTag(Tags.TEST_IS_MODIFIED, true);
+    }
+
+    if (testModule.isQuarantined(thisTest)) {
+      test.setTag(Tags.TEST_TEST_MANAGEMENT_IS_QUARANTINED, true);
+    }
+
+    if (testModule.isDisabled(thisTest)) {
+      test.setTag(Tags.TEST_TEST_MANAGEMENT_IS_TEST_DISABLED, true);
+    }
+
+    if (testModule.isAttemptToFix(thisTest)) {
+      test.setTag(Tags.TEST_TEST_MANAGEMENT_IS_ATTEMPT_TO_FIX, true);
+    }
+
+    if (testExecutionHistory != null) {
+      test.getContext().set(TestExecutionHistory.class, testExecutionHistory);
+    }
+
+    if (testFramework != null) {
+      test.setTag(Tags.TEST_FRAMEWORK, testFramework);
+      if (testFrameworkVersion != null) {
+        test.setTag(Tags.TEST_FRAMEWORK_VERSION, testFrameworkVersion);
+      }
+    }
+    if (testParameters != null) {
+      test.setTag(Tags.TEST_PARAMETERS, testParameters);
+    }
+    if (testSourceData.getTestMethodName() != null && testSourceData.getTestMethod() != null) {
+      test.setTag(
+          Tags.TEST_SOURCE_METHOD,
+          testSourceData.getTestMethodName()
+              + Type.getMethodDescriptor(testSourceData.getTestMethod()));
+    }
+    if (categories != null && !categories.isEmpty()) {
+      test.setTag(Tags.TEST_TRAITS, getTestTraits(categories));
+
+      for (String category : categories) {
+        if (category.endsWith(CIConstants.Tags.ITR_UNSKIPPABLE_TAG)) {
+          test.setTag(Tags.TEST_ITR_UNSKIPPABLE, true);
+          metricCollector.add(CiVisibilityCountMetric.ITR_UNSKIPPABLE, 1, EventType.TEST);
+
+          if (testModule.skipReason(thisTest) == SkipReason.ITR) {
+            test.setTag(Tags.TEST_ITR_FORCED_RUN, true);
+            metricCollector.add(CiVisibilityCountMetric.ITR_FORCED_RUN, 1, EventType.TEST);
+          }
+          break;
+        }
+      }
+    }
+
+    inProgressTests.put(descriptor, test);
+  }
+
+  @Override
+  public void onTestSkip(TestKey descriptor, @Nullable String reason) {
+    TestImpl test = inProgressTests.get(descriptor);
+    if (test == null) {
+      log.debug("Ignoring skip event, could not find test {}}", descriptor);
+      return;
+    }
+    test.setSkipReason(reason);
+  }
+
+  @Override
+  public void onTestFailure(TestKey descriptor, @Nullable Throwable throwable) {
+    TestImpl test = inProgressTests.get(descriptor);
+    if (test == null) {
+      log.debug("Ignoring fail event, could not find test {}", descriptor);
+      return;
+    }
+    test.setErrorInfo(throwable);
+  }
+
+  @Override
+  public void onTestFinish(
+      TestKey descriptor,
+      @Nullable Long endTime,
+      @Nullable TestExecutionHistory testExecutionHistory) {
+    TestImpl test = inProgressTests.remove(descriptor);
+    if (test == null) {
+      log.debug("Ignoring finish event, could not find test {}", descriptor);
+      return;
+    }
+
+    if (testExecutionHistory != null) {
+      TestStatus testStatus = test.getStatus();
+      TestExecutionHistory.ExecutionOutcome outcome =
+          testExecutionHistory.registerExecution(
+              testStatus != null ? testStatus : TestStatus.skip, test.getDuration(endTime));
+
+      RetryReason retryReason = outcome.retryReason();
+      if (retryReason != null) {
+        test.setTag(Tags.TEST_IS_RETRY, true);
+        test.setTag(Tags.TEST_RETRY_REASON, retryReason);
+      }
+
+      if (outcome.failedAllRetries()) {
+        test.setTag(Tags.TEST_HAS_FAILED_ALL_RETRIES, true);
+      }
+
+      if (outcome.lastExecution() && testModule.isAttemptToFix(test.getIdentifier())) {
+        test.setTag(Tags.TEST_TEST_MANAGEMENT_ATTEMPT_TO_FIX_PASSED, outcome.succeededAllRetries());
+      }
+
+      if (outcome.failureSuppressed()) {
+        test.setTag(Tags.TEST_FAILURE_SUPPRESSED, true);
+      }
+    }
+
+    test.end(endTime);
+  }
+
+  @Override
+  public void onTestIgnore(
+      final SuiteKey suiteDescriptor,
+      final TestKey testDescriptor,
+      final String testName,
+      final @Nullable String testFramework,
+      final @Nullable String testFrameworkVersion,
+      final @Nullable String testParameters,
+      final @Nullable Collection<String> categories,
+      @Nonnull TestSourceData testSourceData,
+      final @Nullable String reason,
+      @Nullable TestExecutionHistory testExecutionHistory) {
+    onTestStart(
+        suiteDescriptor,
+        testDescriptor,
+        testName,
+        testFramework,
+        testFrameworkVersion,
+        testParameters,
+        categories,
+        testSourceData,
+        null,
+        testExecutionHistory);
+    onTestSkip(testDescriptor, reason);
+    onTestFinish(testDescriptor, null, testExecutionHistory);
+  }
+
+  @Override
+  @Nonnull
+  public TestExecutionPolicy executionPolicy(
+      TestIdentifier test, TestSourceData testSource, Collection<String> testTags) {
+    return testModule.executionPolicy(test, testSource, testTags);
+  }
+
+  @Override
+  public int executionPriority(@Nullable TestIdentifier test, @Nonnull TestSourceData testSource) {
+    return testModule.executionPriority(test, testSource);
+  }
+
+  @Nullable
+  @Override
+  public SkipReason skipReason(TestIdentifier test) {
+    return testModule.skipReason(test);
   }
 
   @Override

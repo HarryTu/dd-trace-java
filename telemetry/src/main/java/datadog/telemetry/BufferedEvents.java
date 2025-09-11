@@ -6,6 +6,8 @@ import datadog.telemetry.api.LogMessage;
 import datadog.telemetry.api.Metric;
 import datadog.telemetry.dependency.Dependency;
 import datadog.trace.api.ConfigSetting;
+import datadog.trace.api.telemetry.Endpoint;
+import datadog.trace.api.telemetry.ProductChange;
 import java.util.ArrayList;
 
 /**
@@ -26,6 +28,10 @@ public final class BufferedEvents implements EventSource, EventSink {
   private int distributionSeriesIndex;
   private ArrayList<LogMessage> logMessageEvents;
   private int logMessageIndex;
+  private ArrayList<ProductChange> productChangeEvents;
+  private int productChangeIndex;
+  private ArrayList<Endpoint> endpointEvents;
+  private int endpointIndex;
 
   public void addConfigChangeEvent(ConfigSetting event) {
     if (configChangeEvents == null) {
@@ -72,6 +78,22 @@ public final class BufferedEvents implements EventSource, EventSink {
       logMessageEvents = new ArrayList<>(INITIAL_CAPACITY);
     }
     logMessageEvents.add(event);
+  }
+
+  @Override
+  public void addProductChangeEvent(ProductChange event) {
+    if (productChangeEvents == null) {
+      productChangeEvents = new ArrayList<>(INITIAL_CAPACITY);
+    }
+    productChangeEvents.add(event);
+  }
+
+  @Override
+  public void addEndpointEvent(final Endpoint event) {
+    if (endpointEvents == null) {
+      endpointEvents = new ArrayList<>(INITIAL_CAPACITY);
+    }
+    endpointEvents.add(event);
   }
 
   @Override
@@ -133,5 +155,25 @@ public final class BufferedEvents implements EventSource, EventSink {
   @Override
   public LogMessage nextLogMessageEvent() {
     return logMessageEvents.get(logMessageIndex++);
+  }
+
+  @Override
+  public boolean hasProductChangeEvent() {
+    return productChangeEvents != null && productChangeIndex < productChangeEvents.size();
+  }
+
+  @Override
+  public ProductChange nextProductChangeEvent() {
+    return productChangeEvents.get(productChangeIndex++);
+  }
+
+  @Override
+  public boolean hasEndpoint() {
+    return endpointEvents != null && endpointIndex < endpointEvents.size();
+  }
+
+  @Override
+  public Endpoint nextEndpoint() {
+    return endpointEvents.get(endpointIndex++);
   }
 }

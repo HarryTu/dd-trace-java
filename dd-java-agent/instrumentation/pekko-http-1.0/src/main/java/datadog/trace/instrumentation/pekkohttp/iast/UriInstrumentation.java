@@ -9,7 +9,12 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
+import datadog.trace.advice.ActiveRequestContext;
+import datadog.trace.advice.RequiresRequestContext;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
+import datadog.trace.api.gateway.RequestContext;
+import datadog.trace.api.gateway.RequestContextSlot;
 import datadog.trace.api.iast.IastContext;
 import datadog.trace.api.iast.InstrumentationBridge;
 import datadog.trace.api.iast.Propagation;
@@ -22,8 +27,9 @@ import scala.Tuple2;
 import scala.collection.Iterator;
 
 /** Propagates taint from a {@link Uri} to query strings fetched from it. */
-@AutoService(Instrumenter.class)
-public class UriInstrumentation extends Instrumenter.Iast implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class UriInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public UriInstrumentation() {
     super("pekko-http");
   }
@@ -34,8 +40,8 @@ public class UriInstrumentation extends Instrumenter.Iast implements Instrumente
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(not(isStatic()))
             .and(named("queryString"))
@@ -43,14 +49,14 @@ public class UriInstrumentation extends Instrumenter.Iast implements Instrumente
             .and(takesArguments(1))
             .and(takesArgument(0, named("java.nio.charset.Charset"))),
         UriInstrumentation.class.getName() + "$TaintQueryStringAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(not(isStatic()))
             .and(named("rawQueryString"))
             .and(returns(named("scala.Option")))
             .and(takesArguments(0)),
         UriInstrumentation.class.getName() + "$TaintQueryStringAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(not(isStatic()))
             .and(named("query"))
@@ -61,30 +67,39 @@ public class UriInstrumentation extends Instrumenter.Iast implements Instrumente
         UriInstrumentation.class.getName() + "$TaintQueryAdvice");
   }
 
+  @RequiresRequestContext(RequestContextSlot.IAST)
   static class TaintQueryStringAdvice {
     @Advice.OnMethodExit(suppress = Throwable.class)
     @Propagation
-    static void after(@Advice.This Uri uri, @Advice.Return scala.Option<String> ret) {
+    static void after(
+        @Advice.This Uri uri,
+        @Advice.Return scala.Option<String> ret,
+        @ActiveRequestContext RequestContext reqCtx) {
       PropagationModule mod = InstrumentationBridge.PROPAGATION;
       if (mod == null || ret.isEmpty()) {
         return;
       }
-      mod.taintIfTainted(ret.get(), uri);
+      IastContext ctx = reqCtx.getData(RequestContextSlot.IAST);
+      mod.taintStringIfTainted(ctx, ret.get(), uri);
     }
   }
 
+  @RequiresRequestContext(RequestContextSlot.IAST)
   public static class TaintQueryAdvice {
     // bind uri to a variable of type Object so that this advice can also
     // be used from FromDataInstrumentaton
     @Advice.OnMethodExit(suppress = Throwable.class)
     @Source(SourceTypes.REQUEST_PARAMETER_VALUE)
-    static void after(@Advice.This /*Uri*/ Object uri, @Advice.Return Uri.Query ret) {
+    static void after(
+        @Advice.This /*Uri*/ Object uri,
+        @Advice.Return Uri.Query ret,
+        @ActiveRequestContext RequestContext reqCtx) {
       PropagationModule prop = InstrumentationBridge.PROPAGATION;
       if (prop == null || ret.isEmpty()) {
         return;
       }
 
-      final IastContext ctx = IastContext.Provider.get();
+      final IastContext ctx = reqCtx.getData(RequestContextSlot.IAST);
       if (!prop.isTainted(ctx, uri)) {
         return;
       }
@@ -93,8 +108,8 @@ public class UriInstrumentation extends Instrumenter.Iast implements Instrumente
       while (iterator.hasNext()) {
         Tuple2<String, String> pair = iterator.next();
         final String name = pair._1(), value = pair._2();
-        prop.taint(ctx, name, SourceTypes.REQUEST_PARAMETER_NAME, name);
-        prop.taint(ctx, value, SourceTypes.REQUEST_PARAMETER_VALUE, name);
+        prop.taintString(ctx, name, SourceTypes.REQUEST_PARAMETER_NAME, name);
+        prop.taintString(ctx, value, SourceTypes.REQUEST_PARAMETER_VALUE, name);
       }
     }
   }

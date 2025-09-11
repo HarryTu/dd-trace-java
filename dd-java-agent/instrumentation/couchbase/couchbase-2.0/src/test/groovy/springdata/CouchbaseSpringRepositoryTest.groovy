@@ -5,12 +5,12 @@ import com.couchbase.client.java.CouchbaseCluster
 import com.couchbase.client.java.env.CouchbaseEnvironment
 import com.couchbase.client.java.view.DefaultView
 import com.couchbase.client.java.view.DesignDocument
+import datadog.environment.JavaVirtualMachine
 import org.springframework.context.ConfigurableApplicationContext
 import org.springframework.context.annotation.AnnotationConfigApplicationContext
 import org.springframework.data.repository.CrudRepository
 import spock.lang.IgnoreIf
 import spock.lang.Shared
-import spock.lang.Unroll
 import util.AbstractCouchbaseTest
 
 import static datadog.trace.agent.test.utils.TraceUtils.basicSpan
@@ -19,9 +19,8 @@ import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeSpan
 
 @IgnoreIf({
   // TODO Java 17: This version of spring-data doesn't support Java 17
-  new BigDecimal(System.getProperty("java.specification.version")).isAtLeast(17.0)
+  JavaVirtualMachine.isJavaVersionAtLeast(17)
 })
-@Unroll
 abstract class CouchbaseSpringRepositoryTest extends AbstractCouchbaseTest {
   static final Closure<Doc> FIND
   static {

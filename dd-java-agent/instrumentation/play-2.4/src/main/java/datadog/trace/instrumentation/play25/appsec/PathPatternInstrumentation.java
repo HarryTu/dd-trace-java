@@ -9,12 +9,13 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.agent.tooling.muzzle.Reference;
 
 /** @see play.core.routing.PathPattern#apply(String) */
-@AutoService(Instrumenter.class)
-public class PathPatternInstrumentation extends Instrumenter.AppSec
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class PathPatternInstrumentation extends InstrumenterModule.AppSec
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public PathPatternInstrumentation() {
     super("play");
   }
@@ -42,8 +43,8 @@ public class PathPatternInstrumentation extends Instrumenter.AppSec
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("apply")
             .and(not(isStatic()))
             .and(takesArguments(1))

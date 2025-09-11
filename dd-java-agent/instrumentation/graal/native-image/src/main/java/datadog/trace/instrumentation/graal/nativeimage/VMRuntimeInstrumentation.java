@@ -9,6 +9,7 @@ import static net.bytebuddy.matcher.ElementMatchers.isMethod;
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.ExcludeFilterProvider;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.Config;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.ExcludeFilter;
 import datadog.trace.logging.GlobalLogLevelSwitcher;
@@ -19,9 +20,9 @@ import net.bytebuddy.asm.Advice;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-@AutoService(Instrumenter.class)
+@AutoService(InstrumenterModule.class)
 public final class VMRuntimeInstrumentation extends AbstractNativeImageInstrumentation
-    implements Instrumenter.ForSingleType, ExcludeFilterProvider {
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice, ExcludeFilterProvider {
 
   @Override
   public String instrumentedType() {
@@ -29,8 +30,8 @@ public final class VMRuntimeInstrumentation extends AbstractNativeImageInstrumen
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(named("initialize")),
         VMRuntimeInstrumentation.class.getName() + "$InitializeAdvice");
   }
@@ -61,6 +62,11 @@ public final class VMRuntimeInstrumentation extends AbstractNativeImageInstrumen
           // patch logger level and re-log configuration details
           GlobalLogLevelSwitcher.get().switchLevel(LogLevel.DEBUG);
           configLogger.debug("New instance: {}", Config.get());
+        }
+      } else {
+        String logLevel = Config.get().getLogLevel();
+        if (null != logLevel) {
+          GlobalLogLevelSwitcher.get().switchLevel(LogLevel.fromString(logLevel));
         }
       }
 

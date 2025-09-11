@@ -11,6 +11,7 @@ import datadog.appsec.api.blocking.BlockingException;
 import datadog.trace.advice.ActiveRequestContext;
 import datadog.trace.advice.RequiresRequestContext;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.agent.tooling.muzzle.Reference;
 import datadog.trace.api.gateway.BlockResponseFunction;
 import datadog.trace.api.gateway.CallbackProvider;
@@ -25,9 +26,9 @@ import net.bytebuddy.asm.Advice;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.util.MultiMap;
 
-@AutoService(Instrumenter.class)
-public class UrlEncodedInstrumentation extends Instrumenter.AppSec
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class UrlEncodedInstrumentation extends InstrumenterModule.AppSec
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public UrlEncodedInstrumentation() {
     super("jetty");
   }
@@ -43,8 +44,8 @@ public class UrlEncodedInstrumentation extends Instrumenter.AppSec
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("decodeTo")
             .and(takesArgument(0, InputStream.class))
             .and(takesArgument(1, named("org.eclipse.jetty.util.MultiMap")))

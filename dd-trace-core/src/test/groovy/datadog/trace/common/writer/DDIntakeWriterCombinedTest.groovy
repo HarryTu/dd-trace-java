@@ -7,10 +7,10 @@ import datadog.communication.serialization.msgpack.MsgPackWriter
 import datadog.trace.api.DDSpanId
 import datadog.trace.api.DDTraceId
 import datadog.trace.api.StatsDClient
-import datadog.trace.api.WellKnownTags
+import datadog.trace.api.civisibility.CiVisibilityWellKnownTags
 import datadog.trace.api.intake.TrackType
 import datadog.trace.api.sampling.PrioritySampling
-import datadog.trace.bootstrap.instrumentation.api.AgentTracer
+import datadog.trace.api.datastreams.NoopPathwayContext
 import datadog.trace.common.writer.ddintake.DDIntakeApi
 import datadog.trace.common.writer.ddintake.DDIntakeMapperDiscovery
 import datadog.trace.core.CoreTracer
@@ -29,6 +29,7 @@ import spock.lang.Timeout
 import spock.util.concurrent.PollingConditions
 
 import java.nio.ByteBuffer
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Phaser
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
@@ -42,7 +43,10 @@ import static datadog.trace.common.writer.ddagent.Prioritization.ENSURE_TRACE
 class DDIntakeWriterCombinedTest extends DDCoreSpecification {
 
   @Shared
-  def wellKnownTags = new WellKnownTags("my-runtime-id","my-hostname","my-env","my-service","my-version","my-language")
+  def wellKnownTags = new CiVisibilityWellKnownTags(
+  "my-runtime-id", "my-env", "my-language",
+  "my-runtime-name", "my-runtime-version", "my-runtime-vendor",
+  "my-os-arch", "my-os-platform", "my-os-version", "false")
 
   def conditions = new PollingConditions(timeout: 5, initialDelay: 0, factor: 1.25)
   def monitoring = new MonitoringImpl(StatsDClient.NO_OP, 1, TimeUnit.SECONDS)
@@ -197,7 +201,7 @@ class DDIntakeWriterCombinedTest extends DDCoreSpecification {
     writer.start()
 
     when:
-    def discovery = new DDIntakeMapperDiscovery(trackType, wellKnownTags)
+    def discovery = new DDIntakeMapperDiscovery(trackType, wellKnownTags, false)
     discovery.discover()
     def mapper = (RemoteMapper) discovery.mapper
     def traceSize = calculateSize(minimalTrace, mapper)
@@ -669,47 +673,41 @@ class DDIntakeWriterCombinedTest extends DDCoreSpecification {
   }
 
   def "statsd comm failure"() {
-    def numRequests = new AtomicInteger(0)
-    def numResponses = new AtomicInteger(0)
-    def numErrors = new AtomicInteger(0)
-
     setup:
     def minimalTrace = createMinimalTrace()
 
     def api = Mock(DDIntakeApi)
     api.sendSerializedTraces(_) >> RemoteApi.Response.failed(new IOException("comm error"))
 
-    def statsd = Stub(StatsDClient)
-    statsd.incrementCounter("api.requests.total") >> { stat ->
-      numRequests.incrementAndGet()
-    }
-    statsd.incrementCounter("api.responses.total", _) >> { stat, tags ->
-      numResponses.incrementAndGet()
-    }
-    statsd.incrementCounter("api.errors.total", _) >> { stat ->
-      numErrors.incrementAndGet()
-    }
-
-    def healthMetrics = new TracerHealthMetrics(statsd)
+    def latch = new CountDownLatch(2)
+    def statsd = Mock(StatsDClient)
+    def healthMetrics = new TracerHealthMetrics(statsd, 100, TimeUnit.MILLISECONDS)
     def writer = DDIntakeWriter.builder()
       .addTrack(trackType, api)
       .monitoring(monitoring)
       .healthMetrics(healthMetrics)
       .alwaysFlush(false)
       .build()
+    healthMetrics.start()
     writer.start()
 
     when:
     writer.write(minimalTrace)
     writer.flush()
+    latch.await(10, TimeUnit.SECONDS)
 
     then:
-    numRequests.get() == 1
-    numResponses.get() == 0
-    numErrors.get() == 1
+    1 * statsd.count("api.requests.total", 1, _) >> {
+      latch.countDown()
+    }
+    0 * statsd.incrementCounter("api.responses.total", _)
+    1 * statsd.count("api.errors.total", 1, _) >> {
+      latch.countDown()
+    }
 
     cleanup:
     writer.close()
+    healthMetrics.close()
 
     where:
     trackType | apiVersion
@@ -717,8 +715,8 @@ class DDIntakeWriterCombinedTest extends DDCoreSpecification {
   }
 
   def createMinimalContext() {
-    def tracer = Mock(CoreTracer)
-    def trace = Mock(PendingTrace)
+    def tracer = Stub(CoreTracer)
+    def trace = Stub(PendingTrace)
     trace.mapServiceName(_) >> { String serviceName -> serviceName }
     trace.getTracer() >> tracer
     return new DDSpanContext(
@@ -738,7 +736,7 @@ class DDIntakeWriterCombinedTest extends DDCoreSpecification {
       trace,
       null,
       null,
-      AgentTracer.NoopPathwayContext.INSTANCE,
+      NoopPathwayContext.INSTANCE,
       false,
       PropagationTags.factory().empty())
   }
@@ -746,7 +744,7 @@ class DDIntakeWriterCombinedTest extends DDCoreSpecification {
   def createMinimalTrace() {
     def context = createMinimalContext()
     def minimalSpan = new DDSpan("test", 0, context, null)
-    context.getTrace().getRootSpan() >> minimalSpan
+    context.getTraceCollector().getRootSpan() >> minimalSpan
     def minimalTrace = [minimalSpan]
 
     return minimalTrace

@@ -1,12 +1,9 @@
 package datadog.trace.instrumentation.java.lang.invoke
 
-import datadog.trace.agent.test.AgentTestRunner
-import datadog.trace.api.Platform
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.iast.InstrumentationBridge
 import datadog.trace.api.iast.propagation.StringModule
 import foo.bar.TestStringConcatFactorySuite
-import groovy.transform.CompileDynamic
-import spock.lang.IgnoreIf
 import spock.lang.Requires
 
 import static foo.bar.TestStringConcatFactorySuite.stringPlusWithPrimitive
@@ -14,11 +11,7 @@ import static foo.bar.TestStringConcatFactorySuite.stringPlusWithPrimitive
 @Requires({
   jvm.java9Compatible
 })
-@IgnoreIf(reason = "https://github.com/DataDog/dd-trace-java/issues/5715", value = {
-  Platform.isJ9()
-})
-@CompileDynamic
-class StringConcatFactoryCallSiteTest extends AgentTestRunner {
+class StringConcatFactoryCallSiteTest extends InstrumentationSpecification {
 
   @Override
   protected void configurePreAgent() {
@@ -170,7 +163,7 @@ class StringConcatFactoryCallSiteTest extends AgentTestRunner {
     0 * _
   }
 
-  void 'test string concat factory with primitives'() {
+  void 'test string concat factory with primitives #iterationIndex'() {
     setup:
     final iastModule = Mock(StringModule)
     InstrumentationBridge.registerIastModule(iastModule)

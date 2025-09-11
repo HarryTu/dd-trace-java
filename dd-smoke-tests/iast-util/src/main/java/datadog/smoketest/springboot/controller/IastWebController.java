@@ -2,27 +2,31 @@ package datadog.smoketest.springboot.controller;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonParser;
+import datadog.communication.util.IOUtils;
 import datadog.smoketest.springboot.TestBean;
+import datadog.smoketest.springboot.controller.mock.JakartaMockTransport;
 import ddtest.client.sources.Hasher;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import java.io.File;
 import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.io.StringReader;
 import java.io.UnsupportedEncodingException;
 import java.net.HttpCookie;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.security.Principal;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 import javax.servlet.ServletException;
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.Part;
 import javax.websocket.server.PathParam;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -31,6 +35,8 @@ import javax.xml.xpath.XPath;
 import javax.xml.xpath.XPathConstants;
 import javax.xml.xpath.XPathExpressionException;
 import javax.xml.xpath.XPathFactory;
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.text.StringEscapeUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpStatus;
@@ -50,6 +56,7 @@ import org.springframework.web.servlet.view.RedirectView;
 import org.springframework.web.servlet.view.UrlBasedViewResolver;
 import org.w3c.dom.Document;
 import org.xml.sax.SAXException;
+import org.yaml.snakeyaml.Yaml;
 
 @RestController
 public class IastWebController {
@@ -247,17 +254,6 @@ public class IastWebController {
     return "ok User Principal name: " + userPrincipal.getName();
   }
 
-  @PostMapping("/ssrf")
-  public String ssrf(@RequestParam("url") final String url) {
-    try {
-      final URL target = new URL(url);
-      final HttpURLConnection conn = (HttpURLConnection) target.openConnection();
-      conn.disconnect();
-    } catch (final Exception e) {
-    }
-    return "Url is: " + url;
-  }
-
   @GetMapping("/weak_randomness")
   public String weak_randomness(@RequestParam("mode") final Class<?> mode) {
     final double result;
@@ -322,6 +318,12 @@ public class IastWebController {
     return "ok";
   }
 
+  @GetMapping(value = "/insecureAuthProtocol")
+  public String insecureAuthProtocol(HttpServletRequest request) {
+    String authorization = request.getHeader("Authorization");
+    return authorization;
+  }
+
   @PostMapping("/multipart")
   public String handleFileUpload(
       @RequestParam("theFile") MultipartFile file, @RequestParam("param1") String param1) {
@@ -332,6 +334,46 @@ public class IastWebController {
     } catch (IOException e) {
     }
     return "fileName: " + file.getName();
+  }
+
+  @PostMapping("/jakartaMailHtmlVulnerability")
+  public String jakartaMailHtmlVulnerability(HttpServletRequest request)
+      throws jakarta.mail.MessagingException {
+    jakarta.mail.Session session = jakarta.mail.Session.getDefaultInstance(new Properties());
+    jakarta.mail.Provider provider =
+        new jakarta.mail.Provider(
+            jakarta.mail.Provider.Type.TRANSPORT,
+            "smtp",
+            JakartaMockTransport.class.getName(),
+            "MockTransport",
+            "1.0");
+    session.setProvider(provider);
+    boolean sanitize =
+        StringUtils.isNotEmpty(request.getParameter("sanitize"))
+            && request.getParameter("sanitize").equalsIgnoreCase("true");
+    jakarta.mail.internet.MimeMessage message = new jakarta.mail.internet.MimeMessage(session);
+    if (request.getParameter("messageText") != null) {
+      message.setText(
+          sanitize
+              ? StringEscapeUtils.escapeHtml4(request.getParameter("messageText"))
+              : request.getParameter("messageText"),
+          "utf-8",
+          "html");
+    } else {
+      jakarta.mail.Multipart content = new jakarta.mail.internet.MimeMultipart();
+      content.addBodyPart(new jakarta.mail.internet.MimeBodyPart());
+      content
+          .getBodyPart(0)
+          .setContent(
+              sanitize
+                  ? StringEscapeUtils.escapeHtml4(request.getParameter("messageContent"))
+                  : request.getParameter("messageContent"),
+              "text/html");
+      message.setContent(content, "multipart/*");
+    }
+    message.setRecipients(jakarta.mail.Message.RecipientType.TO, "abc@datadoghq.com");
+    jakarta.mail.Transport.send(message);
+    return "ok";
   }
 
   @GetMapping(value = "/xcontenttypeoptionsecure", produces = "text/html")
@@ -366,6 +408,61 @@ public class IastWebController {
     return "Ok";
   }
 
+  @GetMapping("/header_injection")
+  public String headerInjection(@RequestParam("param") String param, HttpServletResponse response) {
+    response.addHeader("X-Test-Header", param);
+    return "Ok";
+  }
+
+  @GetMapping("/header_injection_exclusion")
+  public String headerInjectionExclusion(
+      @RequestParam("param") String param, HttpServletResponse response) {
+    response.addHeader("Sec-WebSocket-Location", param);
+    return "Ok";
+  }
+
+  @GetMapping("/header_injection_redaction")
+  public String headerInjectionRedaction(
+      @RequestParam("param") String param, HttpServletResponse response) {
+    response.addHeader("X-Test-Header", param);
+    return "Ok";
+  }
+
+  @PostMapping("/untrusted_deserialization")
+  public String untrustedDeserialization(HttpServletRequest request) throws IOException {
+    final ObjectInputStream ois = new ObjectInputStream(request.getInputStream());
+    ois.close();
+    return "OK";
+  }
+
+  @PostMapping("/untrusted_deserialization/multipart")
+  public String untrustedDeserializationMultipart(@RequestParam("file") MultipartFile file)
+      throws IOException {
+    final ObjectInputStream ois = new ObjectInputStream(file.getInputStream());
+    ois.close();
+    return "OK";
+  }
+
+  @PostMapping("/untrusted_deserialization/part")
+  public String untrustedDeserializationParts(HttpServletRequest request)
+      throws IOException, ServletException {
+    List<Part> parts = (List<Part>) request.getParts();
+    final ObjectInputStream ois = new ObjectInputStream(parts.get(0).getInputStream());
+    ois.close();
+    return "OK";
+  }
+
+  @GetMapping("/untrusted_deserialization/snakeyaml")
+  public String untrustedDeserializationSnakeYaml(@RequestParam("yaml") String param) {
+    new Yaml().load(param);
+    return "OK";
+  }
+
+  @GetMapping("/test_custom_string_reader")
+  public String testCustomStringReader(@RequestParam("param") String param) throws IOException {
+    return String.join("", IOUtils.readLines(new CustomStringReader(param)));
+  }
+
   private void withProcess(final Operation<Process> op) {
     Process process = null;
     try {
@@ -381,5 +478,16 @@ public class IastWebController {
 
   private interface Operation<E> {
     E run() throws Throwable;
+  }
+
+  public static class CustomStringReader extends StringReader {
+
+    public CustomStringReader(String s) {
+      super(
+          "Super "
+              + s
+              + (new StringReader(
+                  "New_1" + new StringReader("New_2" + new StringReader("New_3" + s)))));
+    }
   }
 }

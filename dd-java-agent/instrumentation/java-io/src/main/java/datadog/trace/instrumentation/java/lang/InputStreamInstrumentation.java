@@ -7,6 +7,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.iast.InstrumentationBridge;
 import datadog.trace.api.iast.Propagation;
 import datadog.trace.api.iast.propagation.PropagationModule;
@@ -15,9 +16,9 @@ import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public class InputStreamInstrumentation extends Instrumenter.Iast
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class InputStreamInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   private static final String[] FORCE_LOADING = {"java.io.PushbackInputStream"};
 
@@ -36,8 +37,8 @@ public class InputStreamInstrumentation extends Instrumenter.Iast
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isConstructor().and(takesArgument(0, InputStream.class)),
         InputStreamInstrumentation.class.getName() + "$InputStreamAdvice");
   }
@@ -56,7 +57,7 @@ public class InputStreamInstrumentation extends Instrumenter.Iast
       final PropagationModule module = InstrumentationBridge.PROPAGATION;
       try {
         if (module != null) {
-          module.taintIfTainted(self, param);
+          module.taintObjectIfTainted(self, param);
         }
       } catch (final Throwable e) {
         module.onUnexpectedException("InputStreamAdvice onExit threw", e);

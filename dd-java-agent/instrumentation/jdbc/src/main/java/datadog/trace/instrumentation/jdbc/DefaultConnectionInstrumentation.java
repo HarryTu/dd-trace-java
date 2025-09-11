@@ -2,11 +2,14 @@ package datadog.trace.instrumentation.jdbc;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.InstrumenterConfig;
 
-@AutoService(Instrumenter.class)
+@AutoService(InstrumenterModule.class)
 public class DefaultConnectionInstrumentation extends AbstractConnectionInstrumentation
-    implements Instrumenter.ForKnownTypes, Instrumenter.ForConfiguredType {
+    implements Instrumenter.ForKnownTypes,
+        Instrumenter.ForConfiguredType,
+        Instrumenter.HasMethodAdvice {
 
   static final String[] CONCRETE_TYPES = {
     // redshift
@@ -40,6 +43,11 @@ public class DefaultConnectionInstrumentation extends AbstractConnectionInstrume
     "com.sap.db.jdbc.ConnectionSapDB",
     // IBM Informix
     "com.informix.jdbc.IfmxConnection",
+    // Intersystems IRIS
+    "com.intersystems.jdbc.IRISConnection",
+    // Sybase
+    "com.sybase.jdbc2.jdbc.SybConnection",
+    "com.sybase.jdbc4.jdbc.SybConnection",
     // for testing purposes
     "test.TestConnection"
   };

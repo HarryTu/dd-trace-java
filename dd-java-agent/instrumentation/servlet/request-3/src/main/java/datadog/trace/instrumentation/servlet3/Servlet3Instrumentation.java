@@ -10,12 +10,13 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public final class Servlet3Instrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public final class Servlet3Instrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
   public Servlet3Instrumentation() {
     super("servlet", "servlet-3");
   }
@@ -26,7 +27,7 @@ public final class Servlet3Instrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     // Avoid matching servlet 2 which has its own instrumentation
     return hasClassNamed("javax.servlet.AsyncEvent");
   }
@@ -51,6 +52,9 @@ public final class Servlet3Instrumentation extends Instrumenter.Tracing
       packageName + ".Servlet3Decorator",
       packageName + ".ServletRequestURIAdapter",
       packageName + ".FinishAsyncDispatchListener",
+      packageName + ".RumHttpServletRequestWrapper",
+      packageName + ".RumHttpServletResponseWrapper",
+      packageName + ".WrappedServletOutputStream",
       "datadog.trace.instrumentation.servlet.ServletBlockingHelper",
     };
   }
@@ -61,8 +65,8 @@ public final class Servlet3Instrumentation extends Instrumenter.Tracing
    * method.
    */
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         namedOneOf("doFilter", "service")
             .and(takesArgument(0, named("javax.servlet.ServletRequest")))
             .and(takesArgument(1, named("javax.servlet.ServletResponse")))

@@ -1,77 +1,72 @@
 package datadog.trace.core.datastreams;
 
 import static datadog.communication.ddagent.DDAgentFeaturesDiscovery.V01_DATASTREAMS_ENDPOINT;
-import static datadog.trace.api.DDTags.PATHWAY_HASH;
+import static datadog.trace.api.datastreams.DataStreamsContext.fromTags;
+import static datadog.trace.api.datastreams.DataStreamsTags.Direction.INBOUND;
+import static datadog.trace.api.datastreams.DataStreamsTags.Direction.OUTBOUND;
+import static datadog.trace.api.datastreams.DataStreamsTags.create;
+import static datadog.trace.api.datastreams.DataStreamsTags.createManual;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeSpan;
-import static datadog.trace.core.datastreams.TagsProcessor.DIRECTION_IN;
-import static datadog.trace.core.datastreams.TagsProcessor.DIRECTION_OUT;
-import static datadog.trace.core.datastreams.TagsProcessor.DIRECTION_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.TOPIC_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.TYPE_TAG;
 import static datadog.trace.util.AgentThreadFactory.AgentThread.DATA_STREAMS_MONITORING;
 import static datadog.trace.util.AgentThreadFactory.THREAD_JOIN_TIMOUT_MS;
 import static datadog.trace.util.AgentThreadFactory.newAgentThread;
 
 import datadog.communication.ddagent.DDAgentFeaturesDiscovery;
 import datadog.communication.ddagent.SharedCommunicationObjects;
+import datadog.context.propagation.Propagator;
 import datadog.trace.api.Config;
 import datadog.trace.api.TraceConfig;
-import datadog.trace.api.WellKnownTags;
+import datadog.trace.api.datastreams.*;
 import datadog.trace.api.experimental.DataStreamsContextCarrier;
 import datadog.trace.api.time.TimeSource;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
-import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
-import datadog.trace.bootstrap.instrumentation.api.Backlog;
-import datadog.trace.bootstrap.instrumentation.api.InboxItem;
-import datadog.trace.bootstrap.instrumentation.api.PathwayContext;
-import datadog.trace.bootstrap.instrumentation.api.StatsPoint;
+import datadog.trace.bootstrap.instrumentation.api.Schema;
+import datadog.trace.bootstrap.instrumentation.api.SchemaIterator;
 import datadog.trace.common.metrics.EventListener;
 import datadog.trace.common.metrics.OkHttpSink;
 import datadog.trace.common.metrics.Sink;
 import datadog.trace.core.DDSpan;
 import datadog.trace.core.DDTraceCoreInfo;
-import datadog.trace.core.propagation.HttpCodec;
 import datadog.trace.util.AgentTaskScheduler;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
-import org.jctools.queues.MpscBlockingConsumerArrayQueue;
+import org.jctools.queues.MpscArrayQueue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class DefaultDataStreamsMonitoring implements DataStreamsMonitoring, EventListener {
   private static final Logger log = LoggerFactory.getLogger(DefaultDataStreamsMonitoring.class);
 
-  static final long DEFAULT_BUCKET_DURATION_NANOS = TimeUnit.SECONDS.toNanos(10);
   static final long FEATURE_CHECK_INTERVAL_NANOS = TimeUnit.MINUTES.toNanos(5);
 
   private static final StatsPoint REPORT =
-      new StatsPoint(Collections.emptyList(), 0, 0, 0, 0, 0, 0);
+      new StatsPoint(DataStreamsTags.EMPTY, 0, 0, 0, 0, 0, 0, 0, null);
   private static final StatsPoint POISON_PILL =
-      new StatsPoint(Collections.emptyList(), 0, 0, 0, 0, 0, 0);
+      new StatsPoint(DataStreamsTags.EMPTY, 0, 0, 0, 0, 0, 0, 0, null);
 
-  private final Map<Long, StatsBucket> timeToBucket = new HashMap<>();
-  private final BlockingQueue<InboxItem> inbox = new MpscBlockingConsumerArrayQueue<>(1024);
+  private final Map<Long, Map<String, StatsBucket>> timeToBucket = new HashMap<>();
+  private final MpscArrayQueue<InboxItem> inbox = new MpscArrayQueue<>(1024);
   private final DatastreamsPayloadWriter payloadWriter;
   private final DDAgentFeaturesDiscovery features;
   private final TimeSource timeSource;
-  private final WellKnownTags wellKnownTags;
   private final Supplier<TraceConfig> traceConfigSupplier;
   private final long bucketDurationNanos;
-  private final DataStreamContextInjector injector;
   private final Thread thread;
+  private final DataStreamsPropagator propagator;
   private AgentTaskScheduler.Scheduled<DefaultDataStreamsMonitoring> cancellation;
   private volatile long nextFeatureCheck;
   private volatile boolean supportsDataStreams = false;
   private volatile boolean agentSupportsDataStreams = false;
   private volatile boolean configSupportsDataStreams = false;
+  private final ConcurrentHashMap<String, SchemaSampler> schemaSamplers;
+  private static final ThreadLocal<String> serviceNameOverride = new ThreadLocal<>();
 
   public DefaultDataStreamsMonitoring(
       Config config,
@@ -85,7 +80,7 @@ public class DefaultDataStreamsMonitoring implements DataStreamsMonitoring, Even
             V01_DATASTREAMS_ENDPOINT,
             false,
             true,
-            Collections.<String, String>emptyMap()),
+            Collections.emptyMap()),
         sharedCommunicationObjects.featuresDiscovery(config),
         timeSource,
         traceConfigSupplier,
@@ -103,10 +98,9 @@ public class DefaultDataStreamsMonitoring implements DataStreamsMonitoring, Even
         features,
         timeSource,
         traceConfigSupplier,
-        config.getWellKnownTags(),
         new MsgPackDatastreamsPayloadWriter(
             sink, config.getWellKnownTags(), DDTraceCoreInfo.VERSION, config.getPrimaryTag()),
-        DEFAULT_BUCKET_DURATION_NANOS);
+        Config.get().getDataStreamsBucketDurationNanoseconds());
   }
 
   public DefaultDataStreamsMonitoring(
@@ -114,38 +108,25 @@ public class DefaultDataStreamsMonitoring implements DataStreamsMonitoring, Even
       DDAgentFeaturesDiscovery features,
       TimeSource timeSource,
       Supplier<TraceConfig> traceConfigSupplier,
-      WellKnownTags wellKnownTags,
       DatastreamsPayloadWriter payloadWriter,
       long bucketDurationNanos) {
     this.features = features;
     this.timeSource = timeSource;
     this.traceConfigSupplier = traceConfigSupplier;
-    this.wellKnownTags = wellKnownTags;
     this.payloadWriter = payloadWriter;
     this.bucketDurationNanos = bucketDurationNanos;
-    this.injector = new DataStreamContextInjector(this);
 
     thread = newAgentThread(DATA_STREAMS_MONITORING, new InboxProcessor());
     sink.register(this);
+    schemaSamplers = new ConcurrentHashMap<>();
+
+    this.propagator = new DataStreamsPropagator(this, this.timeSource, serviceNameOverride);
+    DataStreamsTags.setServiceNameOverride(serviceNameOverride);
   }
 
   @Override
   public void start() {
-    if (features.getDataStreamsEndpoint() == null) {
-      features.discoverIfOutdated();
-    }
-
-    agentSupportsDataStreams = features.supportsDataStreams();
     checkDynamicConfig();
-
-    if (!configSupportsDataStreams) {
-      log.debug("Data streams is disabled");
-    } else if (!agentSupportsDataStreams) {
-      log.debug("Data streams is disabled or not supported by agent");
-    }
-
-    nextFeatureCheck = timeSource.getCurrentTimeNanos() + FEATURE_CHECK_INTERVAL_NANOS;
-
     cancellation =
         AgentTaskScheduler.INSTANCE.scheduleAtFixedRate(
             new ReportTask(), this, bucketDurationNanos, bucketDurationNanos, TimeUnit.NANOSECONDS);
@@ -160,22 +141,58 @@ public class DefaultDataStreamsMonitoring implements DataStreamsMonitoring, Even
   }
 
   @Override
+  public int trySampleSchema(String topic) {
+    SchemaSampler sampler = schemaSamplers.computeIfAbsent(topic, t -> new SchemaSampler());
+    return sampler.trySample(timeSource.getCurrentTimeMillis());
+  }
+
+  @Override
+  public boolean canSampleSchema(String topic) {
+    SchemaSampler sampler = schemaSamplers.computeIfAbsent(topic, t -> new SchemaSampler());
+    return sampler.canSample(timeSource.getCurrentTimeMillis());
+  }
+
+  @Override
+  public Schema getSchema(String schemaName, SchemaIterator iterator) {
+    return SchemaBuilder.getSchema(schemaName, iterator);
+  }
+
+  @Override
+  public void setProduceCheckpoint(String type, String target) {
+    setProduceCheckpoint(type, target, DataStreamsContextCarrier.NoOp.INSTANCE, false);
+  }
+
+  @Override
+  public void setThreadServiceName(String serviceName) {
+    if (serviceName == null) {
+      clearThreadServiceName();
+      return;
+    }
+
+    serviceNameOverride.set(serviceName);
+  }
+
+  @Override
+  public void clearThreadServiceName() {
+    serviceNameOverride.remove();
+  }
+
+  private static String getThreadServiceName() {
+    return serviceNameOverride.get();
+  }
+
+  @Override
   public PathwayContext newPathwayContext() {
     if (configSupportsDataStreams) {
-      return new DefaultPathwayContext(timeSource, wellKnownTags);
+      return new DefaultPathwayContext(timeSource, getThreadServiceName());
     } else {
-      return AgentTracer.NoopPathwayContext.INSTANCE;
+      return NoopPathwayContext.INSTANCE;
     }
   }
 
   @Override
-  public HttpCodec.Extractor extractor(HttpCodec.Extractor delegate) {
-    return new DataStreamContextExtractor(delegate, timeSource, traceConfigSupplier, wellKnownTags);
-  }
-
-  @Override
-  public DataStreamContextInjector injector() {
-    return this.injector;
+  public Propagator propagator() {
+    return this.propagator;
   }
 
   @Override
@@ -186,40 +203,30 @@ public class DefaultDataStreamsMonitoring implements DataStreamsMonitoring, Even
               carrier,
               DataStreamsContextCarrierAdapter.INSTANCE,
               this.timeSource,
-              this.wellKnownTags);
+              getThreadServiceName());
       ((DDSpan) span).context().mergePathwayContext(pathwayContext);
     }
   }
 
-  public void trackBacklog(LinkedHashMap<String, String> sortedTags, long value) {
-    List<String> tags = new ArrayList<>(sortedTags.size());
-    for (Map.Entry<String, String> entry : sortedTags.entrySet()) {
-      String tag = TagsProcessor.createTag(entry.getKey(), entry.getValue());
-      if (tag == null) {
-        continue;
-      }
-      tags.add(tag);
-    }
-    inbox.offer(new Backlog(tags, value, timeSource.getCurrentTimeNanos()));
+  public void trackBacklog(DataStreamsTags tags, long value) {
+    inbox.offer(new Backlog(tags, value, timeSource.getCurrentTimeNanos(), getThreadServiceName()));
   }
 
   @Override
-  public void setCheckpoint(
-      AgentSpan span,
-      LinkedHashMap<String, String> sortedTags,
-      long defaultTimestamp,
-      long payloadSizeBytes) {
+  public void setCheckpoint(AgentSpan span, DataStreamsContext context) {
     PathwayContext pathwayContext = span.context().getPathwayContext();
     if (pathwayContext != null) {
-      pathwayContext.setCheckpoint(sortedTags, this::add, defaultTimestamp, payloadSizeBytes);
-      if (pathwayContext.getHash() != 0) {
-        span.setTag(PATHWAY_HASH, Long.toUnsignedString(pathwayContext.getHash()));
-      }
+      pathwayContext.setCheckpoint(context, this::add);
     }
   }
 
   @Override
   public void setConsumeCheckpoint(String type, String source, DataStreamsContextCarrier carrier) {
+    setConsumeCheckpoint(type, source, carrier, true);
+  }
+
+  public void setConsumeCheckpoint(
+      String type, String source, DataStreamsContextCarrier carrier, Boolean isManual) {
     if (type == null || type.isEmpty() || source == null || source.isEmpty()) {
       log.warn("setConsumeCheckpoint should be called with non-empty type and source");
       return;
@@ -232,16 +239,18 @@ public class DefaultDataStreamsMonitoring implements DataStreamsMonitoring, Even
     }
     mergePathwayContextIntoSpan(span, carrier);
 
-    LinkedHashMap<String, String> sortedTags = new LinkedHashMap<>();
-    sortedTags.put(DIRECTION_TAG, DIRECTION_IN);
-    sortedTags.put(TOPIC_TAG, source);
-    sortedTags.put(TYPE_TAG, type);
+    DataStreamsTags tags;
+    if (isManual) {
+      tags = createManual(type, INBOUND, source);
+    } else {
+      tags = create(type, INBOUND, source);
+    }
 
-    setCheckpoint(span, sortedTags, 0, 0);
+    setCheckpoint(span, fromTags(tags));
   }
 
-  @Override
-  public void setProduceCheckpoint(String type, String target, DataStreamsContextCarrier carrier) {
+  public void setProduceCheckpoint(
+      String type, String target, DataStreamsContextCarrier carrier, boolean manualCheckpoint) {
     if (type == null || type.isEmpty() || target == null || target.isEmpty()) {
       log.warn("SetProduceCheckpoint should be called with non-empty type and target");
       return;
@@ -252,14 +261,21 @@ public class DefaultDataStreamsMonitoring implements DataStreamsMonitoring, Even
       log.warn("SetProduceCheckpoint is called with no active span");
       return;
     }
+    DataStreamsTags tags;
+    if (manualCheckpoint) {
+      tags = createManual(type, OUTBOUND, target);
+    } else {
+      tags = create(type, OUTBOUND, target);
+    }
 
-    LinkedHashMap<String, String> sortedTags = new LinkedHashMap<>();
-    sortedTags.put(DIRECTION_TAG, DIRECTION_OUT);
-    sortedTags.put(TOPIC_TAG, target);
-    sortedTags.put(TYPE_TAG, type);
+    DataStreamsContext dsmContext = fromTags(tags);
+    this.propagator.inject(
+        span.with(dsmContext), carrier, DataStreamsContextCarrierAdapter.INSTANCE);
+  }
 
-    this.injector.injectPathwayContext(
-        span, carrier, DataStreamsContextCarrierAdapter.INSTANCE, sortedTags);
+  @Override
+  public void setProduceCheckpoint(String type, String target, DataStreamsContextCarrier carrier) {
+    setProduceCheckpoint(type, target, carrier, true);
   }
 
   @Override
@@ -276,12 +292,41 @@ public class DefaultDataStreamsMonitoring implements DataStreamsMonitoring, Even
   }
 
   private class InboxProcessor implements Runnable {
+
+    private StatsBucket getStatsBucket(final long timestamp, final String serviceNameOverride) {
+      long bucket = currentBucket(timestamp);
+      Map<String, StatsBucket> statsBucketMap =
+          timeToBucket.computeIfAbsent(bucket, startTime -> new HashMap<>(1));
+      return statsBucketMap.computeIfAbsent(
+          serviceNameOverride, s -> new StatsBucket(bucket, bucketDurationNanos));
+    }
+
     @Override
     public void run() {
+
+      if (features.getDataStreamsEndpoint() == null) {
+        features.discoverIfOutdated();
+      }
+
+      agentSupportsDataStreams = features.supportsDataStreams();
+      checkDynamicConfig();
+
+      if (!configSupportsDataStreams) {
+        log.debug("Data streams is disabled");
+      } else if (!agentSupportsDataStreams) {
+        log.debug("Data streams is disabled or not supported by agent");
+      }
+
+      nextFeatureCheck = timeSource.getCurrentTimeNanos() + FEATURE_CHECK_INTERVAL_NANOS;
+
       Thread currentThread = Thread.currentThread();
       while (!currentThread.isInterrupted()) {
         try {
-          InboxItem payload = inbox.take();
+          InboxItem payload = inbox.poll();
+          if (payload == null) {
+            Thread.sleep(10);
+            continue;
+          }
 
           if (payload == REPORT) {
             checkDynamicConfig();
@@ -299,22 +344,17 @@ public class DefaultDataStreamsMonitoring implements DataStreamsMonitoring, Even
           } else if (supportsDataStreams) {
             if (payload instanceof StatsPoint) {
               StatsPoint statsPoint = (StatsPoint) payload;
-              Long bucket = currentBucket(statsPoint.getTimestampNanos());
               StatsBucket statsBucket =
-                  timeToBucket.computeIfAbsent(
-                      bucket, startTime -> new StatsBucket(startTime, bucketDurationNanos));
+                  getStatsBucket(
+                      statsPoint.getTimestampNanos(), statsPoint.getServiceNameOverride());
               statsBucket.addPoint(statsPoint);
             } else if (payload instanceof Backlog) {
               Backlog backlog = (Backlog) payload;
-              Long bucket = currentBucket(backlog.getTimestampNanos());
               StatsBucket statsBucket =
-                  timeToBucket.computeIfAbsent(
-                      bucket, startTime -> new StatsBucket(startTime, bucketDurationNanos));
+                  getStatsBucket(backlog.getTimestampNanos(), backlog.getServiceNameOverride());
               statsBucket.addBacklog(backlog);
             }
           }
-        } catch (InterruptedException e) {
-          currentThread.interrupt();
         } catch (Exception e) {
           log.debug("Error monitoring data streams", e);
         }
@@ -329,27 +369,39 @@ public class DefaultDataStreamsMonitoring implements DataStreamsMonitoring, Even
   private void flush(long timestampNanos) {
     long currentBucket = currentBucket(timestampNanos);
 
-    List<StatsBucket> includedBuckets = new ArrayList<>();
-    Iterator<Map.Entry<Long, StatsBucket>> mapIterator = timeToBucket.entrySet().iterator();
+    // stats are grouped by time buckets and service names
+    Map<String, List<StatsBucket>> includedBuckets = new HashMap<>();
+    Iterator<Map.Entry<Long, Map<String, StatsBucket>>> mapIterator =
+        timeToBucket.entrySet().iterator();
 
     while (mapIterator.hasNext()) {
-      Map.Entry<Long, StatsBucket> entry = mapIterator.next();
-
+      Map.Entry<Long, Map<String, StatsBucket>> entry = mapIterator.next();
       if (entry.getKey() < currentBucket) {
         mapIterator.remove();
-        includedBuckets.add(entry.getValue());
+        for (Map.Entry<String, StatsBucket> buckets : entry.getValue().entrySet()) {
+          if (!includedBuckets.containsKey(buckets.getKey())) {
+            includedBuckets.put(buckets.getKey(), new LinkedList<>());
+          }
+
+          includedBuckets.get(buckets.getKey()).add(buckets.getValue());
+        }
       }
     }
 
     if (!includedBuckets.isEmpty()) {
-      log.debug("Flushing {} buckets", includedBuckets.size());
-      payloadWriter.writePayload(includedBuckets);
+      for (Map.Entry<String, List<StatsBucket>> entry : includedBuckets.entrySet()) {
+        if (!entry.getValue().isEmpty()) {
+          log.debug("Flushing {} buckets ({})", entry.getValue(), entry.getKey());
+          payloadWriter.writePayload(entry.getValue(), entry.getKey());
+        }
+      }
     }
   }
 
   @Override
   public void clear() {
     timeToBucket.clear();
+    schemaSamplers.clear();
   }
 
   void report() {

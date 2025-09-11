@@ -2,6 +2,7 @@ package datadog.trace.core.propagation.ptags;
 
 import static datadog.trace.core.propagation.ptags.PTagsFactory.PROPAGATION_ERROR_TAG_KEY;
 
+import datadog.trace.api.ProductTraceSource;
 import datadog.trace.core.propagation.PropagationTags;
 import datadog.trace.core.propagation.ptags.PTagsFactory.PTags;
 import datadog.trace.core.propagation.ptags.TagElement.Encoding;
@@ -15,6 +16,8 @@ abstract class PTagsCodec {
 
   protected static final TagKey DECISION_MAKER_TAG = TagKey.from("dm");
   protected static final TagKey TRACE_ID_TAG = TagKey.from("tid");
+  protected static final TagKey TRACE_SOURCE_TAG = TagKey.from("ts");
+  protected static final TagKey DEBUG_TAG = TagKey.from("debug");
   protected static final String PROPAGATION_ERROR_MALFORMED_TID = "malformed_tid ";
   protected static final String PROPAGATION_ERROR_INCONSISTENT_TID = "inconsistent_tid ";
   protected static final TagKey UPSTREAM_SERVICES_DEPRECATED_TAG = TagKey.from("upstream_services");
@@ -34,6 +37,17 @@ abstract class PTagsCodec {
       }
       if (ptags.getTraceIdHighOrderBitsHexTagValue() != null) {
         size = codec.appendTag(sb, TRACE_ID_TAG, ptags.getTraceIdHighOrderBitsHexTagValue(), size);
+      }
+      if (ptags.getTraceSource() != ProductTraceSource.UNSET) {
+        size =
+            codec.appendTag(
+                sb,
+                TRACE_SOURCE_TAG,
+                TagValue.from(ProductTraceSource.getBitfieldHex(ptags.getTraceSource())),
+                size);
+      }
+      if (ptags.getDebugPropagation() != null) {
+        size = codec.appendTag(sb, DEBUG_TAG, TagValue.from(ptags.getDebugPropagation()), size);
       }
       Iterator<TagElement> it = ptags.getTagPairs().iterator();
       while (it.hasNext() && !codec.isTooLarge(sb, size)) {
@@ -77,6 +91,17 @@ abstract class PTagsCodec {
       tagMap.put(
           DECISION_MAKER_TAG.forType(Encoding.DATADOG).toString(),
           propagationTags.getDecisionMakerTagValue().forType(Encoding.DATADOG).toString());
+    }
+    if (propagationTags.getTraceSource() != ProductTraceSource.UNSET) {
+      tagMap.put(
+          TRACE_SOURCE_TAG.forType(Encoding.DATADOG).toString(),
+          TagValue.from(ProductTraceSource.getBitfieldHex(propagationTags.getTraceSource()))
+              .forType(Encoding.DATADOG)
+              .toString());
+    }
+    if (propagationTags.getDebugPropagation() != null) {
+      tagMap.put(
+          DEBUG_TAG.forType(Encoding.DATADOG).toString(), propagationTags.getDebugPropagation());
     }
     if (propagationTags.getTraceIdHighOrderBitsHexTagValue() != null) {
       tagMap.put(
@@ -140,6 +165,8 @@ abstract class PTagsCodec {
       return false;
     } else if (tagKey.equals(TRACE_ID_TAG) && !validateTraceId(tagValue)) {
       return false;
+    } else if (tagKey.equals(TRACE_SOURCE_TAG) && !validateTraceSourceTagValue(tagValue)) {
+      return false;
     }
     return true;
   }
@@ -202,11 +229,29 @@ abstract class PTagsCodec {
     return true;
   }
 
+  private static boolean validateTraceSourceTagValue(TagValue value) {
+    // Ensure the string is not null and has a length between 2 and 8
+    if (value == null || value.length() < 2 || value.length() > 8) {
+      return false;
+    }
+    for (int i = 0; i < value.length(); i++) {
+      // Ensure each character is a valid hex digit
+      if (!isHexDigitCaseInsensitive(value.charAt(i))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   protected static boolean isDigit(char c) {
     return c >= '0' && c <= '9';
   }
 
   protected static boolean isHexDigit(char c) {
     return c >= 'a' && c <= 'f' || isDigit(c);
+  }
+
+  protected static boolean isHexDigitCaseInsensitive(char c) {
+    return isHexDigit(c) || c >= 'A' && c <= 'F';
   }
 }

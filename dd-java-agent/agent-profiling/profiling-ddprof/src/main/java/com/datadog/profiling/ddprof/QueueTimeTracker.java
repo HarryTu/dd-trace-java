@@ -1,25 +1,26 @@
 package com.datadog.profiling.ddprof;
 
-import com.datadoghq.profiler.JavaProfiler;
 import datadog.trace.api.profiling.QueueTiming;
-import datadog.trace.bootstrap.instrumentation.api.TaskWrapper;
 import java.lang.ref.WeakReference;
 
 public class QueueTimeTracker implements QueueTiming {
 
-  private final JavaProfiler profiler;
+  private final DatadogProfiler profiler;
   private final Thread origin;
-  private final long threshold;
   private final long startTicks;
+  private final long startMillis;
   private WeakReference<Object> weakTask;
+  // FIXME this can be eliminated by altering the instrumentation
+  //  since it is known when the item is polled from the queue
   private Class<?> scheduler;
+  private Class<?> queue;
+  private int queueLength;
 
-  public QueueTimeTracker(JavaProfiler profiler, long threshold) {
+  public QueueTimeTracker(DatadogProfiler profiler, long startTicks) {
     this.profiler = profiler;
     this.origin = Thread.currentThread();
-    this.threshold = threshold;
-    // TODO get this from JFR if available instead of making a JNI call
-    this.startTicks = profiler.getCurrentTicks();
+    this.startTicks = startTicks;
+    this.startMillis = System.currentTimeMillis();
   }
 
   @Override
@@ -33,20 +34,27 @@ public class QueueTimeTracker implements QueueTiming {
   }
 
   @Override
-  public void close() {
+  public void setQueue(Class<?> queue) {
+    this.queue = queue;
+  }
+
+  @Override
+  public void setQueueLength(int queueLength) {
+    this.queueLength = queueLength;
+  }
+
+  @Override
+  public void report() {
     assert weakTask != null && scheduler != null;
     Object task = this.weakTask.get();
     if (task != null) {
-      // potentially avoidable JNI call
-      long endTicks = profiler.getCurrentTicks();
-      if (profiler.isThresholdExceeded(threshold, startTicks, endTicks)) {
-        // note: because this type traversal can update secondary_super_cache (see JDK-8180450)
-        // we avoid doing this unless we are absolutely certain we will record the event
-        Class<?> taskType = TaskWrapper.getUnwrappedType(task);
-        if (taskType != null) {
-          profiler.recordQueueTime(startTicks, endTicks, taskType, scheduler, origin);
-        }
-      }
+      // indirection reduces shallow size of the tracker instance
+      profiler.recordQueueTimeEvent(startTicks, task, scheduler, queue, queueLength, origin);
     }
+  }
+
+  @Override
+  public boolean sample() {
+    return profiler.shouldRecordQueueTimeEvent(startMillis);
   }
 }

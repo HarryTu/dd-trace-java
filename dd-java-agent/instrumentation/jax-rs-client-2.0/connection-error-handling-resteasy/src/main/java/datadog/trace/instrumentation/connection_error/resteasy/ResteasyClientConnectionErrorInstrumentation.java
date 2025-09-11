@@ -7,6 +7,7 @@ import static net.bytebuddy.matcher.ElementMatchers.returns;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.Config;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import datadog.trace.instrumentation.jaxrs.ClientTracingFilter;
@@ -18,9 +19,9 @@ import org.jboss.resteasy.client.jaxrs.internal.ClientConfiguration;
  * JAX-RS Client API doesn't define a good point where we can handle connection failures, so we must
  * handle these errors at the implementation level.
  */
-@AutoService(Instrumenter.class)
-public final class ResteasyClientConnectionErrorInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class ResteasyClientConnectionErrorInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public ResteasyClientConnectionErrorInstrumentation() {
     super("jax-rs", "jaxrs", "jax-rs-client");
@@ -39,12 +40,12 @@ public final class ResteasyClientConnectionErrorInstrumentation extends Instrume
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(isPublic()).and(named("invoke")),
         ResteasyClientConnectionErrorInstrumentation.class.getName() + "$InvokeAdvice");
 
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod().and(isPublic()).and(named("submit")).and(returns(Future.class)),
         ResteasyClientConnectionErrorInstrumentation.class.getName() + "$SubmitAdvice");
   }

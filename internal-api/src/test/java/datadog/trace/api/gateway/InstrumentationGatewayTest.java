@@ -56,6 +56,11 @@ public class InstrumentationGatewayTest {
           public BlockResponseFunction getBlockResponseFunction() {
             return null;
           }
+
+          @Override
+          public <T> T getOrCreateMetaStructTop(String key, Function<String, T> defaultValue) {
+            return null;
+          }
         };
     flow = new Flow.ResultFlow<>(null);
     callback = new Callback(context, flow);
@@ -185,6 +190,12 @@ public class InstrumentationGatewayTest {
     ss.registerCallback(events.requestBodyProcessed(), callback);
     assertThat(cbp.getCallback(events.requestBodyProcessed()).apply(null, null).getAction())
         .isEqualTo(Flow.Action.Noop.INSTANCE);
+    ss.registerCallback(events.responseBody(), callback);
+    assertThat(cbp.getCallback(events.responseBody()).apply(null, null).getAction())
+        .isEqualTo(Flow.Action.Noop.INSTANCE);
+    ss.registerCallback(events.grpcServerMethod(), callback);
+    assertThat(cbp.getCallback(events.grpcServerMethod()).apply(null, null).getAction())
+        .isEqualTo(Flow.Action.Noop.INSTANCE);
     ss.registerCallback(events.grpcServerRequestMessage(), callback);
     assertThat(cbp.getCallback(events.grpcServerRequestMessage()).apply(null, null).getAction())
         .isEqualTo(Flow.Action.Noop.INSTANCE);
@@ -194,6 +205,29 @@ public class InstrumentationGatewayTest {
     cbp.getCallback(events.responseHeader()).accept(null, null, null);
     ss.registerCallback(events.responseHeaderDone(), callback.function);
     cbp.getCallback(events.responseHeaderDone()).apply(null);
+    ss.registerCallback(events.graphqlServerRequestMessage(), callback);
+    assertThat(cbp.getCallback(events.graphqlServerRequestMessage()).apply(null, null).getAction())
+        .isEqualTo(Flow.Action.Noop.INSTANCE);
+    ss.registerCallback(events.databaseConnection(), callback);
+    cbp.getCallback(events.databaseConnection()).accept(null, null);
+    ss.registerCallback(events.databaseSqlQuery(), callback);
+    cbp.getCallback(events.databaseSqlQuery()).apply(null, null);
+    ss.registerCallback(events.networkConnection(), callback);
+    cbp.getCallback(events.networkConnection()).apply(null, null);
+    ss.registerCallback(events.fileLoaded(), callback);
+    cbp.getCallback(events.fileLoaded()).apply(null, null);
+    ss.registerCallback(events.user(), callback);
+    cbp.getCallback(events.user()).apply(null, null);
+    ss.registerCallback(events.loginEvent(), callback);
+    cbp.getCallback(events.loginEvent()).apply(null, null, null);
+    ss.registerCallback(events.requestSession(), callback);
+    cbp.getCallback(events.requestSession()).apply(null, null);
+    ss.registerCallback(events.execCmd(), callback);
+    cbp.getCallback(events.execCmd()).apply(null, null);
+    ss.registerCallback(events.shellCmd(), callback);
+    cbp.getCallback(events.shellCmd()).apply(null, null);
+    ss.registerCallback(events.httpRoute(), callback);
+    cbp.getCallback(events.httpRoute()).accept(null, null);
     assertThat(callback.count).isEqualTo(Events.MAX_EVENTS);
   }
 
@@ -231,6 +265,12 @@ public class InstrumentationGatewayTest {
     ss.registerCallback(events.requestBodyProcessed(), throwback);
     assertThat(cbp.getCallback(events.requestBodyProcessed()).apply(null, null).getAction())
         .isEqualTo(Flow.Action.Noop.INSTANCE);
+    ss.registerCallback(events.responseBody(), throwback);
+    assertThat(cbp.getCallback(events.responseBody()).apply(null, null).getAction())
+        .isEqualTo(Flow.Action.Noop.INSTANCE);
+    ss.registerCallback(events.grpcServerMethod(), throwback);
+    assertThat(cbp.getCallback(events.grpcServerMethod()).apply(null, null).getAction())
+        .isEqualTo(Flow.Action.Noop.INSTANCE);
     ss.registerCallback(events.grpcServerRequestMessage(), throwback);
     assertThat(cbp.getCallback(events.grpcServerRequestMessage()).apply(null, null).getAction())
         .isEqualTo(Flow.Action.Noop.INSTANCE);
@@ -240,6 +280,29 @@ public class InstrumentationGatewayTest {
     cbp.getCallback(events.responseHeader()).accept(null, null, null);
     ss.registerCallback(events.responseHeaderDone(), throwback.function);
     cbp.getCallback(events.responseHeaderDone()).apply(null);
+    ss.registerCallback(events.graphqlServerRequestMessage(), throwback);
+    assertThat(cbp.getCallback(events.graphqlServerRequestMessage()).apply(null, null).getAction())
+        .isEqualTo(Flow.Action.Noop.INSTANCE);
+    ss.registerCallback(events.databaseConnection(), throwback);
+    cbp.getCallback(events.databaseConnection()).accept(null, null);
+    ss.registerCallback(events.databaseSqlQuery(), throwback);
+    cbp.getCallback(events.databaseSqlQuery()).apply(null, null);
+    ss.registerCallback(events.networkConnection(), throwback);
+    cbp.getCallback(events.networkConnection()).apply(null, null);
+    ss.registerCallback(events.fileLoaded(), throwback);
+    cbp.getCallback(events.fileLoaded()).apply(null, null);
+    ss.registerCallback(events.user(), throwback);
+    cbp.getCallback(events.user()).apply(null, null);
+    ss.registerCallback(events.loginEvent(), throwback);
+    cbp.getCallback(events.loginEvent()).apply(null, null, null);
+    ss.registerCallback(events.requestSession(), throwback);
+    cbp.getCallback(events.requestSession()).apply(null, null);
+    ss.registerCallback(events.execCmd(), throwback);
+    cbp.getCallback(events.execCmd()).apply(null, null);
+    ss.registerCallback(events.shellCmd(), throwback);
+    cbp.getCallback(events.shellCmd()).apply(null, null);
+    ss.registerCallback(events.httpRoute(), throwback);
+    cbp.getCallback(events.httpRoute()).accept(null, null);
     assertThat(throwback.count).isEqualTo(Events.MAX_EVENTS);
   }
 
@@ -285,7 +348,7 @@ public class InstrumentationGatewayTest {
     BiFunction<RequestContext, IGSpanInfo, Flow<Void>> cb =
         (requestContext, igSpanInfo) -> {
           assertThat(requestContext).isSameAs(callback.ctxt);
-          assertThat(igSpanInfo).isSameAs(AgentTracer.NoopAgentSpan.INSTANCE);
+          assertThat(igSpanInfo).isSameAs(AgentTracer.noopSpan());
           count[0]++;
           return new Flow.ResultFlow<>(null);
         };
@@ -293,7 +356,7 @@ public class InstrumentationGatewayTest {
     ssIast.registerCallback(events.requestEnded(), cb);
     BiFunction<RequestContext, IGSpanInfo, Flow<Void>> uniCb =
         gateway.getUniversalCallbackProvider().getCallback(events.requestEnded());
-    Flow<Void> res = uniCb.apply(callback.ctxt, AgentTracer.NoopAgentSpan.INSTANCE);
+    Flow<Void> res = uniCb.apply(callback.ctxt, AgentTracer.noopSpan());
 
     assertThat(count[0]).isEqualTo(2);
     assertThat(res).isNotNull();

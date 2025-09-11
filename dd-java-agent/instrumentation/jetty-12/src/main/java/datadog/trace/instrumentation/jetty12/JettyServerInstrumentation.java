@@ -8,15 +8,16 @@ import static net.bytebuddy.matcher.ElementMatchers.takesNoArguments;
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.ExcludeFilterProvider;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.ExcludeFilter;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Map;
 
-@AutoService(Instrumenter.class)
-public final class JettyServerInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType, ExcludeFilterProvider {
+@AutoService(InstrumenterModule.class)
+public final class JettyServerInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice, ExcludeFilterProvider {
 
   public JettyServerInstrumentation() {
     super("jetty");
@@ -43,10 +44,10 @@ public final class JettyServerInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("onRequest").and(takesArguments(1)), packageName + ".JettyServerAdvice$HandleAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         named("recycle").and(takesNoArguments()), packageName + ".JettyServerAdvice$ResetAdvice");
   }
 

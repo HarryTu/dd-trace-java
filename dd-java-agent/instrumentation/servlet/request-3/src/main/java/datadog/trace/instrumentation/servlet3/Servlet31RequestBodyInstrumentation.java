@@ -12,6 +12,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesNoArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
@@ -19,9 +20,9 @@ import net.bytebuddy.matcher.ElementMatcher;
  * Request bodies before servlet 3.1.x are covered by Servlet2RequestBodyInstrumentation from the
  * "request-2" module. Any changes to the behaviour here should also be reflected in "request-2".
  */
-@AutoService(Instrumenter.class)
-public class Servlet31RequestBodyInstrumentation extends Instrumenter.AppSec
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class Servlet31RequestBodyInstrumentation extends InstrumenterModule.AppSec
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
   public Servlet31RequestBodyInstrumentation() {
     super("servlet-request-body");
   }
@@ -32,7 +33,7 @@ public class Servlet31RequestBodyInstrumentation extends Instrumenter.AppSec
   }
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     // Avoid matching request bodies before 3.1.x which have their own instrumentation
     return hasClassNamed("javax.servlet.ReadListener");
   }
@@ -51,14 +52,14 @@ public class Servlet31RequestBodyInstrumentation extends Instrumenter.AppSec
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("getInputStream")
             .and(takesNoArguments())
             .and(returns(named("javax.servlet.ServletInputStream")))
             .and(isPublic()),
         packageName + ".HttpServletGetInputStreamAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         named("getReader")
             .and(takesNoArguments())
             .and(returns(named("java.io.BufferedReader")))

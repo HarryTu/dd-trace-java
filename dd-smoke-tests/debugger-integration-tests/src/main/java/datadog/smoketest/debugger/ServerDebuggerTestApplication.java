@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import okhttp3.HttpUrl;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -42,6 +43,7 @@ public class ServerDebuggerTestApplication {
     methodsByName.put("tracedMethod", ServerDebuggerTestApplication::runTracedMethod);
     methodsByName.put("loopingFullMethod", ServerDebuggerTestApplication::runLoopingFullMethod);
     methodsByName.put("loopingTracedMethod", ServerDebuggerTestApplication::runLoopingTracedMethod);
+    methodsByName.put("topLevelMethod", ServerDebuggerTestApplication::runTopLevelMethod);
   }
 
   public ServerDebuggerTestApplication(String controlServerUrl) {
@@ -75,7 +77,7 @@ public class ServerDebuggerTestApplication {
   }
 
   protected void waitForInstrumentation(String className) {
-    System.out.println("waitForInstrumentation on " + className + " from: " + lastMatchedLine);
+    System.out.println("waitForInstrumentation on " + className);
     try {
       lastMatchedLine =
           TestApplicationHelper.waitForInstrumentation(LOG_FILENAME, className, lastMatchedLine);
@@ -96,13 +98,28 @@ public class ServerDebuggerTestApplication {
     }
   }
 
+  protected void waitForSpecificLine(String line) {
+    System.out.println("waitForSpecificLine...");
+    try {
+      lastMatchedLine =
+          TestApplicationHelper.waitForSpecificLine(LOG_FILENAME, line, lastMatchedLine);
+      System.out.println("line found!");
+    } catch (IOException ex) {
+      ex.printStackTrace();
+    }
+  }
+
   protected void execute(String methodName, String arg) {
     Consumer<String> method = methodsByName.get(methodName);
     if (method == null) {
       throw new RuntimeException("cannot find method: " + methodName);
     }
     System.out.println("Executing method: " + methodName);
-    method.accept(arg);
+    try {
+      method.accept(arg);
+    } catch (Throwable ex) {
+      ex.printStackTrace();
+    }
     System.out.println("Executed");
   }
 
@@ -130,13 +147,27 @@ public class ServerDebuggerTestApplication {
     map.put("key1", "val1");
     map.put("key2", "val2");
     map.put("key3", "val3");
-    tracedMethod(42, "foobar", 3.42, map, "var1", "var2", "var3");
+    if ("oops".equals(arg)) {
+      tracedMethodWithException(42, "foobar", 3.42, map, "var1", "var2", "var3");
+    } else if ("deepOops".equals(arg)) {
+      tracedMethodWithDeepException1(42, "foobar", 3.42, map, "var1", "var2", "var3");
+    } else if ("lambdaOops".equals(arg)) {
+      tracedMethodWithLambdaException(42, "foobar", 3.42, map, "var1", "var2", "var3");
+    } else if ("recursiveOops".equals(arg)) {
+      tracedMethodWithRecursiveException(42, "foobar", 3.42, map, "var1", "var2", "var3");
+    } else {
+      tracedMethod(42, "foobar", 3.42, map, "var1", "var2", "var3");
+    }
   }
 
   private static void runLoopingTracedMethod(String arg) {
     for (int i = 0; i < Integer.parseInt(arg); i++) {
       runTracedMethod(arg);
     }
+  }
+
+  private static String runTopLevelMethod(String arg) {
+    return TopLevel.process(arg);
   }
 
   private static String fullMethod(
@@ -175,6 +206,58 @@ public class ServerDebuggerTestApplication {
     }
   }
 
+  private static void tracedMethodWithException(
+      int argInt, String argStr, double argDouble, Map<String, String> argMap, String... argVar) {
+    throw new RuntimeException("oops");
+  }
+
+  private static void tracedMethodWithDeepException1(
+      int argInt, String argStr, double argDouble, Map<String, String> argMap, String... argVar) {
+    tracedMethodWithDeepException2(argInt, argStr, argDouble, argMap, argVar);
+  }
+
+  private static void tracedMethodWithDeepException2(
+      int argInt, String argStr, double argDouble, Map<String, String> argMap, String... argVar) {
+    tracedMethodWithDeepException3(argInt, argStr, argDouble, argMap, argVar);
+  }
+
+  private static void tracedMethodWithDeepException3(
+      int argInt, String argStr, double argDouble, Map<String, String> argMap, String... argVar) {
+    tracedMethodWithDeepException4(argInt, argStr, argDouble, argMap, argVar);
+  }
+
+  private static void tracedMethodWithDeepException4(
+      int argInt, String argStr, double argDouble, Map<String, String> argMap, String... argVar) {
+    tracedMethodWithDeepException5(argInt, argStr, argDouble, argMap, argVar);
+  }
+
+  private static void tracedMethodWithDeepException5(
+      int argInt, String argStr, double argDouble, Map<String, String> argMap, String... argVar) {
+    tracedMethodWithException(argInt, argStr, argDouble, argMap, argVar);
+  }
+
+  private static void tracedMethodWithLambdaException(
+      int argInt, String argStr, double argDouble, Map<String, String> argMap, String... argVar) {
+    throw toRuntimeException("lambdaOops");
+  }
+
+  private static void tracedMethodWithRecursiveException(
+      int argInt, String argStr, double argDouble, Map<String, String> argMap, String... argVar) {
+    if (argInt > 0) {
+      tracedMethodWithRecursiveException(argInt - 8, argStr, argDouble, argMap, argVar);
+    } else {
+      throw new RuntimeException("recursiveOops");
+    }
+  }
+
+  private static RuntimeException toRuntimeException(String msg) {
+    return toException(RuntimeException::new, msg);
+  }
+
+  private static <S extends Throwable> S toException(Function<String, S> constructor, String msg) {
+    return constructor.apply(msg);
+  }
+
   private static class AppDispatcher extends Dispatcher {
     private final ServerDebuggerTestApplication app;
 
@@ -198,6 +281,12 @@ public class ServerDebuggerTestApplication {
             app.waitForReTransformation(className);
             break;
           }
+        case "/app/waitForSpecificLine":
+          {
+            String feature = request.getRequestUrl().queryParameter("line");
+            app.waitForSpecificLine(feature);
+            break;
+          }
         case "/app/execute":
           {
             String methodName = request.getRequestUrl().queryParameter("methodname");
@@ -215,5 +304,11 @@ public class ServerDebuggerTestApplication {
       }
       return EMPTY_HTTP_200;
     }
+  }
+}
+
+class TopLevel {
+  public static String process(String arg) {
+    return "TopLevel.process: " + arg;
   }
 }

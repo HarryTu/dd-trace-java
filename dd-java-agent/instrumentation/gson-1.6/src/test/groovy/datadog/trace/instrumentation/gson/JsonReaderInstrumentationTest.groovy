@@ -2,11 +2,11 @@ package datadog.trace.instrumentation.gson
 
 import com.google.gson.Gson
 import com.google.gson.stream.JsonReader
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.iast.InstrumentationBridge
 import datadog.trace.api.iast.propagation.PropagationModule
 
-class JsonReaderInstrumentationTest extends AgentTestRunner {
+class JsonReaderInstrumentationTest extends InstrumentationSpecification {
 
   @Override
   protected void configurePreAgent() {
@@ -23,13 +23,13 @@ class JsonReaderInstrumentationTest extends AgentTestRunner {
     final reader = new JsonReader(new StringReader(json))
 
     then:
-    1 * module.taintIfTainted(_ as JsonReader, _ as StringReader)
+    1 * module.taintObjectIfTainted(_ as JsonReader, _ as StringReader)
 
     when:
     gson.fromJson(reader, clazz)
 
     then:
-    calls * module.taintIfTainted(_ as String, _ as JsonReader)
+    calls * module.taintStringIfTainted(_ as String, _ as JsonReader)
     0 * _
 
     where:

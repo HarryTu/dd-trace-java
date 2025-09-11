@@ -5,7 +5,6 @@ import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.namedOneOf;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeSpan;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.propagate;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
 import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.SERVLET_CONTEXT;
 import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.SERVLET_PATH;
@@ -23,11 +22,12 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext;
 import datadog.trace.bootstrap.instrumentation.api.InternalSpanTypes;
-import datadog.trace.bootstrap.instrumentation.decorator.HttpClientDecorator;
 import java.util.Map;
 import javax.servlet.RequestDispatcher;
 import javax.servlet.ServletRequest;
@@ -36,9 +36,9 @@ import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public final class RequestDispatcherInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public final class RequestDispatcherInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
   public RequestDispatcherInstrumentation() {
     super("servlet", "servlet-dispatcher");
   }
@@ -68,8 +68,8 @@ public final class RequestDispatcherInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         // error is Jetty's method that doesn't delegate to forward or include
         namedOneOf("forward", "include", "error")
             .and(takesArguments(2))
@@ -97,7 +97,7 @@ public final class RequestDispatcherInstrumentation extends Instrumenter.Tracing
         // Don't want to generate a new top-level span
         return null;
       }
-      final AgentSpan.Context parent;
+      final AgentSpanContext parent;
       if (servletSpan == null || (parentSpan != null && servletSpan.isSameTrace(parentSpan))) {
         // Use the parentSpan if the servletSpan is null or part of the same trace.
         parent = parentSpan.context();
@@ -108,7 +108,7 @@ public final class RequestDispatcherInstrumentation extends Instrumenter.Tracing
       }
 
       final AgentSpan span =
-          startSpan(SPAN_NAME_CACHE.computeIfAbsent(method, SERVLET_PREFIX), parent);
+          startSpan("servlet", SPAN_NAME_CACHE.computeIfAbsent(method, SERVLET_PREFIX), parent);
       DECORATE.afterStart(span);
       span.setTag(SERVLET_CONTEXT, request.getAttribute(DD_CONTEXT_PATH_ATTRIBUTE));
       span.setTag(SERVLET_PATH, request.getAttribute(DD_SERVLET_PATH_ATTRIBUTE));
@@ -119,18 +119,13 @@ public final class RequestDispatcherInstrumentation extends Instrumenter.Tracing
       span.setSpanType(InternalSpanTypes.HTTP_SERVER);
 
       // In case we lose context, inject trace into to the request.
-      propagate().inject(span, request, SETTER);
-      propagate()
-          .injectPathwayContext(
-              span, request, SETTER, HttpClientDecorator.CLIENT_PATHWAY_EDGE_TAGS);
+      DECORATE.injectContext(span, request, SETTER);
 
       // temporarily replace from request to avoid spring resource name bubbling up:
       requestSpan = request.getAttribute(DD_SPAN_ATTRIBUTE);
       request.setAttribute(DD_SPAN_ATTRIBUTE, span);
 
-      final AgentScope agentScope = activateSpan(span);
-      agentScope.setAsyncPropagation(true);
-      return agentScope;
+      return activateSpan(span);
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)

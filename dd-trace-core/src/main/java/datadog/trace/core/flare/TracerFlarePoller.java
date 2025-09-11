@@ -4,36 +4,41 @@ import com.squareup.moshi.Json;
 import com.squareup.moshi.JsonAdapter;
 import com.squareup.moshi.Moshi;
 import datadog.communication.ddagent.SharedCommunicationObjects;
-import datadog.remoteconfig.ConfigurationChangesListener.PollingRateHinter;
 import datadog.remoteconfig.ConfigurationPoller;
+import datadog.remoteconfig.PollingRateHinter;
 import datadog.remoteconfig.Product;
-import datadog.remoteconfig.state.ParsedConfigKey;
+import datadog.remoteconfig.state.ConfigKey;
 import datadog.remoteconfig.state.ProductListener;
 import datadog.trace.api.Config;
 import datadog.trace.api.DynamicConfig;
+import datadog.trace.core.CoreTracer;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 import okio.Okio;
 
 public final class TracerFlarePoller {
-  private static final String FLARE_LOG_LEVEL_PREFIX = "flare-log-level.";
-
-  private final DynamicConfig dynamicConfig;
+  private static final String FLARE_LOG_LEVEL = "flare-log-level";
+  private final DynamicConfig<?> dynamicConfig;
 
   private Runnable stopPreparer;
   private Runnable stopSubmitter;
 
   private TracerFlareService tracerFlareService;
 
-  public TracerFlarePoller(DynamicConfig dynamicConfig) {
+  private final Map<String, String> configAction = new HashMap<>();
+
+  public TracerFlarePoller(DynamicConfig<?> dynamicConfig) {
     this.dynamicConfig = dynamicConfig;
   }
 
-  public void start(Config config, SharedCommunicationObjects sco) {
+  public void start(Config config, SharedCommunicationObjects sco, CoreTracer tracer) {
     stopPreparer = new Preparer().register(config, sco);
     stopSubmitter = new Submitter().register(config, sco);
 
-    tracerFlareService = new TracerFlareService(dynamicConfig, sco.okHttpClient, sco.agentUrl);
+    tracerFlareService =
+        new TracerFlareService(config, dynamicConfig, sco.okHttpClient, sco.agentUrl, tracer);
   }
 
   public void stop() {
@@ -64,26 +69,25 @@ public final class TracerFlarePoller {
     }
 
     @Override
-    public void accept(ParsedConfigKey configKey, byte[] content, PollingRateHinter hinter)
+    public void accept(ConfigKey configKey, byte[] content, PollingRateHinter hinter)
         throws IOException {
-      if (configKey.getConfigId().startsWith(FLARE_LOG_LEVEL_PREFIX)) {
-        AgentConfigLayer agentConfigLayer =
-            AGENT_CONFIG_LAYER_ADAPTER.fromJson(
-                Okio.buffer(Okio.source(new ByteArrayInputStream(content))));
-        if (null != agentConfigLayer
-            && null != agentConfigLayer.config
-            && null != agentConfigLayer.config.logLevel) {
-          prepareTracerFlare(agentConfigLayer.config.logLevel);
-        } else {
-          cancelTracerFlare();
-        }
+      AgentConfigLayer agentConfigLayer =
+          AGENT_CONFIG_LAYER_ADAPTER.fromJson(
+              Okio.buffer(Okio.source(new ByteArrayInputStream(content))));
+      if (null != agentConfigLayer
+          && null != agentConfigLayer.config
+          && null != agentConfigLayer.config.logLevel) {
+        configAction.put(configKey.getConfigId(), FLARE_LOG_LEVEL);
+        prepareForFlare(agentConfigLayer.config.logLevel);
+      } else {
+        cleanupAfterFlare();
       }
     }
 
     @Override
-    public void remove(ParsedConfigKey configKey, PollingRateHinter hinter) {
-      if (configKey.getConfigId().startsWith(FLARE_LOG_LEVEL_PREFIX)) {
-        cancelTracerFlare();
+    public void remove(ConfigKey configKey, PollingRateHinter hinter) {
+      if (configAction.remove(configKey.getConfigId(), FLARE_LOG_LEVEL)) {
+        cleanupAfterFlare();
       }
     }
 
@@ -110,7 +114,7 @@ public final class TracerFlarePoller {
     }
 
     @Override
-    public void accept(ParsedConfigKey configKey, byte[] content, PollingRateHinter hinter)
+    public void accept(ConfigKey configKey, byte[] content, PollingRateHinter hinter)
         throws IOException {
       AgentTask agentTask =
           AGENT_TASK_ADAPTER.fromJson(Okio.buffer(Okio.source(new ByteArrayInputStream(content))));
@@ -118,26 +122,26 @@ public final class TracerFlarePoller {
       if (null != agentTask
           && null != agentTask.args
           && "tracer_flare".equals(agentTask.taskType)) {
-        submitTracerFlare(agentTask.args);
+        sendFlare(agentTask.args);
       }
     }
 
     @Override
-    public void remove(ParsedConfigKey configKey, PollingRateHinter hinter) {}
+    public void remove(ConfigKey configKey, PollingRateHinter hinter) {}
 
     @Override
     public void commit(PollingRateHinter hinter) {}
   }
 
-  void prepareTracerFlare(String logLevel) {
-    tracerFlareService.prepareTracerFlare(logLevel);
+  void prepareForFlare(String logLevel) {
+    tracerFlareService.prepareForFlare(logLevel);
   }
 
-  void cancelTracerFlare() {
-    tracerFlareService.cancelTracerFlare();
+  void cleanupAfterFlare() {
+    tracerFlareService.cleanupAfterFlare();
   }
 
-  void submitTracerFlare(AgentTaskArgs args) {
+  void sendFlare(AgentTaskArgs args) {
     tracerFlareService.sendFlare(args.caseId, args.userHandle, args.hostname);
   }
 

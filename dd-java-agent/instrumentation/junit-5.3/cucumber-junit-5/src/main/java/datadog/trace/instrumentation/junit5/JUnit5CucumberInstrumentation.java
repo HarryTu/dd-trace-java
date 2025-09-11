@@ -6,6 +6,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import io.cucumber.junit.platform.engine.CucumberTestEngine;
 import net.bytebuddy.asm.Advice;
@@ -15,16 +16,16 @@ import org.junit.platform.engine.ExecutionRequest;
 import org.junit.platform.engine.TestEngine;
 import org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService;
 
-@AutoService(Instrumenter.class)
-public class JUnit5CucumberInstrumentation extends Instrumenter.CiVisibility
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class JUnit5CucumberInstrumentation extends InstrumenterModule.CiVisibility
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public JUnit5CucumberInstrumentation() {
     super("ci-visibility", "junit-5", "junit-5-cucumber");
   }
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     return hasClassNamed("io.cucumber.junit.platform.engine.CucumberTestEngine");
   }
 
@@ -36,6 +37,7 @@ public class JUnit5CucumberInstrumentation extends Instrumenter.CiVisibility
   @Override
   public String[] helperClassNames() {
     return new String[] {
+      packageName + ".TestDataFactory",
       packageName + ".JUnitPlatformUtils",
       packageName + ".CucumberUtils",
       packageName + ".TestEventsHandlerHolder",
@@ -45,8 +47,8 @@ public class JUnit5CucumberInstrumentation extends Instrumenter.CiVisibility
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("execute").and(takesArgument(0, named("org.junit.platform.engine.ExecutionRequest"))),
         JUnit5CucumberInstrumentation.class.getName() + "$CucumberAdvice");
   }

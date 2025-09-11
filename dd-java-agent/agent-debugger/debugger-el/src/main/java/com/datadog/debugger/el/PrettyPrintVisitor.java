@@ -14,8 +14,8 @@ import com.datadog.debugger.el.expressions.HasAnyExpression;
 import com.datadog.debugger.el.expressions.IfElseExpression;
 import com.datadog.debugger.el.expressions.IfExpression;
 import com.datadog.debugger.el.expressions.IndexExpression;
+import com.datadog.debugger.el.expressions.IsDefinedExpression;
 import com.datadog.debugger.el.expressions.IsEmptyExpression;
-import com.datadog.debugger.el.expressions.IsUndefinedExpression;
 import com.datadog.debugger.el.expressions.LenExpression;
 import com.datadog.debugger.el.expressions.MatchesExpression;
 import com.datadog.debugger.el.expressions.NotExpression;
@@ -30,10 +30,9 @@ import com.datadog.debugger.el.values.MapValue;
 import com.datadog.debugger.el.values.NullValue;
 import com.datadog.debugger.el.values.NumericValue;
 import com.datadog.debugger.el.values.ObjectValue;
+import com.datadog.debugger.el.values.SetValue;
 import com.datadog.debugger.el.values.StringValue;
 import datadog.trace.bootstrap.debugger.el.Values;
-import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -74,7 +73,11 @@ public class PrettyPrintVisitor implements Visitor<String> {
 
   @Override
   public String visit(ContainsExpression containsExpression) {
-    return stringPredicateExpression(containsExpression);
+    return "contains("
+        + nullSafeAccept(containsExpression.getTarget())
+        + ", "
+        + nullSafeAccept(containsExpression.getValue())
+        + ")";
   }
 
   @Override
@@ -86,27 +89,27 @@ public class PrettyPrintVisitor implements Visitor<String> {
   public String visit(FilterCollectionExpression filterCollectionExpression) {
     return "filter("
         + nullSafeAccept(filterCollectionExpression.getSource())
-        + ", "
+        + ", {"
         + nullSafeAccept(filterCollectionExpression.getFilterExpression())
-        + ")";
+        + "})";
   }
 
   @Override
   public String visit(HasAllExpression hasAllExpression) {
-    return "hasAll("
+    return "all("
         + nullSafeAccept(hasAllExpression.getValueExpression())
-        + ", "
+        + ", {"
         + nullSafeAccept(hasAllExpression.getFilterPredicateExpression())
-        + ")";
+        + "})";
   }
 
   @Override
   public String visit(HasAnyExpression hasAnyExpression) {
-    return "hasAny("
+    return "any("
         + nullSafeAccept(hasAnyExpression.getValueExpression())
-        + ", "
+        + ", {"
         + nullSafeAccept(hasAnyExpression.getFilterPredicateExpression())
-        + ")";
+        + "})";
   }
 
   @Override
@@ -133,8 +136,8 @@ public class PrettyPrintVisitor implements Visitor<String> {
   }
 
   @Override
-  public String visit(IsUndefinedExpression isUndefinedExpression) {
-    return "isUndefined(" + nullSafeAccept(isUndefinedExpression.getValueExpression()) + ")";
+  public String visit(IsDefinedExpression isDefinedExpression) {
+    return "isDefined(" + nullSafeAccept(isDefinedExpression.getValueExpression()) + ")";
   }
 
   @Override
@@ -221,13 +224,10 @@ public class PrettyPrintVisitor implements Visitor<String> {
   @Override
   public String visit(NumericValue numericValue) {
     Number value = numericValue.value;
-    if (value instanceof Double) {
-      return String.valueOf(value.doubleValue());
-    }
-    if (value instanceof Long) {
-      return String.valueOf(value.longValue());
-    }
-    if (value instanceof BigDecimal || value instanceof BigInteger) {
+    if (value != null) {
+      if (value instanceof Double || value instanceof Float) {
+        return String.valueOf(value.doubleValue());
+      }
       return value.toString();
     }
     return "null";
@@ -264,6 +264,14 @@ public class PrettyPrintVisitor implements Visitor<String> {
   public String visit(MapValue mapValue) {
     if (mapValue.getMapHolder() instanceof Map) {
       return "Map";
+    }
+    return "null";
+  }
+
+  @Override
+  public String visit(SetValue setValue) {
+    if (setValue.getSetHolder() instanceof Set) {
+      return "Set";
     }
     return "null";
   }

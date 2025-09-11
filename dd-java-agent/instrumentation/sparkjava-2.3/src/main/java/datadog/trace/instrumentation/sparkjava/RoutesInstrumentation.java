@@ -9,14 +9,15 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import net.bytebuddy.asm.Advice;
 import spark.route.HttpMethod;
 import spark.routematch.RouteMatch;
 
-@AutoService(Instrumenter.class)
-public class RoutesInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class RoutesInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public RoutesInstrumentation() {
     super("sparkjava", "sparkjava-2.4");
@@ -33,8 +34,8 @@ public class RoutesInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("find")
             .and(takesArgument(0, named("spark.route.HttpMethod")))
             .and(returns(named("spark.routematch.RouteMatch")))

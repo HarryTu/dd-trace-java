@@ -4,6 +4,7 @@ import static datadog.trace.api.TracePropagationStyle.B3MULTI;
 import static datadog.trace.api.TracePropagationStyle.B3SINGLE;
 import static datadog.trace.core.propagation.HttpCodec.firstHeaderValue;
 
+import datadog.context.propagation.CarrierSetter;
 import datadog.trace.api.Config;
 import datadog.trace.api.DD128bTraceId;
 import datadog.trace.api.DDSpanId;
@@ -11,12 +12,10 @@ import datadog.trace.api.DDTraceId;
 import datadog.trace.api.TraceConfig;
 import datadog.trace.api.TracePropagationStyle;
 import datadog.trace.api.sampling.PrioritySampling;
-import datadog.trace.bootstrap.instrumentation.api.AgentPropagation;
 import datadog.trace.core.DDSpanContext;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.TreeMap;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -112,7 +111,7 @@ class B3HttpCodec {
 
     @Override
     public <C> void inject(
-        final DDSpanContext context, final C carrier, final AgentPropagation.Setter<C> setter) {
+        final DDSpanContext context, final C carrier, final CarrierSetter<C> setter) {
       final String injectedTraceId = getInjectedTraceId(context);
       final String injectedSpanId = getInjectedSpanId(context);
       setter.set(carrier, TRACE_ID_KEY, injectedTraceId);
@@ -137,7 +136,7 @@ class B3HttpCodec {
 
     @Override
     public <C> void inject(
-        final DDSpanContext context, final C carrier, final AgentPropagation.Setter<C> setter) {
+        final DDSpanContext context, final C carrier, final CarrierSetter<C> setter) {
       final String injectedTraceId = getInjectedTraceId(context);
       final String injectedSpanId = getInjectedSpanId(context);
       final StringBuilder injectedB3IdBuilder = new StringBuilder(100);
@@ -186,10 +185,7 @@ class B3HttpCodec {
 
     protected void setSpanId(final String sId) {
       spanId = DDSpanId.fromHex(sId);
-      if (tags.isEmpty()) {
-        tags = new TreeMap<>();
-      }
-      tags.put(B3_SPAN_ID, sId);
+      tagLedger().set(B3_SPAN_ID, sId);
     }
 
     protected boolean setTraceId(final String tId) {
@@ -202,10 +198,7 @@ class B3HttpCodec {
         B3TraceId b3TraceId = B3TraceId.fromHex(tId);
         traceId = b3TraceId.toLong() == 0 ? DDTraceId.ZERO : b3TraceId;
       }
-      if (tags.isEmpty()) {
-        tags = new TreeMap<>();
-      }
-      tags.put(B3_TRACE_ID, tId);
+      tagLedger().set(B3_TRACE_ID, tId);
       return true;
     }
   }
@@ -327,8 +320,8 @@ class B3HttpCodec {
       if (firstValue.length() == 1) {
         samplingPriority = convertSamplingPriority(firstValue);
       } else {
-        final int firstIndex = firstValue.indexOf("-");
-        final int secondIndex = firstValue.indexOf("-", firstIndex + 1);
+        final int firstIndex = firstValue.indexOf('-');
+        final int secondIndex = firstValue.indexOf('-', firstIndex + 1);
         if (firstIndex != -1) {
           final String b3TraceId = firstValue.substring(0, firstIndex);
           if (!setTraceId(b3TraceId)) {

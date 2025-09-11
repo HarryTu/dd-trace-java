@@ -1,4 +1,4 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.DDSpanTypes
 import datadog.trace.bootstrap.instrumentation.api.Tags
 import io.dropwizard.testing.junit.ResourceTestRule
@@ -8,7 +8,6 @@ import org.jboss.resteasy.mock.MockHttpRequest
 import org.jboss.resteasy.mock.MockHttpResponse
 import org.junit.ClassRule
 import spock.lang.Shared
-import spock.lang.Unroll
 
 import javax.ws.rs.client.Entity
 import javax.ws.rs.container.ContainerRequestContext
@@ -20,8 +19,7 @@ import javax.ws.rs.ext.Provider
 
 import static datadog.trace.agent.test.utils.TraceUtils.runUnderTrace
 
-@Unroll
-abstract class JaxRsFilterTest extends AgentTestRunner {
+abstract class JaxRsFilterTest extends InstrumentationSpecification {
 
   @Shared
   SimpleRequestFilter simpleRequestFilter = new SimpleRequestFilter()
@@ -65,6 +63,7 @@ abstract class JaxRsFilterTest extends AgentTestRunner {
             if (httpRoute) {
               "$Tags.HTTP_ROUTE" httpRoute
             }
+            withCustomIntegrationName(null)
             defaultTags()
           }
         }
@@ -125,6 +124,7 @@ abstract class JaxRsFilterTest extends AgentTestRunner {
           tags {
             "$Tags.COMPONENT" "jax-rs"
             "$Tags.HTTP_ROUTE" resource
+            withCustomIntegrationName(null)
             defaultTags()
           }
         }

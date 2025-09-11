@@ -6,12 +6,13 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import java.util.Collections;
 import java.util.Map;
 
-@AutoService(Instrumenter.class)
-public class LettuceAsyncCommandsInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class LettuceAsyncCommandsInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public LettuceAsyncCommandsInstrumentation() {
     super("lettuce", "lettuce-4", "lettuce-4-async");
@@ -36,8 +37,8 @@ public class LettuceAsyncCommandsInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("dispatch"))
             .and(takesArgument(0, named("com.lambdaworks.redis.protocol.RedisCommand"))),

@@ -9,6 +9,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesNoArguments;
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.ExcludeFilterProvider;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.agent.tooling.muzzle.Reference;
 import datadog.trace.api.Config;
 import datadog.trace.api.ProductActivation;
@@ -30,9 +31,12 @@ import net.bytebuddy.jar.asm.ClassWriter;
 import net.bytebuddy.jar.asm.Opcodes;
 import net.bytebuddy.pool.TypePool;
 
-@AutoService(Instrumenter.class)
-public final class JettyServerInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType, ExcludeFilterProvider {
+@AutoService(InstrumenterModule.class)
+public final class JettyServerInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType,
+        Instrumenter.HasTypeAdvice,
+        Instrumenter.HasMethodAdvice,
+        ExcludeFilterProvider {
 
   private boolean appSecNotFullyDisabled;
 
@@ -87,14 +91,17 @@ public final class JettyServerInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
-        takesNoArguments().and(named("handle")), packageName + ".HandleAdvice");
-    transformation.applyAdvice(
-        named("recycle").and(takesNoArguments()), packageName + ".ResetAdvice");
+  public void typeAdvice(TypeTransformer transformer) {
+    transformer.applyAdvice(new HttpChannelHandleVisitorWrapper());
+  }
+
+  @Override
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(takesNoArguments().and(named("handle")), packageName + ".HandleAdvice");
+    transformer.applyAdvice(named("recycle").and(takesNoArguments()), packageName + ".ResetAdvice");
 
     if (appSecNotFullyDisabled) {
-      transformation.applyAdvice(
+      transformer.applyAdvice(
           named("handleException").and(takesArguments(1)).and(takesArgument(0, Throwable.class)),
           packageName + ".HandleExceptionAdvice");
     }
@@ -110,10 +117,6 @@ public final class JettyServerInstrumentation extends Instrumenter.Tracing
             "org.eclipse.jetty.io.ManagedSelector",
             "org.eclipse.jetty.util.thread.TimerScheduler",
             "org.eclipse.jetty.util.thread.TimerScheduler$SimpleTask"));
-  }
-
-  public AdviceTransformer transformer() {
-    return new VisitingTransformer(new HttpChannelHandleVisitorWrapper());
   }
 
   public static class HttpChannelHandleVisitorWrapper implements AsmVisitorWrapper {

@@ -2,6 +2,7 @@ package datadog.trace.bootstrap.instrumentation.decorator
 
 import datadog.trace.api.DDTags
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext
 import datadog.trace.bootstrap.instrumentation.api.Tags
 
 import static datadog.trace.api.config.TraceInstrumentationConfig.DB_CLIENT_HOST_SPLIT_BY_HOST
@@ -15,6 +16,7 @@ class DatabaseClientDecoratorTest extends ClientDecoratorTest {
   def "test afterStart"() {
     setup:
     def decorator = newDecorator((String) serviceName)
+    def spanContext = Mock(AgentSpanContext)
 
     when:
     decorator.afterStart(span)
@@ -25,6 +27,8 @@ class DatabaseClientDecoratorTest extends ClientDecoratorTest {
     }
     1 * span.setMeasured(true)
     1 * span.setTag(Tags.COMPONENT, "test-component")
+    1 * span.context() >> spanContext
+    1 * spanContext.setIntegrationName("test-component")
     1 * span.setTag(Tags.SPAN_KIND, "client")
     1 * span.setSpanType("test-type")
     1 * span.setMetric(DDTags.ANALYTICS_SAMPLE_RATE, 1.0)
@@ -47,7 +51,9 @@ class DatabaseClientDecoratorTest extends ClientDecoratorTest {
     then:
     if (session) {
       1 * span.setTag(Tags.DB_USER, session.user)
-      1 * span.setTag(Tags.DB_INSTANCE, session.instance)
+      if (session.instance != null) {
+        1 * span.setTag(Tags.DB_INSTANCE, session.instance)
+      }
       if (session.hostname != null) {
         1 * span.setTag(Tags.PEER_HOSTNAME, session.hostname)
       }

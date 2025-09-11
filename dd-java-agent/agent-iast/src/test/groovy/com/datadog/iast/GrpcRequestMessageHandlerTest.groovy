@@ -4,33 +4,27 @@ import com.datadog.iast.propagation.PropagationModuleImpl
 import com.datadog.iast.protobuf.Test2
 import com.datadog.iast.protobuf.Test3
 import com.datadog.iast.util.ObjectVisitor
-import datadog.trace.api.gateway.RequestContext
-import datadog.trace.api.gateway.RequestContextSlot
 import datadog.trace.api.iast.InstrumentationBridge
 import datadog.trace.api.iast.SourceTypes
 import datadog.trace.api.iast.propagation.PropagationModule
 import datadog.trace.api.iast.telemetry.IastMetric
 import datadog.trace.api.iast.telemetry.IastMetricCollector
-import datadog.trace.test.util.DDSpecification
 import foo.bar.VisitableClass
 
 import java.util.function.Predicate
 
 import static com.datadog.iast.util.ObjectVisitor.State.CONTINUE
 
-class GrpcRequestMessageHandlerTest extends DDSpecification {
+class GrpcRequestMessageHandlerTest extends IastModuleImplTestBase {
 
   private PropagationModule propagation
-  private IastRequestContext iastCtx
-  private RequestContext ctx
+  private IastMetricCollector collector
 
   void setup() {
     propagation = Spy(new PropagationModuleImpl())
     InstrumentationBridge.registerIastModule(propagation)
-    iastCtx = Spy(new IastRequestContext())
-    ctx = Mock(RequestContext) {
-      getData(RequestContextSlot.IAST) >> iastCtx
-    }
+    collector = Spy(new IastMetricCollector())
+    ctx.collector = collector
   }
 
   void 'the handler does nothing without propagation'() {
@@ -39,7 +33,7 @@ class GrpcRequestMessageHandlerTest extends DDSpecification {
     InstrumentationBridge.clearIastModules()
 
     when:
-    handler.apply(ctx, [:])
+    handler.apply(reqCtx, [:])
 
     then:
     0 * _
@@ -50,7 +44,7 @@ class GrpcRequestMessageHandlerTest extends DDSpecification {
     final handler = new GrpcRequestMessageHandler()
 
     when:
-    handler.apply(ctx, null)
+    handler.apply(reqCtx, null)
 
     then:
     0 * _
@@ -62,22 +56,21 @@ class GrpcRequestMessageHandlerTest extends DDSpecification {
     final handler = new GrpcRequestMessageHandler()
 
     when:
-    handler.apply(ctx, target)
+    handler.apply(reqCtx, target)
 
     then:
-    1 * propagation.taintDeeply(iastCtx, target, SourceTypes.GRPC_BODY, _ as Predicate<Class<?>>)
+    1 * propagation.taintObjectDeeply(ctx, target, SourceTypes.GRPC_BODY, _ as Predicate<Class<?>>)
   }
 
   void 'the handler only takes into account protobuf v.#protobufVersion related messages'() {
     given:
     final visitor = Mock(ObjectVisitor.Visitor) {
       visit(_ as String, _ as Object) >> {
-        println 'feo'
         return CONTINUE
       }
     }
     final nonProtobufMessage = new VisitableClass(name: 'test')
-    final filter = GrpcRequestMessageHandler::isProtobufArtifact
+    final filter = GrpcRequestMessageHandler::visitProtobufArtifact
 
     when: 'the message is not a protobuf instance'
     ObjectVisitor.visit(nonProtobufMessage, visitor, filter)
@@ -106,12 +99,10 @@ class GrpcRequestMessageHandlerTest extends DDSpecification {
 
   void 'test that metrics are properly generated'() {
     given:
-    final collector = Spy(new IastMetricCollector())
-    iastCtx.getMetricCollector() >> collector
     final handler = new GrpcRequestMessageHandler()
 
     when:
-    handler.apply(ctx, message)
+    handler.apply(reqCtx, message)
 
     then:
     1 * collector.addMetric(IastMetric.EXECUTED_SOURCE, SourceTypes.GRPC_BODY, 6)
@@ -122,7 +113,15 @@ class GrpcRequestMessageHandlerTest extends DDSpecification {
     buildProto3Message() | _
   }
 
-  private static def buildProto2Message() {
+  void 'visitProtobufArtifact handles classes without superclass'() {
+    when:
+    boolean result = GrpcRequestMessageHandler.visitProtobufArtifact(Object)
+
+    then:
+    !result
+  }
+
+  private static buildProto2Message() {
     final child = Test2.Proto2Child.newBuilder()
     .setOptional("optional")
     .setRequired("required")
@@ -132,7 +131,7 @@ class GrpcRequestMessageHandlerTest extends DDSpecification {
     return Test2.Proto2Parent.newBuilder().setChild(child).build()
   }
 
-  private static def buildProto3Message() {
+  private static buildProto3Message() {
     final child = Test3.Proto3Child.newBuilder()
     .setOptional("optional")
     .setRequired("required")

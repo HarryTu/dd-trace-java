@@ -7,6 +7,7 @@ import static net.bytebuddy.matcher.ElementMatchers.isStatic;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import net.bytebuddy.matcher.ElementMatcher;
 
 /**
@@ -16,16 +17,16 @@ import net.bytebuddy.matcher.ElementMatcher;
  * <p>Based on the OpenTelemetry Reactor Netty instrumentation.
  * https://github.com/open-telemetry/opentelemetry-java-instrumentation/blob/main/instrumentation/reactor-netty/reactor-netty-1.0/javaagent/src/main/java/io/opentelemetry/javaagent/instrumentation/reactornetty/v1_0/HttpClientInstrumentation.java
  */
-@AutoService(Instrumenter.class)
-public class HttpClientInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class HttpClientInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public HttpClientInstrumentation() {
     super("reactor-netty", "reactor-netty-1");
   }
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     // Avoid matching pre-1.0 releases which are not compatible.
     return hasClassNamed("reactor.netty.transport.AddressUtils");
   }
@@ -45,8 +46,8 @@ public class HttpClientInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(isStatic()).and(namedOneOf("create", "newConnection")),
         packageName + ".AfterConstructorAdvice");
   }

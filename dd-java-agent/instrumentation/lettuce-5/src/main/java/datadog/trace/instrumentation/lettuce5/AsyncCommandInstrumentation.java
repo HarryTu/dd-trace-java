@@ -12,6 +12,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.AdviceUtils;
@@ -26,9 +27,9 @@ import net.bytebuddy.asm.Advice;
  * the span can propagate with it into the {@code io.lettuce.core.protocol.CommandHandler} event
  * loop.
  */
-@AutoService(Instrumenter.class)
-public class AsyncCommandInstrumentation extends Instrumenter.Profiling
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class AsyncCommandInstrumentation extends InstrumenterModule.Profiling
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public AsyncCommandInstrumentation() {
     super("lettuce", "lettuce-5", "lettuce-5-async");
   }
@@ -44,17 +45,17 @@ public class AsyncCommandInstrumentation extends Instrumenter.Profiling
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isConstructor()
             .and(
                 takesArguments(1)
                     .and(takesArgument(0, named("io.lettuce.core.protocol.RedisCommand")))),
         getClass().getName() + "$Capture");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod().and(namedOneOf("complete", "completeExceptionally", "onComplete", "encode")),
         getClass().getName() + "$Activate");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod().and(named("cancel")).and(takesArguments(boolean.class)),
         getClass().getName() + "$Cancel");
   }
@@ -64,7 +65,7 @@ public class AsyncCommandInstrumentation extends Instrumenter.Profiling
     @SuppressWarnings("rawtypes")
     @Advice.OnMethodExit
     public static void after(@Advice.This AsyncCommand asyncCommand) {
-      capture(InstrumentationContext.get(AsyncCommand.class, State.class), asyncCommand, false);
+      capture(InstrumentationContext.get(AsyncCommand.class, State.class), asyncCommand);
     }
   }
 

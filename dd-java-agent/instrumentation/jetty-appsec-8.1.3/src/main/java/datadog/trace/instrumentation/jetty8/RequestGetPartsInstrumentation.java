@@ -8,6 +8,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 import com.google.auto.service.AutoService;
 import datadog.appsec.api.blocking.BlockingException;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.gateway.BlockResponseFunction;
 import datadog.trace.api.gateway.CallbackProvider;
 import datadog.trace.api.gateway.Flow;
@@ -37,9 +38,11 @@ import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.pool.TypePool;
 import org.eclipse.jetty.server.Request;
 
-@AutoService(Instrumenter.class)
-public class RequestGetPartsInstrumentation extends Instrumenter.AppSec
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class RequestGetPartsInstrumentation extends InstrumenterModule.AppSec
+    implements Instrumenter.ForSingleType,
+        Instrumenter.HasTypeAdvice,
+        Instrumenter.HasMethodAdvice {
   public RequestGetPartsInstrumentation() {
     super("jetty");
   }
@@ -59,8 +62,13 @@ public class RequestGetPartsInstrumentation extends Instrumenter.AppSec
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void typeAdvice(TypeTransformer transformer) {
+    transformer.applyAdvice(new GetPartsVisitorWrapper());
+  }
+
+  @Override
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("getPart")
             .and(takesArguments(1))
             .and(takesArgument(0, String.class))
@@ -69,33 +77,26 @@ public class RequestGetPartsInstrumentation extends Instrumenter.AppSec
   }
 
   @Override
-  public AdviceTransformer transformer() {
-    return new VisitingTransformer(new GetPartsVisitorWrapper());
-  }
-
-  @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     return RequestImplementationClassLoaderMatcher.INSTANCE;
   }
 
   public static class RequestImplementationClassLoaderMatcher
-      implements ElementMatcher<ClassLoader> {
-    public static final ElementMatcher<ClassLoader> INSTANCE =
+      extends ElementMatcher.Junction.ForNonNullValues<ClassLoader> {
+    public static final ElementMatcher.Junction<ClassLoader> INSTANCE =
         new RequestImplementationClassLoaderMatcher();
 
     @Override
-    public boolean matches(ClassLoader cl) {
-      InputStream is = cl.getResourceAsStream("org/eclipse/jetty/server/Request.class");
-      if (is == null) {
-        return false;
-      }
-      try {
+    protected boolean doMatch(ClassLoader cl) {
+      try (InputStream is = cl.getResourceAsStream("org/eclipse/jetty/server/Request.class")) {
+        if (is == null) {
+          return false;
+        }
         ClassReader classReader = new ClassReader(is);
         final boolean[] foundField = new boolean[1];
         final boolean[] foundGetParameters = new boolean[1];
         classReader.accept(new ClassLoaderMatcherClassVisitor(foundField, foundGetParameters), 0);
         return !foundField[0] && foundGetParameters[0];
-
       } catch (IOException e) {
         return false;
       }

@@ -1,6 +1,7 @@
 package datadog.trace.bootstrap.instrumentation.java.concurrent;
 
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeScope;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeSpan;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.isAsyncPropagationEnabled;
 
 import datadog.trace.bootstrap.ContextStore;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
@@ -19,15 +20,14 @@ public class AdviceUtils {
    */
   public static <T> AgentScope startTaskScope(
       final ContextStore<T, State> contextStore, final T task) {
-    return startTaskScope(contextStore.get(task), false);
+    return startTaskScope(contextStore.get(task));
   }
 
-  public static AgentScope startTaskScope(State state, boolean migrated) {
+  public static AgentScope startTaskScope(State state) {
     if (state != null) {
       final AgentScope.Continuation continuation = state.getAndResetContinuation();
       if (continuation != null) {
         final AgentScope scope = continuation.activate();
-        scope.setAsyncPropagation(true);
         // important - stop timing after the scope has been activated so the time in the queue can
         // be attributed to the correct context without duplicating the propagated information
         state.stopTiming();
@@ -50,24 +50,15 @@ public class AdviceUtils {
     }
   }
 
-  public static <T> AgentSpan getCapturedSpan(ContextStore<T, State> contextStore, final T task) {
-    State state = contextStore.get(task);
-    if (null != state) {
-      return state.getSpan();
-    }
-    return null;
-  }
-
-  public static <T> void capture(
-      ContextStore<T, State> contextStore, T task, boolean startThreadMigration) {
-    AgentScope activeScope = activeScope();
-    if (null != activeScope && activeScope.isAsyncPropagating()) {
+  public static <T> void capture(ContextStore<T, State> contextStore, T task) {
+    AgentSpan span = activeSpan();
+    if (span != null && span.isValid() && isAsyncPropagationEnabled()) {
       State state = contextStore.get(task);
       if (null == state) {
         state = State.FACTORY.create();
         contextStore.put(task, state);
       }
-      state.captureAndSetContinuation(activeScope);
+      state.captureAndSetContinuation(span);
     }
   }
 }

@@ -6,7 +6,11 @@ import datadog.communication.serialization.GrowableBuffer;
 import datadog.communication.serialization.Writable;
 import datadog.communication.serialization.WritableFormatter;
 import datadog.communication.serialization.msgpack.MsgPackWriter;
+import datadog.trace.api.Config;
+import datadog.trace.api.ProcessTags;
 import datadog.trace.api.WellKnownTags;
+import datadog.trace.api.datastreams.DataStreamsTags;
+import datadog.trace.bootstrap.instrumentation.api.UTF8BytesString;
 import datadog.trace.common.metrics.Sink;
 import java.util.Collection;
 import java.util.List;
@@ -31,6 +35,8 @@ public class MsgPackDatastreamsPayloadWriter implements DatastreamsPayloadWriter
   private static final byte[] PARENT_HASH = "ParentHash".getBytes(ISO_8859_1);
   private static final byte[] BACKLOG_VALUE = "Value".getBytes(ISO_8859_1);
   private static final byte[] BACKLOG_TAGS = "Tags".getBytes(ISO_8859_1);
+  private static final byte[] PRODUCTS_MASK = "ProductMask".getBytes(ISO_8859_1);
+  private static final byte[] PROCESS_TAGS = "ProcessTags".getBytes(ISO_8859_1);
 
   private static final int INITIAL_CAPACITY = 512 * 1024;
 
@@ -55,16 +61,43 @@ public class MsgPackDatastreamsPayloadWriter implements DatastreamsPayloadWriter
     buffer.reset();
   }
 
+  // extend the list as needed
+  private static final int APM_PRODUCT = 1; // 00000001
+  private static final int DSM_PRODUCT = 2; // 00000010
+  private static final int DJM_PRODUCT = 4; // 00000100
+  private static final int PROFILING_PRODUCT = 8; // 00001000
+
+  public long getProductsMask() {
+    long productsMask = APM_PRODUCT;
+    if (Config.get().isDataStreamsEnabled()) {
+      productsMask |= DSM_PRODUCT;
+    }
+    if (Config.get().isDataJobsEnabled()) {
+      productsMask |= DJM_PRODUCT;
+    }
+    if (Config.get().isProfilingEnabled()) {
+      productsMask |= PROFILING_PRODUCT;
+    }
+
+    return productsMask;
+  }
+
   @Override
-  public void writePayload(Collection<StatsBucket> data) {
-    writer.startMap(7);
+  public void writePayload(Collection<StatsBucket> data, String serviceNameOverride) {
+    final List<UTF8BytesString> processTags = ProcessTags.getTagsAsUTF8ByteStringList();
+    final boolean hasProcessTags = processTags != null;
+    writer.startMap(8 + (hasProcessTags ? 1 : 0));
     /* 1 */
     writer.writeUTF8(ENV);
     writer.writeUTF8(wellKnownTags.getEnv());
 
     /* 2 */
     writer.writeUTF8(SERVICE);
-    writer.writeUTF8(wellKnownTags.getService());
+    if (serviceNameOverride != null) {
+      writer.writeUTF8(serviceNameOverride.getBytes(ISO_8859_1));
+    } else {
+      writer.writeUTF8(wellKnownTags.getService());
+    }
 
     /* 3 */
     writer.writeUTF8(LANG);
@@ -108,6 +141,17 @@ public class MsgPackDatastreamsPayloadWriter implements DatastreamsPayloadWriter
       }
     }
 
+    /* 8 */
+    writer.writeUTF8(PRODUCTS_MASK);
+    writer.writeLong(getProductsMask());
+
+    /* 9 */
+    if (hasProcessTags) {
+      writer.writeUTF8(PROCESS_TAGS);
+      writer.startArray(processTags.size());
+      processTags.forEach(writer::writeUTF8);
+    }
+
     buffer.mark();
     sink.accept(buffer.messageCount(), buffer.slice());
     buffer.reset();
@@ -117,8 +161,7 @@ public class MsgPackDatastreamsPayloadWriter implements DatastreamsPayloadWriter
     Collection<StatsGroup> groups = bucket.getGroups();
     packer.startArray(groups.size());
     for (StatsGroup group : groups) {
-      boolean firstNode = group.getEdgeTags().isEmpty();
-
+      boolean firstNode = group.getTags().nonNullSize() == 0;
       packer.startMap(firstNode ? 5 : 6);
 
       /* 1 */
@@ -144,26 +187,34 @@ public class MsgPackDatastreamsPayloadWriter implements DatastreamsPayloadWriter
       if (!firstNode) {
         /* 6 */
         packer.writeUTF8(EDGE_TAGS);
-        packer.startArray(group.getEdgeTags().size());
-        for (String tag : group.getEdgeTags()) {
-          packer.writeString(tag, null);
-        }
+        writeDataStreamsTags(group.getTags(), packer);
       }
     }
   }
 
-  private void writeBacklogs(Collection<Map.Entry<List<String>, Long>> backlogs, Writable packer) {
+  private void writeBacklogs(
+      Collection<Map.Entry<DataStreamsTags, Long>> backlogs, Writable packer) {
     packer.writeUTF8(BACKLOGS);
     packer.startArray(backlogs.size());
-    for (Map.Entry<List<String>, Long> entry : backlogs) {
+    for (Map.Entry<DataStreamsTags, Long> entry : backlogs) {
       packer.startMap(2);
+
       packer.writeUTF8(BACKLOG_TAGS);
-      packer.startArray(entry.getKey().size());
-      for (String tag : entry.getKey()) {
-        packer.writeString(tag, null);
-      }
+      writeDataStreamsTags(entry.getKey(), packer);
+
       packer.writeUTF8(BACKLOG_VALUE);
       packer.writeLong(entry.getValue());
+    }
+  }
+
+  private void writeDataStreamsTags(DataStreamsTags tags, Writable packer) {
+    packer.startArray(tags.nonNullSize());
+
+    for (int i = 0; i < tags.size(); i++) {
+      String val = tags.tagByIndex(i);
+      if (val != null) {
+        packer.writeString(val, null);
+      }
     }
   }
 }

@@ -1,17 +1,25 @@
 package datadog.trace.civisibility.writer.ddintake;
 
+import static datadog.communication.http.OkHttpUtils.gzippedRequestBodyOf;
 import static datadog.communication.http.OkHttpUtils.jsonRequestBodyOf;
 import static datadog.communication.http.OkHttpUtils.msgpackRequestBodyOf;
 
 import datadog.communication.serialization.GrowableBuffer;
 import datadog.communication.serialization.Writable;
 import datadog.communication.serialization.msgpack.MsgPackWriter;
+import datadog.trace.api.DDTraceId;
+import datadog.trace.api.civisibility.InstrumentationBridge;
 import datadog.trace.api.civisibility.coverage.TestReport;
 import datadog.trace.api.civisibility.coverage.TestReportFileEntry;
 import datadog.trace.api.civisibility.coverage.TestReportHolder;
+import datadog.trace.api.civisibility.domain.TestContext;
+import datadog.trace.api.civisibility.telemetry.CiVisibilityDistributionMetric;
+import datadog.trace.api.civisibility.telemetry.CiVisibilityMetricCollector;
+import datadog.trace.api.civisibility.telemetry.tag.Endpoint;
 import datadog.trace.api.gateway.RequestContextSlot;
 import datadog.trace.api.intake.TrackType;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.api.InternalSpanTypes;
 import datadog.trace.common.writer.Payload;
 import datadog.trace.common.writer.RemoteMapper;
 import datadog.trace.core.CoreSpan;
@@ -20,11 +28,10 @@ import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
-import java.util.stream.Collectors;
 import okhttp3.MultipartBody;
 import okhttp3.RequestBody;
 
@@ -37,37 +44,41 @@ public class CiTestCovMapperV2 implements RemoteMapper {
   private static final byte[] SPAN_ID = "span_id".getBytes(StandardCharsets.UTF_8);
   private static final byte[] FILES = "files".getBytes(StandardCharsets.UTF_8);
   private static final byte[] FILENAME = "filename".getBytes(StandardCharsets.UTF_8);
-  private static final byte[] SEGMENTS = "segments".getBytes(StandardCharsets.UTF_8);
+  private static final byte[] BITMAP = "bitmap".getBytes(StandardCharsets.UTF_8);
 
   private final int size;
   private final GrowableBuffer headerBuffer;
   private final MsgPackWriter headerWriter;
+  private final boolean compressionEnabled;
   private int eventCount = 0;
+  private int serializationTimeMillis = 0;
 
-  public CiTestCovMapperV2() {
-    this(5 << 20);
+  public CiTestCovMapperV2(boolean compressionEnabled) {
+    this(5 << 20, compressionEnabled);
   }
 
-  private CiTestCovMapperV2(int size) {
+  private CiTestCovMapperV2(int size, boolean compressionEnabled) {
     this.size = size;
+    this.compressionEnabled = compressionEnabled;
     headerBuffer = new GrowableBuffer(16);
     headerWriter = new MsgPackWriter(headerBuffer);
   }
 
   @Override
   public void map(List<? extends CoreSpan<?>> trace, Writable writable) {
-    List<TestReport> testReports =
-        trace.stream()
-            // only consider top-level spans (tests), since children spans
-            // share test reports with their parents
-            .filter(CoreSpan::isTopLevel)
-            .map(CiTestCovMapperV2::getTestReport)
-            .filter(Objects::nonNull)
-            .filter(TestReport::isNotEmpty)
-            .collect(Collectors.toList());
+    long serializationStartTimestamp = System.currentTimeMillis();
 
-    for (TestReport testReport : testReports) {
-      Long testSessionId = testReport.getTestSessionId();
+    for (CoreSpan<?> span : trace) {
+      if (!isTestSpan(span)) {
+        continue;
+      }
+
+      TestReport testReport = getTestReport(span);
+      if (testReport == null || !testReport.isNotEmpty()) {
+        continue;
+      }
+
+      DDTraceId testSessionId = testReport.getTestSessionId();
       Long testSuiteId = testReport.getTestSuiteId();
 
       int fieldCount = 2 + (testSessionId != null ? 1 : 0) + (testSuiteId != null ? 1 : 0);
@@ -76,7 +87,7 @@ public class CiTestCovMapperV2 implements RemoteMapper {
 
       if (testSessionId != null) {
         writable.writeUTF8(TEST_SESSION_ID);
-        writable.writeLong(testSessionId);
+        writable.writeLong(testSessionId.toLong());
       }
 
       if (testSuiteId != null) {
@@ -93,36 +104,39 @@ public class CiTestCovMapperV2 implements RemoteMapper {
       writable.startArray(fileEntries.size());
 
       for (TestReportFileEntry entry : fileEntries) {
-        writable.startMap(2);
+        BitSet coveredLines = entry.getCoveredLines();
+        boolean lineInfoPresent = coveredLines != null;
+
+        writable.startMap(1 + (lineInfoPresent ? 1 : 0));
 
         writable.writeUTF8(FILENAME);
         writable.writeString(entry.getSourceFileName(), null);
 
-        Collection<TestReportFileEntry.Segment> segments = entry.getSegments();
-
-        writable.writeUTF8(SEGMENTS);
-        writable.startArray(segments.size());
-
-        for (TestReportFileEntry.Segment segment : segments) {
-          writable.startArray(5);
-          writable.writeInt(segment.getStartLine());
-          writable.writeInt(segment.getStartColumn());
-          writable.writeInt(segment.getEndLine());
-          writable.writeInt(segment.getEndColumn());
-          writable.writeInt(segment.getNumberOfExecutions());
+        if (lineInfoPresent) {
+          writable.writeUTF8(BITMAP);
+          writable.writeBinary(coveredLines.toByteArray());
         }
       }
-    }
 
-    eventCount += testReports.size();
+      eventCount++;
+    }
+    serializationTimeMillis += (int) (System.currentTimeMillis() - serializationStartTimestamp);
+  }
+
+  private static boolean isTestSpan(CoreSpan<?> span) {
+    CharSequence type = span.getType();
+    return type != null && type.toString().contentEquals(InternalSpanTypes.TEST);
   }
 
   private static TestReport getTestReport(CoreSpan<?> span) {
     if (span instanceof AgentSpan) {
-      TestReportHolder probes =
+      TestContext test =
           ((AgentSpan) span).getRequestContext().getData(RequestContextSlot.CI_VISIBILITY);
-      if (probes != null) {
-        return probes.getReport();
+      if (test != null) {
+        TestReportHolder probes = test.getCoverageStore();
+        if (probes != null) {
+          return probes.getReport();
+        }
       }
     }
     return null;
@@ -141,7 +155,18 @@ public class CiTestCovMapperV2 implements RemoteMapper {
   @Override
   public Payload newPayload() {
     writeHeader();
-    return new PayloadV2().withHeader(headerBuffer.slice());
+
+    CiVisibilityMetricCollector metricCollector = InstrumentationBridge.getMetricCollector();
+    metricCollector.add(
+        CiVisibilityDistributionMetric.ENDPOINT_PAYLOAD_EVENTS_COUNT,
+        eventCount,
+        Endpoint.CODE_COVERAGE);
+    metricCollector.add(
+        CiVisibilityDistributionMetric.ENDPOINT_PAYLOAD_EVENTS_SERIALIZATION_MS,
+        serializationTimeMillis,
+        Endpoint.CODE_COVERAGE);
+
+    return new PayloadV2(compressionEnabled).withHeader(headerBuffer.slice());
   }
 
   @Override
@@ -152,6 +177,7 @@ public class CiTestCovMapperV2 implements RemoteMapper {
   @Override
   public void reset() {
     eventCount = 0;
+    serializationTimeMillis = 0;
   }
 
   @Override
@@ -165,7 +191,13 @@ public class CiTestCovMapperV2 implements RemoteMapper {
     private static final RequestBody DUMMY_JSON_BODY =
         jsonRequestBodyOf("{\"dummy\":true}".getBytes());
 
+    private final boolean compressionEnabled;
+
     ByteBuffer header = null;
+
+    private PayloadV2(boolean compressionEnabled) {
+      this.compressionEnabled = compressionEnabled;
+    }
 
     PayloadV2 withHeader(ByteBuffer header) {
       this.header = header;
@@ -206,21 +238,25 @@ public class CiTestCovMapperV2 implements RemoteMapper {
 
     @Override
     public RequestBody toRequest() {
-      RequestBody coverageBody;
+      List<ByteBuffer> buffers;
       if (traceCount() == 0) {
         // If traceCount is 0, we write a map with 0 elements in MsgPack format.
-        coverageBody = msgpackRequestBodyOf(Collections.singletonList(msgpackMapHeader(0)));
+        buffers = Collections.singletonList(msgpackMapHeader(0));
       } else if (header != null) {
-        coverageBody = msgpackRequestBodyOf(Arrays.asList(header, body));
+        buffers = Arrays.asList(header, body);
       } else {
-        coverageBody = msgpackRequestBodyOf(Collections.singletonList(body));
+        buffers = Collections.singletonList(body);
       }
+      RequestBody coverageBody = msgpackRequestBodyOf(buffers);
 
-      return new MultipartBody.Builder()
-          .setType(MultipartBody.FORM)
-          .addFormDataPart("coverage1", "coverage1.msgpack", coverageBody)
-          .addFormDataPart("event", "event.json", DUMMY_JSON_BODY)
-          .build();
+      MultipartBody multipartBody =
+          new MultipartBody.Builder()
+              .setType(MultipartBody.FORM)
+              .addFormDataPart("coverage1", "coverage1.msgpack", coverageBody)
+              .addFormDataPart("event", "event.json", DUMMY_JSON_BODY)
+              .build();
+
+      return compressionEnabled ? gzippedRequestBodyOf(multipartBody) : multipartBody;
     }
   }
 }

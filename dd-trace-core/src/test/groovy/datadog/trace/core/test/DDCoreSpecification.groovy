@@ -4,7 +4,7 @@ import datadog.trace.api.DDSpanId
 import datadog.trace.api.DDTraceId
 import datadog.trace.api.StatsDClient
 import datadog.trace.api.sampling.PrioritySampling
-import datadog.trace.bootstrap.instrumentation.api.AgentTracer
+import datadog.trace.api.datastreams.NoopPathwayContext
 import datadog.trace.bootstrap.instrumentation.api.ProfilingContextIntegration
 import datadog.trace.common.writer.ListWriter
 import datadog.trace.core.CoreTracer
@@ -28,6 +28,7 @@ abstract class DDCoreSpecification extends DDSpecification {
   @Override
   void setupSpec() {
     TagsPostProcessorFactory.withAddBaseService(false)
+    TagsPostProcessorFactory.withAddRemoteHostname(false)
   }
 
   @Override
@@ -69,14 +70,15 @@ abstract class DDCoreSpecification extends DDSpecification {
       prioritySampling,
       null,
       [:],
+      null,
       false,
       spanType,
       0,
-      tracer.pendingTraceFactory.create(DDTraceId.ONE),
+      tracer.traceCollectorFactory.create(DDTraceId.ONE),
       null,
       null,
       ciVisibilityContextData,
-      AgentTracer.NoopPathwayContext.INSTANCE,
+      NoopPathwayContext.INSTANCE,
       false,
       propagationTags,
       ProfilingContextIntegration.NoOp.INSTANCE,

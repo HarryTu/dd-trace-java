@@ -13,6 +13,7 @@ import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.method.MethodList;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.description.type.TypeList;
+import net.bytebuddy.jar.asm.Opcodes;
 
 /** Provides an outline of a type; i.e. the named elements making up its structure. */
 final class TypeOutline extends WithName {
@@ -31,6 +32,7 @@ final class TypeOutline extends WithName {
   private final String superName;
   private final String[] interfaces;
   private String declaringName;
+  private boolean anonymousType;
 
   private List<AnnotationDescription> declaredAnnotations;
 
@@ -89,6 +91,30 @@ final class TypeOutline extends WithName {
   }
 
   @Override
+  public boolean isAbstract() {
+    return matchesMask(Opcodes.ACC_ABSTRACT);
+  }
+
+  @Override
+  public boolean isEnum() {
+    return matchesMask(Opcodes.ACC_ENUM);
+  }
+
+  @Override
+  public boolean isInterface() {
+    return matchesMask(Opcodes.ACC_INTERFACE);
+  }
+
+  @Override
+  public boolean isAnnotation() {
+    return matchesMask(Opcodes.ACC_ANNOTATION);
+  }
+
+  private boolean matchesMask(int mask) {
+    return (this.getModifiers() & mask) == mask;
+  }
+
+  @Override
   public ClassFileVersion getClassFileVersion() {
     return ClassFileVersion.ofMinorMajor(classFileVersion);
   }
@@ -108,6 +134,11 @@ final class TypeOutline extends WithName {
   @Override
   public MethodList<MethodDescription.InDefinedShape> getDeclaredMethods() {
     return declaredMethods.isEmpty() ? NO_METHODS : new MethodList.Explicit<>(declaredMethods);
+  }
+
+  @Override
+  public boolean isAnonymousType() {
+    return anonymousType;
   }
 
   void declaredBy(String declaringName) {
@@ -133,5 +164,9 @@ final class TypeOutline extends WithName {
     if (null != method) {
       declaredMethods.add(method);
     }
+  }
+
+  void anonymousType() {
+    anonymousType = true;
   }
 }

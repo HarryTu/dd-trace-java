@@ -5,17 +5,23 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.iast.InstrumentationBridge;
 import datadog.trace.api.iast.Propagation;
 import datadog.trace.api.iast.propagation.PropagationModule;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public class JSONCookieInstrumentation extends Instrumenter.Iast
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class JSONCookieInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public JSONCookieInstrumentation() {
     super("org-json");
+  }
+
+  @Override
+  public String muzzleDirective() {
+    return "all";
   }
 
   @Override
@@ -24,8 +30,8 @@ public class JSONCookieInstrumentation extends Instrumenter.Iast
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("toJSONObject").and(takesArguments(String.class)),
         getClass().getName() + "$toJSONObjectAdvice");
   }
@@ -37,7 +43,7 @@ public class JSONCookieInstrumentation extends Instrumenter.Iast
         @Advice.Return Object retValue, @Advice.Argument(0) final String input) {
       final PropagationModule iastModule = InstrumentationBridge.PROPAGATION;
       if (iastModule != null && input != null) {
-        iastModule.taintIfTainted(retValue, input);
+        iastModule.taintObjectIfTainted(retValue, input);
       }
     }
   }

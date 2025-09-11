@@ -1,4 +1,4 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.DDSpanId
 import datadog.trace.api.DDTags
 import datadog.trace.api.DDTraceId
@@ -19,7 +19,7 @@ import io.opentelemetry.trace.Status
 import io.opentelemetry.trace.TracingContextUtils
 import spock.lang.Subject
 
-class OpenTelemetryTest extends AgentTestRunner {
+class OpenTelemetryTest extends InstrumentationSpecification {
   @Subject
   def tracer = OpenTelemetry.tracerProvider.get("test-inst")
   def httpPropagator = OpenTelemetry.getPropagators().httpTextFormat
@@ -82,6 +82,7 @@ class OpenTelemetryTest extends AgentTestRunner {
             }
             defaultTags()
           }
+          assert span.context().integrationName == "otel"
         }
       }
     }
@@ -215,9 +216,7 @@ class OpenTelemetryTest extends AgentTestRunner {
 
     then:
     tracer.currentSpan.delegate == secondScope.delegate.span()
-    1 * STATS_D_CLIENT.incrementCounter("scope.close.error")
-    1 * STATS_D_CLIENT.incrementCounter("scope.user.close.error")
-    _ * TEST_CHECKPOINTER._
+    _ * TEST_PROFILING_CONTEXT_INTEGRATION._
     0 * _
 
     when:
@@ -226,7 +225,7 @@ class OpenTelemetryTest extends AgentTestRunner {
 
     then:
     tracer.currentSpan == null
-    _ * TEST_CHECKPOINTER._
+    _ * TEST_PROFILING_CONTEXT_INTEGRATION._
     0 * _
   }
 
@@ -234,7 +233,6 @@ class OpenTelemetryTest extends AgentTestRunner {
     setup:
     def span = tracer.spanBuilder("some name").startSpan()
     TraceScope scope = tracer.withSpan(span)
-    scope.setAsyncPropagation(true)
 
     expect:
     tracer.currentSpan.delegate == span.delegate
@@ -276,7 +274,7 @@ class OpenTelemetryTest extends AgentTestRunner {
     def expectedTraceparent = "00-${span.delegate.traceId.toHexStringPadded(32)}" +
       "-${DDSpanId.toHexStringPadded(span.delegate.spanId)}" +
       "-" + (propagatedPriority > 0 ? "01" : "00")
-    def expectedTracestate = "dd=s:${propagatedPriority}"
+    def expectedTracestate = "dd=s:${propagatedPriority};p:${DDSpanId.toHexStringPadded(span.delegate.spanId)}"
     def expectedDatadogTags = null
     if (propagatedMechanism != UNKNOWN) {
       expectedDatadogTags = "_dd.p.dm=-" + propagatedMechanism

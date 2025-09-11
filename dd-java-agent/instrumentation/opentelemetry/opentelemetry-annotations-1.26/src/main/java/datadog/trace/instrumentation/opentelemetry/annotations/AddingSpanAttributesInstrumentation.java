@@ -8,14 +8,15 @@ import static net.bytebuddy.matcher.ElementMatchers.whereAny;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.InstrumenterConfig;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public class AddingSpanAttributesInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class AddingSpanAttributesInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   public AddingSpanAttributesInstrumentation() {
     super("opentelemetry-annotations", "opentelemetry-annotations-1.26");
@@ -45,7 +46,7 @@ public class AddingSpanAttributesInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
+  public void methodAdvice(MethodTransformer transformer) {
     ElementMatcher.Junction<MethodDescription> annotatedMethodMatcher =
         isAnnotatedWith(named(hierarchyMarkerType()));
     ElementMatcher.Junction<MethodDescription> annotatedParametersMatcher =
@@ -53,7 +54,7 @@ public class AddingSpanAttributesInstrumentation extends Instrumenter.Tracing
             whereAny(
                 isAnnotatedWith(
                     named("io.opentelemetry.instrumentation.annotations.SpanAttribute"))));
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         annotatedMethodMatcher.and(annotatedParametersMatcher),
         this.packageName + ".AddingSpanAttributesAdvice");
   }

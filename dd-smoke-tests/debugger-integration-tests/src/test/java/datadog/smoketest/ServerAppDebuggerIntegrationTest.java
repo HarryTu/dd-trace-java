@@ -9,8 +9,8 @@ import com.datadog.debugger.probe.SpanDecorationProbe;
 import com.datadog.debugger.sink.Snapshot;
 import com.squareup.moshi.JsonAdapter;
 import datadog.trace.bootstrap.debugger.ProbeId;
+import datadog.trace.test.agent.decoder.DecodedSpan;
 import datadog.trace.util.TagsHelper;
-import java.io.EOFException;
 import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -27,11 +27,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestInfo;
 
 public class ServerAppDebuggerIntegrationTest extends BaseIntegrationTest {
-  private static final String SERVER_DEBUGGER_TEST_APP_CLASS =
+  protected static final String SERVER_DEBUGGER_TEST_APP_CLASS =
       "datadog.smoketest.debugger.ServerDebuggerTestApplication";
   protected static final String CONTROL_URL = "/control";
   protected static final ProbeId PROBE_ID = new ProbeId("123356536", 0);
-  protected static final ProbeId PROBE_ID2 = new ProbeId("1233565367", 12);
+  protected static final ProbeId LINE_PROBE_ID1 =
+      new ProbeId("beae1817-f3b0-4ea8-a74f-000000000001", 0);
   protected static final String TEST_APP_CLASS_NAME = "ServerDebuggerTestApplication";
   protected static final String FULL_METHOD_NAME = "fullMethod";
   protected static final String TRACED_METHOD_NAME = "tracedMethod";
@@ -41,8 +42,8 @@ public class ServerAppDebuggerIntegrationTest extends BaseIntegrationTest {
   private OkHttpClient httpClient = new OkHttpClient();
   protected String appUrl;
 
-  @Override
   @BeforeEach
+  @Override
   void setup(TestInfo testInfo) throws Exception {
     super.setup(testInfo);
     controlServer = new MockWebServer();
@@ -50,14 +51,14 @@ public class ServerAppDebuggerIntegrationTest extends BaseIntegrationTest {
     controlServer.start();
     LOG.info("ControlServer on {}", controlServer.getPort());
     controlUrl = controlServer.url(CONTROL_URL);
-    startApp();
-    appUrl = waitForAppStartedAndGetUrl();
   }
 
   @Override
   @AfterEach
   void teardown() throws Exception {
-    stopApp(appUrl);
+    if (appUrl != null) {
+      stopApp(appUrl);
+    }
     controlServer.shutdown();
     super.teardown();
   }
@@ -106,13 +107,15 @@ public class ServerAppDebuggerIntegrationTest extends BaseIntegrationTest {
   }
 
   protected void waitForInstrumentation(String appUrl) throws Exception {
-    String url =
-        String.format(
-            appUrl + "/waitForInstrumentation?classname=%s", SERVER_DEBUGGER_TEST_APP_CLASS);
+    waitForInstrumentation(appUrl, SERVER_DEBUGGER_TEST_APP_CLASS);
+  }
+
+  protected void waitForInstrumentation(String appUrl, String className) throws Exception {
+    String url = String.format(appUrl + "/waitForInstrumentation?classname=%s", className);
     LOG.info("waitForInstrumentation with url={}", url);
     sendRequest(url);
-    AtomicBoolean received = new AtomicBoolean(false);
-    AtomicBoolean installed = new AtomicBoolean(false);
+    AtomicBoolean received = new AtomicBoolean();
+    AtomicBoolean installed = new AtomicBoolean();
     registerProbeStatusListener(
         probeStatus -> {
           if (probeStatus.getDiagnostics().getStatus() == ProbeStatus.Status.RECEIVED) {
@@ -121,34 +124,34 @@ public class ServerAppDebuggerIntegrationTest extends BaseIntegrationTest {
           if (probeStatus.getDiagnostics().getStatus() == ProbeStatus.Status.INSTALLED) {
             installed.set(true);
           }
-          return received.get() && installed.get();
         });
-    processRequests();
-    clearProbeStatusListener();
+    processRequests(() -> received.get() && installed.get());
     LOG.info("instrumentation done");
   }
 
   protected void waitForAProbeStatus(ProbeStatus.Status status) throws Exception {
-    registerProbeStatusListener(probeStatus -> probeStatus.getDiagnostics().getStatus() == status);
-    processRequests();
-    clearProbeStatusListener();
+    AtomicBoolean statusResult = new AtomicBoolean();
+    registerProbeStatusListener(
+        probeStatus -> {
+          statusResult.set(probeStatus.getDiagnostics().getStatus() == status);
+        });
+    processRequests(statusResult::get);
   }
 
   protected void waitForReTransformation(String appUrl) throws IOException {
-    String url =
-        String.format(
-            appUrl + "/waitForReTransformation?classname=%s", SERVER_DEBUGGER_TEST_APP_CLASS);
+    waitForReTransformation(appUrl, SERVER_DEBUGGER_TEST_APP_CLASS);
+  }
+
+  protected void waitForReTransformation(String appUrl, String className) throws IOException {
+    String url = String.format(appUrl + "/waitForReTransformation?classname=%s", className);
     sendRequest(url);
     LOG.info("re-transformation done");
   }
 
-  protected void startApp() throws IOException {
+  protected String startAppAndAndGetUrl() throws InterruptedException, IOException {
     controlServer.enqueue(EMPTY_200_RESPONSE); // ack response
     targetProcess = createProcessBuilder(logFilePath, controlUrl.toString()).start();
-  }
-
-  protected String waitForAppStartedAndGetUrl() throws InterruptedException, EOFException {
-    RecordedRequest recordedRequest = controlServer.takeRequest(10, TimeUnit.SECONDS);
+    RecordedRequest recordedRequest = controlServer.takeRequest(30, TimeUnit.SECONDS);
     assertNotNull(recordedRequest);
     String appUrl = recordedRequest.getBody().readUtf8Line();
     LOG.info("AppUrl = " + appUrl);
@@ -170,5 +173,10 @@ public class ServerAppDebuggerIntegrationTest extends BaseIntegrationTest {
   protected void sendRequest(String url) throws IOException {
     Request request = new Request.Builder().url(url).get().build();
     try (Response response = httpClient.newCall(request).execute()) {}
+  }
+
+  protected boolean isTracedFullMethodSpan(DecodedSpan span) {
+    return span.getName().equals("trace.annotation")
+        && span.getResource().equals("ServerDebuggerTestApplication.runTracedMethod");
   }
 }

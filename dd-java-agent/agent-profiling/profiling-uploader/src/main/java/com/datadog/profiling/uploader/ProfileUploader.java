@@ -21,10 +21,13 @@ import com.datadog.profiling.uploader.util.JfrCliHelper;
 import com.squareup.moshi.JsonAdapter;
 import com.squareup.moshi.JsonReader;
 import com.squareup.moshi.JsonWriter;
+import datadog.common.container.ServerlessInfo;
 import datadog.common.version.VersionInfo;
 import datadog.communication.http.OkHttpUtils;
 import datadog.trace.api.Config;
 import datadog.trace.api.DDTags;
+import datadog.trace.api.Platform;
+import datadog.trace.api.ProcessTags;
 import datadog.trace.api.git.GitInfo;
 import datadog.trace.api.git.GitInfoProvider;
 import datadog.trace.api.profiling.RecordingData;
@@ -109,6 +112,8 @@ public final class ProfileUploader {
               + V4_ATTACHMENT_FILENAME
               + "\"");
 
+  static final String SERVELESS_TAG = "functionname";
+
   private final Config config;
   private final ConfigProvider configProvider;
 
@@ -168,6 +173,12 @@ public final class ProfileUploader {
       GitInfo gitInfo = GitInfoProvider.INSTANCE.getGitInfo();
       tagsMap.put(Tags.GIT_REPOSITORY_URL, gitInfo.getRepositoryURL());
       tagsMap.put(Tags.GIT_COMMIT_SHA, gitInfo.getCommit().getSha());
+    }
+    if (Platform.isNativeImage()) {
+      tagsMap.put(DDTags.RUNTIME_VERSION_TAG, tagsMap.get(DDTags.RUNTIME_VERSION_TAG) + "-aot");
+    }
+    if (ServerlessInfo.get().isRunningInServerlessEnvironment()) {
+      tagsMap.put(SERVELESS_TAG, ServerlessInfo.get().getFunctionName());
     }
 
     // Comma separated tags string for V2.4 format
@@ -459,6 +470,7 @@ public final class ProfileUploader {
       if (recordingData == null) {
         return;
       }
+      final CharSequence processTags = ProcessTags.getTagsForSerialization();
       writer.beginObject();
       writer.name("attachments");
       writer.beginArray();
@@ -466,6 +478,10 @@ public final class ProfileUploader {
       writer.endArray();
       writer.name(V4_PROFILE_TAGS_PARAM);
       writer.value(tags + ",snapshot:" + recordingData.getKind().name().toLowerCase(Locale.ROOT));
+      if (processTags != null) {
+        writer.name("process_tags");
+        writer.value(processTags.toString());
+      }
       writer.name(V4_PROFILE_START_PARAM);
       writer.value(recordingData.getStart().toString());
       writer.name(V4_PROFILE_END_PARAM);

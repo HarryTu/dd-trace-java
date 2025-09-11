@@ -23,8 +23,10 @@ class SignalServerRunnable implements Runnable {
 
   static {
     DESERIALIZERS.put(SignalType.MODULE_EXECUTION_RESULT, ModuleExecutionResult::deserialize);
+    DESERIALIZERS.put(
+        SignalType.MODULE_COVERAGE_DATA_JACOCO, ModuleCoverageDataJacoco::deserialize);
     DESERIALIZERS.put(SignalType.REPO_INDEX_REQUEST, b -> RepoIndexRequest.INSTANCE);
-    DESERIALIZERS.put(SignalType.SKIPPABLE_TESTS_REQUEST, SkippableTestsRequest::deserialize);
+    DESERIALIZERS.put(SignalType.EXECUTION_SETTINGS_REQUEST, ExecutionSettingsRequest::deserialize);
   }
 
   private final Selector selector;
@@ -48,7 +50,7 @@ class SignalServerRunnable implements Runnable {
         LOGGER.error("Error while executing signal server polling loop", e);
       }
     }
-    LOGGER.info("Signal server stopped");
+    LOGGER.debug("Signal server stopped");
   }
 
   private void processSelectableKeys() throws IOException {
@@ -110,8 +112,9 @@ class SignalServerRunnable implements Runnable {
 
     Function<Signal, SignalResponse> handler = signalHandlers.get(signalType);
     if (handler == null) {
-      LOGGER.warn("No handler register for signal type {}, skipping signal {}", signalType, signal);
-      return serialize(new ErrorResponse("Deserializer not found for " + signalType));
+      LOGGER.warn(
+          "No handler registered for signal type {}, skipping signal {}", signalType, signal);
+      return serialize(new ErrorResponse("No handler registered for " + signalType));
     }
 
     SignalResponse response = handler.apply(signal);
@@ -120,6 +123,11 @@ class SignalServerRunnable implements Runnable {
 
   private ByteBuffer[] serialize(SignalResponse response) {
     ByteBuffer payload = response.serialize();
+    LOGGER.debug(
+        "Serialized response of type {} and size {} bytes",
+        response.getType(),
+        payload.remaining());
+
     ByteBuffer header = ByteBuffer.allocate(Integer.BYTES + 1);
     header.putInt(payload.remaining() + 1);
     header.put(response.getType().getCode());

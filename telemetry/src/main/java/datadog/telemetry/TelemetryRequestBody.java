@@ -2,6 +2,7 @@ package datadog.telemetry;
 
 import com.squareup.moshi.JsonWriter;
 import datadog.communication.ddagent.TracerVersion;
+import datadog.environment.JavaVirtualMachine;
 import datadog.telemetry.api.DistributionSeries;
 import datadog.telemetry.api.Integration;
 import datadog.telemetry.api.LogMessage;
@@ -11,8 +12,12 @@ import datadog.telemetry.dependency.Dependency;
 import datadog.trace.api.Config;
 import datadog.trace.api.ConfigSetting;
 import datadog.trace.api.DDTags;
-import datadog.trace.api.Platform;
+import datadog.trace.api.ProcessTags;
+import datadog.trace.api.telemetry.Endpoint;
+import datadog.trace.api.telemetry.ProductChange.ProductType;
 import java.io.IOException;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.annotation.Nullable;
 import okhttp3.MediaType;
@@ -39,10 +44,10 @@ public class TelemetryRequestBody extends RequestBody {
   private static class CommonData {
     final Config config = Config.get();
     final String env = config.getEnv();
-    final String langVersion = Platform.getLangVersion();
-    final String runtimeName = Platform.getRuntimeVendor();
-    final String runtimePatches = Platform.getRuntimePatches();
-    final String runtimeVersion = Platform.getRuntimeVersion();
+    final String langVersion = JavaVirtualMachine.getLangVersion();
+    final String runtimeName = JavaVirtualMachine.getRuntimeVendor();
+    final String runtimePatches = JavaVirtualMachine.getRuntimePatches();
+    final String runtimeVersion = JavaVirtualMachine.getRuntimeVersion();
     final String serviceName = config.getServiceName();
     final String serviceVersion = config.getVersion();
     final String runtimeId = config.getRuntimeId();
@@ -83,6 +88,10 @@ public class TelemetryRequestBody extends RequestBody {
       bodyWriter.name("runtime_name").value(commonData.runtimeName);
       bodyWriter.name("runtime_version").value(commonData.runtimeVersion);
       bodyWriter.name("runtime_patches").value(commonData.runtimePatches); // optional
+      final CharSequence processTags = ProcessTags.getTagsForSerialization();
+      if (processTags != null) {
+        bodyWriter.name("process_tags").value(processTags.toString());
+      }
       bodyWriter.endObject();
 
       if (debug) {
@@ -200,6 +209,7 @@ public class TelemetryRequestBody extends RequestBody {
     bodyWriter.name("tags").value(m.getTags()); // optional
     bodyWriter.name("stack_trace").value(m.getStackTrace()); // optional
     bodyWriter.name("tracer_time").value(m.getTracerTime()); // optional
+    bodyWriter.name("count").value(m.getCount()); // optional
     bodyWriter.endObject();
   }
 
@@ -215,11 +225,14 @@ public class TelemetryRequestBody extends RequestBody {
 
   public void writeConfiguration(ConfigSetting configSetting) throws IOException {
     bodyWriter.beginObject();
-    bodyWriter.name("name").value(configSetting.key);
+    bodyWriter.name("name").value(configSetting.normalizedKey());
     bodyWriter.setSerializeNulls(true);
-    bodyWriter.name("value").jsonValue(configSetting.value);
+    bodyWriter.name("value").value(configSetting.stringValue());
     bodyWriter.setSerializeNulls(false);
-    bodyWriter.name("origin").jsonValue(configSetting.origin.value);
+    bodyWriter.name("origin").value(configSetting.origin.value);
+    if (configSetting.configId != null) {
+      bodyWriter.name("config_id").value(configSetting.configId);
+    }
     bodyWriter.endObject();
   }
 
@@ -263,20 +276,95 @@ public class TelemetryRequestBody extends RequestBody {
     endMessageIfBatch(RequestType.APP_DEPENDENCIES_LOADED);
   }
 
-  public void writeProducts(boolean appsecEnabled, boolean profilerEnabled) throws IOException {
+  public void beginProducts() throws IOException {
+    beginMessageIfBatch(RequestType.APP_PRODUCT_CHANGE);
+  }
+
+  public void writeProducts(final Map<ProductType, Boolean> products) throws IOException {
+
+    if (products == null || products.isEmpty()) {
+      return;
+    }
     bodyWriter.name("products");
     bodyWriter.beginObject();
 
-    bodyWriter.name("appsec");
-    bodyWriter.beginObject();
-    bodyWriter.name("enabled").value(appsecEnabled);
-    bodyWriter.endObject();
+    for (Map.Entry<ProductType, Boolean> entry : products.entrySet()) {
+      bodyWriter.name(entry.getKey().getName());
+      bodyWriter.beginObject();
+      bodyWriter.name("enabled").value(entry.getValue());
+      bodyWriter.endObject();
+    }
 
-    bodyWriter.name("profiler");
-    bodyWriter.beginObject();
-    bodyWriter.name("enabled").value(profilerEnabled);
     bodyWriter.endObject();
+  }
 
+  public void writeProducts(
+      boolean appsecEnabled, boolean profilerEnabled, boolean dynamicInstrumentationEnabled)
+      throws IOException {
+    Map<ProductType, Boolean> products = new EnumMap<>(ProductType.class);
+    products.put(ProductType.APPSEC, appsecEnabled);
+    products.put(ProductType.PROFILER, profilerEnabled);
+    products.put(ProductType.DYNAMIC_INSTRUMENTATION, dynamicInstrumentationEnabled);
+    writeProducts(products);
+  }
+
+  public void endProducts() throws IOException {
+    endMessageIfBatch(RequestType.APP_PRODUCT_CHANGE);
+  }
+
+  public void beginEndpoints() throws IOException {
+    beginMessageIfBatch(RequestType.APP_ENDPOINTS);
+    bodyWriter.name("endpoints");
+    bodyWriter.beginArray();
+  }
+
+  public void writeEndpoint(final Endpoint endpoint) throws IOException {
+    bodyWriter.beginObject();
+    if (endpoint.getType() != null) {
+      bodyWriter.name("type").value(endpoint.getType());
+    }
+    if (endpoint.getMethod() != null) {
+      bodyWriter.name("method").value(endpoint.getMethod());
+    }
+    if (endpoint.getPath() != null) {
+      bodyWriter.name("path").value(endpoint.getPath());
+    }
+    bodyWriter.name("operation_name").value(endpoint.getOperation());
+    bodyWriter.name("resource_name").value(endpoint.getResource());
+    if (endpoint.getRequestBodyType() != null) {
+      bodyWriter.name("request_body_type").jsonValue(endpoint.getRequestBodyType());
+    }
+    if (endpoint.getResponseBodyType() != null) {
+      bodyWriter.name("response_body_type").jsonValue(endpoint.getResponseBodyType());
+    }
+    if (endpoint.getResponseCode() != null) {
+      bodyWriter.name("response_code").jsonValue(endpoint.getResponseCode());
+    }
+    if (endpoint.getAuthentication() != null) {
+      bodyWriter.name("authentication").jsonValue(endpoint.getAuthentication());
+    }
+    if (endpoint.getMetadata() != null) {
+      bodyWriter.name("metadata").jsonValue(endpoint.getMetadata());
+    }
+    bodyWriter.endObject();
+  }
+
+  public void endEndpoints(final boolean first) throws IOException {
+    bodyWriter.endArray();
+    bodyWriter.name("is_first").value(first);
+    endMessageIfBatch(RequestType.APP_ENDPOINTS);
+  }
+
+  public void writeInstallSignature(String installId, String installType, String installTime)
+      throws IOException {
+    if (installId == null && installType == null && installTime == null) {
+      return;
+    }
+    bodyWriter.name("install_signature");
+    bodyWriter.beginObject();
+    bodyWriter.name("install_id").value(installId);
+    bodyWriter.name("install_type").value(installType);
+    bodyWriter.name("install_time").value(installTime);
     bodyWriter.endObject();
   }
 

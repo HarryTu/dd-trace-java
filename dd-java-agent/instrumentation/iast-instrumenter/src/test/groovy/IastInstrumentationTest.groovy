@@ -1,28 +1,47 @@
-import datadog.trace.agent.tooling.Instrumenter
+import datadog.trace.agent.test.InstrumentationSpecification
+import datadog.trace.api.config.IastConfig
+import datadog.trace.instrumentation.iastinstrumenter.IastHardcodedSecretListener
 import datadog.trace.instrumentation.iastinstrumenter.IastInstrumentation
-import datadog.trace.test.util.DDSpecification
 import net.bytebuddy.description.type.TypeDescription
 
-class IastInstrumentationTest extends DDSpecification{
-  def 'test Iast Instrumentation'(){
+class IastInstrumentationTest extends InstrumentationSpecification {
+
+  void 'test Iast Instrumentation type matching'() {
     given:
-    IastInstrumentation instrumentation = new IastInstrumentation()
-    TypeDescription typeDescription1 = Mock (TypeDescription)
-    typeDescription1.getName() >> "org.jsantos.Tool"
-    TypeDescription typeDescription2 = Mock(TypeDescription)
-    typeDescription2.getName() >> "oracle.jdbc.Connection"
-    Set<Instrumenter.TargetSystem> enabledSystems = Mock(Set)
+    final instrumentation = new IastInstrumentation()
+    final typeDescription = Stub(TypeDescription) {
+      getName() >> type
+    }
 
     when:
-    instrumentation.isEnabled()
-    instrumentation.isApplicable(enabledSystems)
-    instrumentation.callerType()
-    boolean description1Matched = instrumentation.callerType().matches(typeDescription1)
-    boolean description2Matched = instrumentation.callerType().matches(typeDescription2)
+    final matches = instrumentation.callerType().matches(typeDescription)
 
     then:
-    description1Matched
-    !description2Matched
-    noExceptionThrown()
+    matches == expected
+
+    where:
+    type                     | expected
+    'org.jsantos.Tool'       | true
+    'oracle.jdbc.Connection' | false
+  }
+
+  void 'test Iast Instrumentation hardcoded secret listener'() {
+    given:
+    injectSysConfig(IastConfig.IAST_ENABLED, "true")
+    injectSysConfig(IastConfig.IAST_HARDCODED_SECRET_ENABLED, enabled)
+    final instrumentation = new IastInstrumentation()
+    final callSites = instrumentation.callSites().get().toList()
+
+    when:
+    final advices = instrumentation.buildAdvices(callSites)
+
+    then:
+    final withHardcodedSecretListener = advices.listeners.find({ it instanceof IastHardcodedSecretListener }) != null
+    withHardcodedSecretListener == expected
+
+    where:
+    enabled | expected
+    'true'  | true
+    'false' | false
   }
 }

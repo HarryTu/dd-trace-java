@@ -4,12 +4,13 @@ import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.namedOn
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.Wrapper;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public class QueuedThreadPoolInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class QueuedThreadPoolInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public QueuedThreadPoolInstrumentation() {
     super("jetty-concurrent");
   }
@@ -20,8 +21,8 @@ public class QueuedThreadPoolInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(namedOneOf("dispatch", "execute"), getClass().getName() + "$Wrap");
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(namedOneOf("dispatch", "execute"), getClass().getName() + "$Wrap");
   }
 
   public static final class Wrap {

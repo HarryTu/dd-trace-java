@@ -1,19 +1,23 @@
 package datadog.trace.instrumentation.servlet3;
 
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeSpan;
+import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.spanFromContext;
 import static datadog.trace.bootstrap.instrumentation.decorator.HttpServerDecorator.DD_DISPATCH_SPAN_ATTRIBUTE;
 import static datadog.trace.bootstrap.instrumentation.decorator.HttpServerDecorator.DD_FIN_DISP_LIST_SPAN_ATTRIBUTE;
+import static datadog.trace.bootstrap.instrumentation.decorator.HttpServerDecorator.DD_RUM_INJECTED;
 import static datadog.trace.bootstrap.instrumentation.decorator.HttpServerDecorator.DD_SPAN_ATTRIBUTE;
 import static datadog.trace.instrumentation.servlet3.Servlet3Decorator.DECORATE;
 
+import datadog.context.Context;
+import datadog.context.ContextScope;
+import datadog.trace.api.ClassloaderConfigurationOverrides;
 import datadog.trace.api.Config;
 import datadog.trace.api.CorrelationIdentifier;
 import datadog.trace.api.DDTags;
-import datadog.trace.api.GlobalTracer;
 import datadog.trace.api.gateway.Flow;
-import datadog.trace.bootstrap.instrumentation.api.AgentScope;
+import datadog.trace.api.rum.RumInjector;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.rum.RumControllableResponse;
 import datadog.trace.instrumentation.servlet.ServletBlockingHelper;
 import java.security.Principal;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -28,10 +32,11 @@ public class Servlet3Advice {
   @Advice.OnMethodEnter(suppress = Throwable.class, skipOn = Advice.OnNonDefaultValue.class)
   public static boolean onEnter(
       @Advice.Argument(value = 0, readOnly = false) ServletRequest request,
-      @Advice.Argument(value = 1) ServletResponse response,
+      @Advice.Argument(value = 1, readOnly = false) ServletResponse response,
       @Advice.Local("isDispatch") boolean isDispatch,
       @Advice.Local("finishSpan") boolean finishSpan,
-      @Advice.Local("agentScope") AgentScope scope) {
+      @Advice.Local("contextScope") ContextScope scope,
+      @Advice.Local("rumServletWrapper") RumControllableResponse rumServletWrapper) {
     final boolean invalidRequest =
         !(request instanceof HttpServletRequest) || !(response instanceof HttpServletResponse);
     if (invalidRequest) {
@@ -39,7 +44,22 @@ public class Servlet3Advice {
     }
 
     final HttpServletRequest httpServletRequest = (HttpServletRequest) request;
-    final HttpServletResponse httpServletResponse = (HttpServletResponse) response;
+    HttpServletResponse httpServletResponse = (HttpServletResponse) response;
+
+    if (RumInjector.get().isEnabled()) {
+      final Object maybeRumWrapper = httpServletRequest.getAttribute(DD_RUM_INJECTED);
+      if (maybeRumWrapper instanceof RumControllableResponse) {
+        rumServletWrapper = (RumControllableResponse) maybeRumWrapper;
+      } else {
+        rumServletWrapper =
+            new RumHttpServletResponseWrapper(httpServletRequest, (HttpServletResponse) response);
+        httpServletRequest.setAttribute(DD_RUM_INJECTED, rumServletWrapper);
+        response = (ServletResponse) rumServletWrapper;
+        request =
+            new RumHttpServletRequestWrapper(
+                httpServletRequest, (HttpServletResponse) rumServletWrapper);
+      }
+    }
 
     Object dispatchSpan = request.getAttribute(DD_DISPATCH_SPAN_ATTRIBUTE);
     if (dispatchSpan instanceof AgentSpan) {
@@ -51,7 +71,7 @@ public class Servlet3Advice {
       // the dispatch span was already activated in Jetty's HandleAdvice. We let it finish the span
       // to avoid trying to finish twice
       finishSpan = activeSpan() != dispatchSpan;
-      scope = activateSpan(castDispatchSpan);
+      scope = castDispatchSpan.attach();
       return false;
     }
 
@@ -60,24 +80,26 @@ public class Servlet3Advice {
     Object spanAttrValue = request.getAttribute(DD_SPAN_ATTRIBUTE);
     final boolean hasServletTrace = spanAttrValue instanceof AgentSpan;
     if (hasServletTrace) {
+      final AgentSpan span = (AgentSpan) spanAttrValue;
+      ClassloaderConfigurationOverrides.maybeEnrichSpan(span);
       // Tracing might already be applied by other instrumentation,
       // the FilterChain or a parent request (forward/include).
       return false;
     }
 
-    final AgentSpan.Context.Extracted extractedContext = DECORATE.extract(httpServletRequest);
-    final AgentSpan span = DECORATE.startSpan(httpServletRequest, extractedContext);
-    scope = activateSpan(span);
-    scope.setAsyncPropagation(true);
+    final Context parentContext = DECORATE.extract(httpServletRequest);
+    final Context context = DECORATE.startSpan(httpServletRequest, parentContext);
+    scope = context.attach();
 
+    final AgentSpan span = spanFromContext(context);
     DECORATE.afterStart(span);
-    DECORATE.onRequest(span, httpServletRequest, httpServletRequest, extractedContext);
+    DECORATE.onRequest(span, httpServletRequest, httpServletRequest, parentContext);
 
     httpServletRequest.setAttribute(DD_SPAN_ATTRIBUTE, span);
     httpServletRequest.setAttribute(
-        CorrelationIdentifier.getTraceIdKey(), GlobalTracer.get().getTraceId());
+        CorrelationIdentifier.getTraceIdKey(), CorrelationIdentifier.getTraceId());
     httpServletRequest.setAttribute(
-        CorrelationIdentifier.getSpanIdKey(), GlobalTracer.get().getSpanId());
+        CorrelationIdentifier.getSpanIdKey(), CorrelationIdentifier.getSpanId());
 
     Flow.Action.RequestBlockingAction rba = span.getRequestBlockingAction();
     if (rba != null) {
@@ -94,10 +116,14 @@ public class Servlet3Advice {
   public static void stopSpan(
       @Advice.Argument(0) final ServletRequest request,
       @Advice.Argument(1) final ServletResponse response,
-      @Advice.Local("agentScope") final AgentScope scope,
+      @Advice.Local("contextScope") final ContextScope scope,
       @Advice.Local("isDispatch") boolean isDispatch,
       @Advice.Local("finishSpan") boolean finishSpan,
+      @Advice.Local("rumServletWrapper") RumControllableResponse rumServletWrapper,
       @Advice.Thrown final Throwable throwable) {
+    if (rumServletWrapper != null) {
+      rumServletWrapper.commit();
+    }
     // Set user.principal regardless of who created this span.
     final Object spanAttr = request.getAttribute(DD_SPAN_ATTRIBUTE);
     if (Config.get().isServletPrincipalEnabled()
@@ -116,7 +142,7 @@ public class Servlet3Advice {
     if (request instanceof HttpServletRequest && response instanceof HttpServletResponse) {
       final HttpServletResponse resp = (HttpServletResponse) response;
 
-      final AgentSpan span = scope.span();
+      final AgentSpan span = spanFromContext(scope.context());
 
       if (request.isAsyncStarted()) {
         AtomicBoolean activated = new AtomicBoolean();

@@ -1,19 +1,63 @@
 package datadog.trace.bootstrap.instrumentation.api;
 
+import static datadog.trace.bootstrap.instrumentation.api.InternalContextKeys.SPAN_KEY;
+
+import datadog.context.Context;
+import datadog.context.ContextKey;
+import datadog.context.ImplicitContextKeyed;
+import datadog.trace.api.DDSpanId;
 import datadog.trace.api.DDTraceId;
+import datadog.trace.api.TagMap;
 import datadog.trace.api.TraceConfig;
 import datadog.trace.api.gateway.IGSpanInfo;
 import datadog.trace.api.gateway.RequestContext;
 import datadog.trace.api.interceptor.MutableSpan;
-import datadog.trace.api.sampling.PrioritySampling;
-import java.util.List;
 import java.util.Map;
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 
-public interface AgentSpan extends MutableSpan, IGSpanInfo {
+public interface AgentSpan
+    extends MutableSpan, ImplicitContextKeyed, Context, IGSpanInfo, WithAgentSpan {
+
+  /**
+   * Extracts the span from context.
+   *
+   * @param context the context to extract the span from.
+   * @return the span if existing, {@code null} otherwise.
+   */
+  static AgentSpan fromContext(Context context) {
+    return context == null ? null : context.get(SPAN_KEY);
+  }
+
+  /**
+   * Creates a span wrapper from a span context.
+   *
+   * <p>Creating such span will not create a tracing span to complete a local root trace. It gives a
+   * span instance based on a span context for span-based API. It is usually used with an extracted
+   * span context as parameter to represent a remote span.
+   *
+   * @param spanContext the span context to get a full-fledged span.
+   * @return a span wrapper based on a span context.
+   */
+  static AgentSpan fromSpanContext(AgentSpanContext spanContext) {
+    if (spanContext == null || spanContext == NoopSpanContext.INSTANCE) {
+      return NoopSpan.INSTANCE;
+    }
+    return new ExtractedSpan(spanContext);
+  }
 
   DDTraceId getTraceId();
 
   long getSpanId();
+
+  /**
+   * Checks whether a span is considered valid by having valid trace and span identifiers.
+   *
+   * @return {@code true} if the span is considered valid, {@code false} otherwise.
+   */
+  default boolean isValid() {
+    return getTraceId() != DDTraceId.ZERO && getSpanId() != DDSpanId.ZERO;
+  }
 
   @Override
   AgentSpan setTag(String key, boolean value);
@@ -31,6 +75,8 @@ public interface AgentSpan extends MutableSpan, IGSpanInfo {
 
   AgentSpan setTag(String key, Object value);
 
+  AgentSpan setAllTags(Map<String, ?> map);
+
   @Override
   AgentSpan setTag(String key, Number value);
 
@@ -45,6 +91,9 @@ public interface AgentSpan extends MutableSpan, IGSpanInfo {
 
   @Override
   AgentSpan setSpanType(final CharSequence type);
+
+  @Override
+  TagMap getTags();
 
   Object getTag(String key);
 
@@ -66,7 +115,7 @@ public interface AgentSpan extends MutableSpan, IGSpanInfo {
 
   boolean isSameTrace(AgentSpan otherSpan);
 
-  Context context();
+  AgentSpanContext context();
 
   String getBaggageItem(String key);
 
@@ -128,95 +177,43 @@ public interface AgentSpan extends MutableSpan, IGSpanInfo {
    */
   AgentSpan setResourceName(final CharSequence resourceName, byte priority);
 
-  boolean eligibleForDropping();
-
   /** RequestContext for the Instrumentation Gateway */
   RequestContext getRequestContext();
 
   Integer forceSamplingDecision();
 
+  AgentSpan setSamplingPriority(final int newPriority, int samplingMechanism);
+
   TraceConfig traceConfig();
 
   void addLink(AgentSpanLink link);
 
-  interface Context {
-    /**
-     * Gets the TraceId of the span's trace.
-     *
-     * @return The TraceId of the span's trace, or {@link DDTraceId#ZERO} if not set.
-     */
-    DDTraceId getTraceId();
+  AgentSpan setMetaStruct(final String field, final Object value);
 
-    /**
-     * Gets the SpanId.
-     *
-     * @return The span identifier, or {@link datadog.trace.api.DDSpanId#ZERO} if not set.
-     */
-    long getSpanId();
+  boolean isOutbound();
 
-    /**
-     * Get the span's trace.
-     *
-     * @return The span's trace, or a noop {@link AgentTracer.NoopAgentTrace#INSTANCE} if the trace
-     *     is not valid.
-     */
-    AgentTrace getTrace();
+  default AgentSpan asAgentSpan() {
+    return this;
+  }
 
-    /**
-     * Gets the trace sampling priority of the span's trace.
-     *
-     * <p>Check {@link PrioritySampling} for possible values.
-     *
-     * @return The trace sampling priority of the span's trace, or {@link PrioritySampling#UNSET} if
-     *     no priority has been set.
-     */
-    int getSamplingPriority();
+  default void copyPropagationAndBaggage(final AgentSpan source) {
+    // no op default
+  }
 
-    Iterable<Map.Entry<String, String>> baggageItems();
+  @Override
+  default Context storeInto(Context context) {
+    return context.with(SPAN_KEY, this);
+  }
 
-    PathwayContext getPathwayContext();
+  @Nullable
+  @Override
+  default <T> T get(@Nonnull ContextKey<T> key) {
+    // noinspection unchecked
+    return SPAN_KEY == key ? (T) this : Context.root().get(key);
+  }
 
-    default void mergePathwayContext(PathwayContext pathwayContext) {}
-
-    interface Extracted extends Context {
-      /**
-       * Gets the span links related to the other terminated context.
-       *
-       * @return The span links to other extracted contexts found but terminated.
-       */
-      List<AgentSpanLink> getTerminatedContextLinks();
-
-      String getForwarded();
-
-      String getFastlyClientIp();
-
-      String getCfConnectingIp();
-
-      String getCfConnectingIpv6();
-
-      String getXForwardedProto();
-
-      String getXForwardedHost();
-
-      String getXForwardedPort();
-
-      String getForwardedFor();
-
-      String getXForwarded();
-
-      String getXForwardedFor();
-
-      String getXClusterClientIp();
-
-      String getXRealIp();
-
-      String getXClientIp();
-
-      String getUserAgent();
-
-      String getTrueClientIp();
-
-      String getCustomIpHeader();
-    }
+  @Override
+  default <T> Context with(@Nonnull ContextKey<T> key, @Nullable T value) {
+    return SPAN_KEY == key ? (Context) value : Context.root().with(SPAN_KEY, this, key, value);
   }
 }

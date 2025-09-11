@@ -1,6 +1,8 @@
 package datadog.trace.agent.tooling.muzzle;
 
+import datadog.trace.agent.tooling.AdviceShader;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -25,7 +27,7 @@ import net.bytebuddy.jar.asm.Opcodes;
 import net.bytebuddy.jar.asm.Type;
 import net.bytebuddy.pool.TypePool;
 
-/** Generates a 'Muzzle' side-class for each {@link Instrumenter}. */
+/** Generates a 'Muzzle' side-class for each {@link InstrumenterModule}. */
 public class MuzzleGenerator implements AsmVisitorWrapper {
   private final File targetDir;
 
@@ -45,7 +47,7 @@ public class MuzzleGenerator implements AsmVisitorWrapper {
 
   @Override
   public ClassVisitor wrap(
-      final TypeDescription instrumentedType,
+      final TypeDescription moduleDefinition,
       final ClassVisitor classVisitor,
       final Implementation.Context implementationContext,
       final TypePool typePool,
@@ -54,40 +56,42 @@ public class MuzzleGenerator implements AsmVisitorWrapper {
       final int writerFlags,
       final int readerFlags) {
 
-    Instrumenter.Default instrumenter;
+    InstrumenterModule module;
     try {
-      instrumenter =
-          (Instrumenter.Default)
+      module =
+          (InstrumenterModule)
               Thread.currentThread()
                   .getContextClassLoader()
-                  .loadClass(instrumentedType.getName())
+                  .loadClass(moduleDefinition.getName())
                   .getConstructor()
                   .newInstance();
     } catch (ReflectiveOperationException e) {
       throw new RuntimeException(e);
     }
 
-    File muzzleClass = new File(targetDir, instrumentedType.getInternalName() + "$Muzzle.class");
+    File muzzleClass = new File(targetDir, moduleDefinition.getInternalName() + "$Muzzle.class");
     try {
       muzzleClass.getParentFile().mkdirs();
-      Files.write(muzzleClass.toPath(), generateMuzzleClass(instrumenter));
+      Files.write(muzzleClass.toPath(), generateMuzzleClass(module));
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
     return classVisitor;
   }
 
-  private static Reference[] generateReferences(Instrumenter.Default instrumenter) {
+  private static Reference[] generateReferences(
+      Instrumenter.HasMethodAdvice instrumenter, AdviceShader adviceShader) {
     // track sources we've generated references from to avoid recursion
     final Set<String> referenceSources = new HashSet<>();
     final Map<String, Reference> references = new LinkedHashMap<>();
     final Set<String> adviceClasses = new HashSet<>();
-    instrumenter.adviceTransformations((matcher, name) -> adviceClasses.add(name));
+    instrumenter.methodAdvice((matcher, adviceClass) -> adviceClasses.add(adviceClass));
     ClassLoader contextClassLoader = Thread.currentThread().getContextClassLoader();
     for (String adviceClass : adviceClasses) {
       if (referenceSources.add(adviceClass)) {
         for (Map.Entry<String, Reference> entry :
-            ReferenceCreator.createReferencesFrom(adviceClass, contextClassLoader).entrySet()) {
+            ReferenceCreator.createReferencesFrom(adviceClass, adviceShader, contextClassLoader)
+                .entrySet()) {
           Reference toMerge = references.get(entry.getKey());
           if (null == toMerge) {
             references.put(entry.getKey(), entry.getValue());
@@ -101,19 +105,24 @@ public class MuzzleGenerator implements AsmVisitorWrapper {
   }
 
   /** This code is generated in a separate side-class. */
-  private static byte[] generateMuzzleClass(Instrumenter.Default instrumenter) {
+  private static byte[] generateMuzzleClass(InstrumenterModule module) {
 
-    Set<String> ignoredClassNames =
-        new HashSet<>(Arrays.asList(instrumenter.muzzleIgnoredClassNames()));
+    Set<String> ignoredClassNames = new HashSet<>(Arrays.asList(module.muzzleIgnoredClassNames()));
+    AdviceShader adviceShader = AdviceShader.with(module.adviceShading());
 
     List<Reference> references = new ArrayList<>();
-    for (Reference reference : generateReferences(instrumenter)) {
-      // ignore helper classes, they will be injected by the instrumentation's HelperInjector.
-      if (!ignoredClassNames.contains(reference.className)) {
-        references.add(reference);
+    for (Instrumenter instrumenter : module.typeInstrumentations()) {
+      if (instrumenter instanceof Instrumenter.HasMethodAdvice) {
+        for (Reference reference :
+            generateReferences((Instrumenter.HasMethodAdvice) instrumenter, adviceShader)) {
+          // ignore helper classes, they will be injected by the instrumentation's HelperInjector.
+          if (!ignoredClassNames.contains(reference.className)) {
+            references.add(reference);
+          }
+        }
       }
     }
-    Reference[] additionalReferences = instrumenter.additionalMuzzleReferences();
+    Reference[] additionalReferences = module.additionalMuzzleReferences();
     if (null != additionalReferences) {
       Collections.addAll(references, additionalReferences);
     }
@@ -122,7 +131,7 @@ public class MuzzleGenerator implements AsmVisitorWrapper {
     cw.visit(
         Opcodes.V1_8,
         Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL,
-        Type.getInternalName(instrumenter.getClass()) + "$Muzzle",
+        Type.getInternalName(module.getClass()) + "$Muzzle",
         null,
         "java/lang/Object",
         null);

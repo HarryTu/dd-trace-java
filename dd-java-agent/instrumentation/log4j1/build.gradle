@@ -1,4 +1,7 @@
-apply from: "$rootDir/gradle/java.gradle"
+ext {
+  // Log4j 1.x reached EOL in 2015 and is not compatible with Java 25+: https://endoflife.date/log4j
+  maxJavaVersionForTests = JavaVersion.VERSION_24
+}
 
 muzzle {
   pass {
@@ -8,6 +11,17 @@ muzzle {
   }
 }
 
+configurations {
+  testImplementation.exclude group: 'org.slf4j', module: 'log4j-over-slf4j'
+  testCompile.exclude group: 'org.slf4j', module: 'log4j-over-slf4j'
+}
+
+apply from: "$rootDir/gradle/java.gradle"
+
+addTestSuiteForDir('latestDepTest', 'test')
+
 dependencies {
   compileOnly group: 'log4j', name: 'log4j', version: '1.2.4'
+  testImplementation group: 'log4j', name: 'log4j', version: '1.2.4'
+  latestDepTestImplementation group: 'log4j', name: 'log4j', version: '+'
 }

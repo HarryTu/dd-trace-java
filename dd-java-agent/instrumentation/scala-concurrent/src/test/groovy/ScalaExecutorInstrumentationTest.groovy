@@ -1,4 +1,4 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.Trace
 import datadog.trace.core.DDSpan
 import scala.concurrent.forkjoin.ForkJoinPool
@@ -13,13 +13,11 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeScope
-
 /**
  * Test executor instrumentation for Scala specific classes.
  * This is to large extent a copy of ExecutorInstrumentationTest.
  */
-class ScalaExecutorInstrumentationTest extends AgentTestRunner {
+class ScalaExecutorInstrumentationTest extends InstrumentationSpecification {
 
   @Shared
   def executeRunnable = { e, c -> e.execute((Runnable) c) }
@@ -34,7 +32,7 @@ class ScalaExecutorInstrumentationTest extends AgentTestRunner {
   @Shared
   def scalaInvokeForkJoinTask = { e, c -> e.invoke((ForkJoinTask) c) }
 
-  def "#poolImpl '#name' propagates"() {
+  def "#poolName '#name' propagates"() {
     setup:
     def pool = poolImpl
     def m = method
@@ -43,7 +41,6 @@ class ScalaExecutorInstrumentationTest extends AgentTestRunner {
         @Override
         @Trace(operationName = "parent")
         void run() {
-          activeScope().setAsyncPropagation(true)
           // this child will have a span
           m(pool, new ScalaAsyncChild())
           // this child won't
@@ -79,9 +76,11 @@ class ScalaExecutorInstrumentationTest extends AgentTestRunner {
     "submit Callable"      | submitCallable           | new ForkJoinPool()
     "submit ForkJoinTask"  | scalaSubmitForkJoinTask  | new ForkJoinPool()
     "invoke ForkJoinTask"  | scalaInvokeForkJoinTask  | new ForkJoinPool()
+
+    poolName = poolImpl.class.simpleName
   }
 
-  def "#poolImpl '#name' reports after canceled jobs"() {
+  def "#poolName '#name' reports after canceled jobs"() {
     setup:
     def pool = poolImpl
     def m = method
@@ -92,7 +91,6 @@ class ScalaExecutorInstrumentationTest extends AgentTestRunner {
         @Override
         @Trace(operationName = "parent")
         void run() {
-          activeScope().setAsyncPropagation(true)
           try {
             for (int i = 0; i < 20; ++i) {
               // Our current instrumentation instrumentation does not behave very well
@@ -132,5 +130,6 @@ class ScalaExecutorInstrumentationTest extends AgentTestRunner {
     name              | method         | poolImpl
     "submit Runnable" | submitRunnable | new ForkJoinPool()
     "submit Callable" | submitCallable | new ForkJoinPool()
+    poolName = poolImpl.class.simpleName
   }
 }

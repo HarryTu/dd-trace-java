@@ -1,4 +1,8 @@
+import org.gradle.api.internal.provider.PropertyFactory
 import org.gradle.jvm.toolchain.internal.SpecificInstallationToolchainSpec
+
+import java.nio.file.Files
+import java.nio.file.Paths
 
 apply plugin: 'java-library'
 
@@ -59,9 +63,15 @@ if (project.hasProperty('minJavaVersionForTests') && project.getProperty('minJav
     targetCompatibility = version
   }
 
+  // "socket-utils" is only set to compileOnly because the implementation dependency incorrectly adds Java17 classes to all jar prefixes.
+  // This causes the AgentJarIndex to search for other non-Java17 classes in the wrong prefix location and fail to resolve class names.
   dependencies {
-    compileOnly files(project.sourceSets."main_$name".compileClasspath)
-    implementation files(project.sourceSets."main_$name".output)
+    if ("${project.projectDir}".endsWith("socket-utils")) {
+      compileOnly files(project.sourceSets."main_$name".output)
+    } else {
+      compileOnly files(project.sourceSets."main_$name".compileClasspath)
+      implementation files(project.sourceSets."main_$name".output)
+    }
   }
 
   jar {
@@ -101,15 +111,7 @@ jar {
    Instead we should 'fail early' and avoid building such Jars.
    */
   duplicatesStrategy = 'fail'
-}
 
-tasks.register("packageSources", Jar) {
-  archiveClassifier = 'sources'
-  from sourceSets.main.allSource
-}
-artifacts.archives packageSources
-
-jar {
   manifest {
     attributes(
       "Implementation-Title": project.name,
@@ -152,21 +154,38 @@ def currentJavaHomePath = getJavaHomePath(System.getProperty("java.home"))
 project.afterEvaluate {
   def testJvm = gradle.startParameter.projectProperties["testJvm"]
   def javaTestLauncher = null as Provider<JavaLauncher>
+  // "stable" is calculated as the largest X found in JAVA_X_HOME
+  if (testJvm == "stable") {
+    def javaVersions = System.getenv()
+      .findAll { it.key =~ /^JAVA_[0-9]+_HOME$/ }
+      .collect { (it.key =~ /^JAVA_(\d+)_HOME$/)[0][1] as Integer }
+
+    if (javaVersions.isEmpty()) {
+      throw new GradleException("No valid JAVA_X_HOME environment variables found.")
+    }
+
+    testJvm = javaVersions.max().toString()
+  }
   if (testJvm) {
-    def matcher = testJvm =~ /([a-zA-Z]*)([0-9]+)/
-    if (!matcher.matches()) {
-      throw new GradleException("Unable to find launcher for Java '$testJvm'. It needs to match '([a-zA-Z]*)([0-9]+)'.")
+    def testJvmHomePath
+    if (Files.exists(Paths.get(testJvm))) {
+      testJvmHomePath = getJavaHomePath(testJvm)
+    } else {
+      def matcher = testJvm =~ /([a-zA-Z]*)([0-9]+)/
+      if (!matcher.matches()) {
+        throw new GradleException("Unable to find launcher for Java '$testJvm'. It needs to match '([a-zA-Z]*)([0-9]+)'.")
+      }
+      def testJvmLanguageVersion = matcher.group(2) as Integer
+      def testJvmEnv = "JAVA_${testJvm}_HOME"
+      def testJvmHome = System.getenv(testJvmEnv)
+      if (!testJvmHome) {
+        throw new GradleException("Unable to find launcher for Java '$testJvm'. Have you set '$testJvmEnv'?")
+      }
+      testJvmHomePath = getJavaHomePath(testJvmHome)
     }
-    def testJvmLanguageVersion = matcher.group(2) as Integer
-    def testJvmEnv = "JAVA_${testJvm}_HOME"
-    def testJvmHome = System.getenv(testJvmEnv)
-    if (!testJvmHome) {
-      throw new GradleException("Unable to find launcher for Java '$testJvm'. Have you set '$testJvmEnv'?")
-    }
-    def testJvmHomePath = getJavaHomePath(testJvmHome)
     // Only change test JVM if it's not the one we are running the gradle build with
     if (currentJavaHomePath != testJvmHomePath) {
-      def jvmSpec = new SpecificInstallationToolchainSpec(project.getObjects(), file(testJvmHomePath))
+      def jvmSpec = new SpecificInstallationToolchainSpec(project.services.get(PropertyFactory), file(testJvmHomePath))
       // The provider always says that a value is present so we need to wrap it for proper error messages
       Provider<JavaLauncher> launcher = providers.provider {
         try {
@@ -180,6 +199,10 @@ project.afterEvaluate {
   }
 
   tasks.withType(Test).configureEach {
+    def allowReflectiveAccessToJdk = true
+    if (project.hasProperty('allowReflectiveAccessToJdk')) {
+      allowReflectiveAccessToJdk = project.getProperty('allowReflectiveAccessToJdk')
+    }
     if (javaTestLauncher) {
       def metadata = javaTestLauncher.get().metadata
       def allowedOrForced = !isJdkExcluded(testJvm) &&
@@ -192,14 +215,14 @@ project.afterEvaluate {
           enabled = false
         }
       }
-      if (metadata.languageVersion.asInt() >= 16) {
+      if (metadata.languageVersion.asInt() >= 16 && allowReflectiveAccessToJdk) {
         // temporary workaround when using Java16+: some tests require reflective access to java.lang/java.util
         jvmArgs += ['--add-opens=java.base/java.lang=ALL-UNNAMED', '--add-opens=java.base/java.util=ALL-UNNAMED']
       }
     } else {
       def name = it.name
       onlyIf { isJavaVersionAllowed(JavaVersion.current(), name) }
-      if (JavaVersion.current().isCompatibleWith(JavaVersion.VERSION_16)) {
+      if (JavaVersion.current().isCompatibleWith(JavaVersion.VERSION_16) && allowReflectiveAccessToJdk) {
         jvmArgs += ['--add-opens=java.base/java.lang=ALL-UNNAMED', '--add-opens=java.base/java.util=ALL-UNNAMED']
       }
     }
@@ -226,9 +249,7 @@ project.afterEvaluate {
   if (project.plugins.hasPlugin('kotlin')) {
     ['compileKotlin', 'compileTestKotlin'].each { type ->
       tasks.named(type).configure {
-        kotlinOptions {
-          freeCompilerArgs += '-Xmx256m'
-        }
+        kotlinDaemonJvmArguments = ["-Xmx256m", "-XX:+UseParallelGC"]
       }
     }
   }
@@ -240,7 +261,7 @@ project.afterEvaluate {
   }
 }
 
-if (project.plugins.hasPlugin('com.github.johnrengelman.shadow')) {
+if (project.plugins.hasPlugin('com.gradleup.shadow')) {
   // Remove the no-deps jar from the archives to prevent publication
   configurations.archives.with {
     artifacts.remove artifacts.find {
@@ -264,18 +285,27 @@ if (project.hasProperty("removeJarVersionNumbers") && removeJarVersionNumbers) {
 }
 
 ext.setJavaVersion = (it, javaVersionInteger) -> {
-  AbstractCompile ac = (AbstractCompile) it
   Provider<JavaCompiler> compiler = javaToolchains.compilerFor {
     languageVersion = JavaLanguageVersion.of(javaVersionInteger)
   }
+  Provider<JavaLauncher> launcher = javaToolchains.launcherFor {
+    languageVersion = JavaLanguageVersion.of(javaVersionInteger)
+  }
   try {
-    ac.configure {
-      options.fork = true
-      if (ac.hasProperty('javaCompiler')) {
-        javaCompiler = compiler
-      } else {
-        options.forkOptions.javaHome = compiler.get().metadata.installationPath.asFile
+    if (it instanceof JavaCompile) {
+      JavaCompile jc = (JavaCompile) it
+      jc.javaCompiler = compiler
+      if (javaVersionInteger == 8) {
+        jc.options.release = null
       }
+    } else if (it instanceof GroovyCompile) {
+      GroovyCompile gc = (GroovyCompile) it
+      gc.javaLauncher = launcher
+    } else if (it instanceof ScalaCompile) {
+      ScalaCompile sc = (ScalaCompile) it
+      sc.javaLauncher = launcher
+    } else {
+      throw new GradleException("Unsupported compile type: ${it.getClass()}")
     }
   } catch (NoSuchElementException ignored) {
     throw new GradleException("Unable to find compiler for Java $javaVersionInteger. Have you set JAVA_${javaVersionInteger}_HOME?")
@@ -295,17 +325,30 @@ ext.getJavaLauncherFor = (javaVersionInteger) -> {
 def isJavaVersionAllowedForProperty(JavaVersion version, String propertyPrefix = "") {
   def minProp = propertyPrefix.isEmpty() ? 'minJavaVersionForTests' : "${propertyPrefix}MinJavaVersionForTests"
   def maxProp = propertyPrefix.isEmpty() ? 'maxJavaVersionForTests' : "${propertyPrefix}MaxJavaVersionForTests"
-  if (project.hasProperty(minProp) && project.getProperty(minProp).compareTo(version) > 0) {
+  def definedMin = project.hasProperty(minProp)
+  def definedMax = project.hasProperty(maxProp)
+  if (definedMin && project.getProperty(minProp).compareTo(version) > 0) {
+    logger.info("isJavaVersionAllowedForProperty is false b/o minProp=${minProp} is defined and greater than version=${version}")
     return false
   }
-  if (project.hasProperty(maxProp) && project.getProperty(maxProp).compareTo(version) < 0) {
+  //default to the general min if defined and specific one is was not defined
+  if (!propertyPrefix.isEmpty() && !definedMin && project.hasProperty('minJavaVersionForTests') && project.getProperty('minJavaVersionForTests').compareTo(version) > 0) {
+    logger.info("isJavaVersionAllowedForProperty is false b/o minJavaVersionForTests=${project.getProperty('minJavaVersionForTests')} is defined and greater than version=${version}")
+    return false
+  }
+  if (definedMax && project.getProperty(maxProp).compareTo(version) < 0) {
+    logger.info("isJavaVersionAllowedForProperty is false b/o maxProp=${project.getProperty(maxProp)} is defined and lower than version=${version}")
+    return false
+  }
+  if (!propertyPrefix.isEmpty() && !definedMax && project.hasProperty('maxJavaVersionForTests') && project.getProperty('maxJavaVersionForTests').compareTo(version) < 0) {
+    logger.info("isJavaVersionAllowedForProperty is false b/o maxJavaVersionForTests=${project.getProperty('maxJavaVersionForTests')} is defined and lower than version=${version}")
     return false
   }
   return true
 }
 
 def isJavaVersionAllowed(JavaVersion version, String testTaskName) {
-  return isJavaVersionAllowedForProperty(version) && isJavaVersionAllowedForProperty(version, testTaskName)
+  return isJavaVersionAllowedForProperty(version, testTaskName)
 }
 
 def isJavaLanguageVersionAllowed(JavaLanguageVersion languageVersion, String testTaskName) {

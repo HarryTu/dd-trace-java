@@ -6,6 +6,7 @@ import datadog.trace.api.DDTags
 import datadog.trace.api.naming.SpanNaming
 import datadog.trace.bootstrap.instrumentation.api.Tags
 import datadog.trace.common.sampling.RateByServiceTraceSampler
+import datadog.trace.common.writer.ListWriter
 import datadog.trace.common.writer.ddagent.TraceMapper
 import datadog.trace.core.DDSpan
 import groovy.transform.stc.ClosureParams
@@ -25,13 +26,16 @@ class TagsAssert {
 
   static void assertTags(DDSpan span,
     @ClosureParams(value = SimpleType, options = ['datadog.trace.agent.test.asserts.TagsAssert'])
-    @DelegatesTo(value = TagsAssert, strategy = Closure.DELEGATE_FIRST) Closure spec) {
+    @DelegatesTo(value = TagsAssert, strategy = Closure.DELEGATE_FIRST) Closure spec,
+    boolean checkAllTags = true) {
     def asserter = new TagsAssert(span)
     def clone = (Closure) spec.clone()
     clone.delegate = asserter
     clone.resolveStrategy = Closure.DELEGATE_FIRST
     clone(asserter)
-    asserter.assertTagsAllVerified()
+    if (checkAllTags) {
+      asserter.assertTagsAllVerified()
+    }
   }
 
   /**
@@ -39,11 +43,36 @@ class TagsAssert {
    * @param sourceTag the source to match
    */
   def peerServiceFrom(String sourceTag) {
-    tag(DDTags.PEER_SERVICE_SOURCE, { SpanNaming.instance().namingSchema().peerService().supports() ? it == sourceTag : it == null})
+    tag(DDTags.PEER_SERVICE_SOURCE, { SpanNaming.instance().namingSchema().peerService().supports() ? it == sourceTag : it == null })
+  }
+
+  def withCustomIntegrationName(String integrationName) {
+    assertedTags.add(DDTags.DD_INTEGRATION)
+    assert tags[DDTags.DD_INTEGRATION]?.toString() == integrationName
   }
 
   def defaultTagsNoPeerService(boolean distributedRootSpan = false) {
     defaultTags(distributedRootSpan, false)
+  }
+
+  def isPresent(String name) {
+    tag(name, { it != null })
+  }
+
+  def arePresent(Collection<String> tags) {
+    for (String name : tags) {
+      isPresent(name)
+    }
+  }
+
+  def isNotPresent(String name) {
+    tag(name, { it == null })
+  }
+
+  def areNotPresent(Collection<String> tags) {
+    for (String name : tags) {
+      isNotPresent(name)
+    }
   }
 
   /**
@@ -62,6 +91,16 @@ class TagsAssert {
     assertedTags.add(DDTags.PROFILING_ENABLED)
     assertedTags.add(DDTags.PROFILING_CONTEXT_ENGINE)
     assertedTags.add(DDTags.BASE_SERVICE)
+    assertedTags.add(DDTags.DSM_ENABLED)
+    assertedTags.add(DDTags.DJM_ENABLED)
+    assertedTags.add(DDTags.PARENT_ID)
+    assertedTags.add(DDTags.SPAN_LINKS) // this is checked by LinksAsserter
+    DDTags.REQUIRED_CODE_ORIGIN_TAGS.each {
+      assertedTags.add(it)
+    }
+    if (assertedTags.add(DDTags.DD_INTEGRATION) && tags[Tags.COMPONENT] != null) {
+      assert tags[Tags.COMPONENT].toString() == tags[DDTags.DD_INTEGRATION].toString()
+    }
 
     assert tags["thread.name"] != null
     assert tags["thread.id"] != null
@@ -76,6 +115,8 @@ class TagsAssert {
       // If runtime id is actually different here, it might indicate that
       // the Config class was loaded on multiple different class loaders.
       assert tags[DDTags.RUNTIME_ID_TAG] == Config.get().runtimeId
+      assertedTags.add(DDTags.TRACER_HOST)
+      assert tags[DDTags.TRACER_HOST] == Config.get().getHostName()
     } else {
       assert tags[DDTags.RUNTIME_ID_TAG] == null
     }
@@ -98,6 +139,29 @@ class TagsAssert {
     }
   }
 
+  static void codeOriginTags(ListWriter writer) {
+    if (Config.get().isDebuggerCodeOriginEnabled()) {
+      def traces = new ArrayList<>(writer) //as List<List<DDSpan>>
+
+      def spans = []
+      traces.each {
+        it.each {
+          if (it.tags[DDTags.DD_CODE_ORIGIN_TYPE] != null) {
+            spans += it
+          }
+        }
+      }
+      assert !spans.isEmpty(): "Should have found at least one span with code origin"
+      spans.each {
+        assertTags(it, {
+          DDTags.REQUIRED_CODE_ORIGIN_TAGS.each {
+            assert tags[it] != null:  "Should have found ${it} in span tags: " + tags.keySet()
+          }
+        }, false)
+      }
+    }
+  }
+
   def errorTags(Throwable error) {
     errorTags(error.getClass(), error.getMessage())
   }
@@ -107,12 +171,62 @@ class TagsAssert {
   }
 
   def errorTags(Class<Throwable> errorType, message) {
-    tag("error.type", errorType.name)
+    tag("error.type", {
+      if (it == errorType.name) {
+        return true
+      }
+      try {
+        // also accept type names which are sub-classes of the given error type
+        return errorType.isAssignableFrom(
+          Class.forName(it as String, false, getClass().getClassLoader()))
+      } catch (Throwable ignore) {
+        return false
+      }
+    })
     tag("error.stack", String)
 
     if (message != null) {
       tag("error.message", message)
     }
+  }
+
+  def urlTags(String url, List<String> queryParams){
+    tag("http.url", {
+      URI uri = new URI(it.toString().split("\\?", 2)[0])
+      String scheme = uri.getScheme()
+      String host = uri.getHost()
+      int port = uri.getPort()
+      String path = uri.getPath()
+
+      String baseURL = scheme + "://" + host + ":" + port + path
+      return baseURL.equals(url)
+    })
+
+    tag("http.query.string", {
+      String paramString = it
+      System.out.println("it: " + it)
+      Set<String> spanQueryParams = new HashSet<String>()
+      if (paramString != null && !paramString.isEmpty()) {
+        String[] pairs = paramString.split("&")
+        for (String pair : pairs) {
+          int idx = pair.indexOf('=')
+          if (idx > 0) {
+            spanQueryParams.add(pair.substring(0, idx))
+          } else {
+            spanQueryParams.add(pair)
+          }
+        }
+        for(String param : queryParams){
+          if (!spanQueryParams.contains(param)){
+            System.out.println("param: " + param)
+            return false
+          }
+        }
+      } else if(queryParams != null && queryParams.size() > 0){ //if http.query.string is empty/null but we expect queryParams, return false
+        return false
+      }
+      return true
+    })
   }
 
   def tag(String name, expected) {

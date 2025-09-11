@@ -8,13 +8,14 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import java.util.Map;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public final class Servlet2ResponseStatusInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public final class Servlet2ResponseStatusInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
   public Servlet2ResponseStatusInstrumentation() {
     super("servlet", "servlet-2");
   }
@@ -25,7 +26,7 @@ public final class Servlet2ResponseStatusInstrumentation extends Instrumenter.Tr
   }
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     return Servlet2Instrumentation.NOT_SERVLET_3;
   }
 
@@ -49,11 +50,10 @@ public final class Servlet2ResponseStatusInstrumentation extends Instrumenter.Tr
    * applies first
    */
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         namedOneOf("sendError", "setStatus").and(takesArgument(0, int.class)),
         packageName + ".Servlet2ResponseStatusAdvice");
-    transformation.applyAdvice(
-        named("sendRedirect"), packageName + ".Servlet2ResponseRedirectAdvice");
+    transformer.applyAdvice(named("sendRedirect"), packageName + ".Servlet2ResponseRedirectAdvice");
   }
 }

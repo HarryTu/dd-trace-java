@@ -3,13 +3,13 @@ package datadog.trace.api;
 import static datadog.trace.api.config.GeneralConfig.DATA_STREAMS_ENABLED;
 import static datadog.trace.api.config.GeneralConfig.RUNTIME_METRICS_ENABLED;
 import static datadog.trace.api.config.GeneralConfig.TRACE_DEBUG;
-import static datadog.trace.api.config.GeneralConfig.TRACE_TRIAGE;
 import static datadog.trace.api.config.TraceInstrumentationConfig.LOGS_INJECTION_ENABLED;
 import static datadog.trace.api.config.TracerConfig.BAGGAGE_MAPPING;
 import static datadog.trace.api.config.TracerConfig.REQUEST_HEADER_TAGS;
 import static datadog.trace.api.config.TracerConfig.RESPONSE_HEADER_TAGS;
 import static datadog.trace.api.config.TracerConfig.SERVICE_MAPPING;
 import static datadog.trace.api.config.TracerConfig.TRACE_SAMPLE_RATE;
+import static datadog.trace.api.config.TracerConfig.TRACE_SAMPLING_RULES;
 import static datadog.trace.util.CollectionUtils.tryMakeImmutableMap;
 
 import datadog.trace.api.sampling.SamplingRule.SpanSamplingRule;
@@ -23,6 +23,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Config that can be dynamically updated via remote-config
@@ -35,6 +37,7 @@ import java.util.function.Function;
  * @see Config for other configurations
  */
 public final class DynamicConfig<S extends DynamicConfig.Snapshot> {
+  static final Logger rootLogger = LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
 
   static final Function<Map.Entry<String, String>, String> KEY = DynamicConfig::key;
   static final Function<Map.Entry<String, String>, String> VALUE = DynamicConfig::value;
@@ -84,10 +87,13 @@ public final class DynamicConfig<S extends DynamicConfig.Snapshot> {
     reportConfigChange(initialSnapshot);
   }
 
-  public final class Builder {
+  @Override
+  public String toString() {
+    return currentSnapshot.toString();
+  }
 
-    boolean debugEnabled;
-    boolean triageEnabled;
+  public final class Builder {
+    boolean tracingEnabled;
     boolean runtimeMetricsEnabled;
     boolean logsInjectionEnabled;
     boolean dataStreamsEnabled;
@@ -95,18 +101,21 @@ public final class DynamicConfig<S extends DynamicConfig.Snapshot> {
     Map<String, String> serviceMapping;
     Map<String, String> requestHeaderTags;
     Map<String, String> responseHeaderTags;
+    Map<String, String> tracingTags;
     Map<String, String> baggageMapping;
+
     List<? extends SpanSamplingRule> spanSamplingRules;
     List<? extends TraceSamplingRule> traceSamplingRules;
-
+    String traceSamplingRulesJson;
     Double traceSampleRate;
+
+    String preferredServiceName;
 
     Builder() {}
 
     Builder(Snapshot snapshot) {
 
-      this.debugEnabled = snapshot.debugEnabled;
-      this.triageEnabled = snapshot.triageEnabled;
+      this.tracingEnabled = snapshot.tracingEnabled;
       this.runtimeMetricsEnabled = snapshot.runtimeMetricsEnabled;
       this.logsInjectionEnabled = snapshot.logsInjectionEnabled;
       this.dataStreamsEnabled = snapshot.dataStreamsEnabled;
@@ -116,17 +125,14 @@ public final class DynamicConfig<S extends DynamicConfig.Snapshot> {
       this.responseHeaderTags = snapshot.responseHeaderTags;
       this.baggageMapping = snapshot.baggageMapping;
 
+      this.spanSamplingRules = snapshot.spanSamplingRules;
+      this.traceSamplingRules = snapshot.traceSamplingRules;
+      this.traceSamplingRulesJson = snapshot.traceSamplingRulesJson;
       this.traceSampleRate = snapshot.traceSampleRate;
-    }
 
-    public Builder setDebugEnabled(boolean debugEnabled) {
-      this.debugEnabled = debugEnabled;
-      return this;
-    }
+      this.tracingTags = snapshot.tracingTags;
 
-    public Builder setTriageEnabled(boolean triageEnabled) {
-      this.triageEnabled = triageEnabled;
-      return this;
+      this.preferredServiceName = snapshot.preferredServiceName;
     }
 
     public Builder setRuntimeMetricsEnabled(boolean runtimeMetricsEnabled) {
@@ -193,8 +199,25 @@ public final class DynamicConfig<S extends DynamicConfig.Snapshot> {
       return this;
     }
 
-    public Builder setTraceSamplingRules(List<? extends TraceSamplingRule> traceSamplingRules) {
+    public Builder setTraceSamplingRules(
+        List<? extends TraceSamplingRule> traceSamplingRules, String traceSamplingRulesJson) {
       this.traceSamplingRules = traceSamplingRules;
+      this.traceSamplingRulesJson = traceSamplingRulesJson;
+      return this;
+    }
+
+    public Builder setTracingTags(Map<String, String> tracingTags) {
+      this.tracingTags = tracingTags;
+      return this;
+    }
+
+    public Builder setTracingEnabled(boolean tracingEnabled) {
+      this.tracingEnabled = tracingEnabled;
+      return this;
+    }
+
+    public Builder setPreferredServiceName(String preferredServiceName) {
+      this.preferredServiceName = preferredServiceName;
       return this;
     }
 
@@ -257,8 +280,7 @@ public final class DynamicConfig<S extends DynamicConfig.Snapshot> {
   static void reportConfigChange(Snapshot newSnapshot) {
     Map<String, Object> update = new HashMap<>();
 
-    update.put(TRACE_DEBUG, newSnapshot.debugEnabled);
-    update.put(TRACE_TRIAGE, newSnapshot.triageEnabled);
+    update.put(TRACE_DEBUG, rootLogger.isDebugEnabled());
     update.put(RUNTIME_METRICS_ENABLED, newSnapshot.runtimeMetricsEnabled);
     update.put(LOGS_INJECTION_ENABLED, newSnapshot.logsInjectionEnabled);
     update.put(DATA_STREAMS_ENABLED, newSnapshot.dataStreamsEnabled);
@@ -268,6 +290,7 @@ public final class DynamicConfig<S extends DynamicConfig.Snapshot> {
     update.put(RESPONSE_HEADER_TAGS, newSnapshot.responseHeaderTags);
     update.put(BAGGAGE_MAPPING, newSnapshot.baggageMapping);
 
+    update.put(TRACE_SAMPLING_RULES, newSnapshot.traceSamplingRulesJson);
     maybePut(update, TRACE_SAMPLE_RATE, newSnapshot.traceSampleRate);
 
     ConfigCollector.get().putAll(update, ConfigOrigin.REMOTE);
@@ -282,9 +305,7 @@ public final class DynamicConfig<S extends DynamicConfig.Snapshot> {
 
   /** Immutable snapshot of the configuration. */
   public static class Snapshot implements TraceConfig {
-
-    final boolean debugEnabled;
-    final boolean triageEnabled;
+    final boolean tracingEnabled;
     final boolean runtimeMetricsEnabled;
     final boolean logsInjectionEnabled;
     final boolean dataStreamsEnabled;
@@ -293,15 +314,19 @@ public final class DynamicConfig<S extends DynamicConfig.Snapshot> {
     final Map<String, String> requestHeaderTags;
     final Map<String, String> responseHeaderTags;
     final Map<String, String> baggageMapping;
+
     final List<? extends SpanSamplingRule> spanSamplingRules;
     final List<? extends TraceSamplingRule> traceSamplingRules;
+    final String traceSamplingRulesJson;
 
     final Double traceSampleRate;
+    final Map<String, String> tracingTags;
+
+    final String preferredServiceName;
 
     protected Snapshot(DynamicConfig<?>.Builder builder, Snapshot oldSnapshot) {
 
-      this.debugEnabled = builder.debugEnabled;
-      this.triageEnabled = builder.triageEnabled;
+      this.tracingEnabled = builder.tracingEnabled;
       this.runtimeMetricsEnabled = builder.runtimeMetricsEnabled;
       this.logsInjectionEnabled = builder.logsInjectionEnabled;
       this.dataStreamsEnabled = builder.dataStreamsEnabled;
@@ -311,24 +336,27 @@ public final class DynamicConfig<S extends DynamicConfig.Snapshot> {
       this.responseHeaderTags = nullToEmpty(builder.responseHeaderTags);
       this.baggageMapping = nullToEmpty(builder.baggageMapping);
 
+      this.spanSamplingRules = nullToEmpty(builder.spanSamplingRules);
+      this.traceSamplingRules = nullToEmpty(builder.traceSamplingRules);
+      this.traceSamplingRulesJson = builder.traceSamplingRulesJson;
       this.traceSampleRate = builder.traceSampleRate;
 
-      this.spanSamplingRules = builder.spanSamplingRules;
-      this.traceSamplingRules = builder.traceSamplingRules;
+      this.tracingTags = nullToEmpty(builder.tracingTags);
+
+      this.preferredServiceName = builder.preferredServiceName;
     }
 
     private static <K, V> Map<K, V> nullToEmpty(Map<K, V> mapping) {
       return null != mapping ? mapping : Collections.emptyMap();
     }
 
-    @Override
-    public boolean isDebugEnabled() {
-      return debugEnabled;
+    private static <V> List<V> nullToEmpty(List<V> list) {
+      return null != list ? list : Collections.emptyList();
     }
 
     @Override
-    public boolean isTriageEnabled() {
-      return triageEnabled;
+    public boolean isTraceEnabled() {
+      return tracingEnabled;
     }
 
     @Override
@@ -372,6 +400,11 @@ public final class DynamicConfig<S extends DynamicConfig.Snapshot> {
     }
 
     @Override
+    public String getPreferredServiceName() {
+      return preferredServiceName;
+    }
+
+    @Override
     public List<? extends SpanSamplingRule> getSpanSamplingRules() {
       return spanSamplingRules;
     }
@@ -379,6 +412,43 @@ public final class DynamicConfig<S extends DynamicConfig.Snapshot> {
     @Override
     public List<? extends TraceSamplingRule> getTraceSamplingRules() {
       return traceSamplingRules;
+    }
+
+    @Override
+    public Map<String, String> getTracingTags() {
+      return tracingTags;
+    }
+
+    @Override
+    public String toString() {
+      return "DynamicConfig{"
+          + "debugEnabled="
+          + rootLogger.isDebugEnabled()
+          + ", runtimeMetricsEnabled="
+          + runtimeMetricsEnabled
+          + ", logsInjectionEnabled="
+          + logsInjectionEnabled
+          + ", dataStreamsEnabled="
+          + dataStreamsEnabled
+          + ", serviceMapping="
+          + serviceMapping
+          + ", requestHeaderTags="
+          + requestHeaderTags
+          + ", responseHeaderTags="
+          + responseHeaderTags
+          + ", baggageMapping="
+          + baggageMapping
+          + ", spanSamplingRules="
+          + spanSamplingRules
+          + ", traceSamplingRules="
+          + traceSamplingRulesJson
+          + ", traceSampleRate="
+          + traceSampleRate
+          + ", tracingTags="
+          + tracingTags
+          + ", preferredServiceName="
+          + preferredServiceName
+          + '}';
     }
   }
 }

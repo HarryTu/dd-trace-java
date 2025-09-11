@@ -2,7 +2,6 @@ package datadog.trace.api.naming.v1;
 
 import datadog.trace.api.naming.NamingSchema;
 import datadog.trace.api.naming.SpanNaming;
-import datadog.trace.util.Strings;
 import java.util.Locale;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -29,10 +28,12 @@ public class CloudNamingV1 implements NamingSchema.ForCloud {
         return SpanNaming.instance().namingSchema().messaging().inboundOperation("sqs");
       case "Sns.Publish":
       case "SNS.Publish":
+      case "Sns.PublishBatch":
+      case "SNS.PublishBatch":
         return SpanNaming.instance().namingSchema().messaging().outboundOperation("sns");
       default:
         final String lowercaseService = cloudService.toLowerCase(Locale.ROOT);
-        return Strings.join(".", provider, lowercaseService, "request"); // aws.s3.request
+        return String.join(".", provider, lowercaseService, "request"); // aws.s3.request
     }
   }
 
@@ -45,9 +46,13 @@ public class CloudNamingV1 implements NamingSchema.ForCloud {
   @Nonnull
   @Override
   public String operationForFaas(@Nonnull final String provider) {
-    // for now only aws is implemented. For the future provider might be used to return specific
-    // function as a service name
-    // (e.g. azure automation)
-    return "aws.lambda.invoke";
+    switch (provider) {
+      case "aws":
+        return "aws.lambda.invoke";
+      case "azure":
+        return "azure.functions.invoke";
+      default:
+        return "aws.lambda.invoke";
+    }
   }
 }

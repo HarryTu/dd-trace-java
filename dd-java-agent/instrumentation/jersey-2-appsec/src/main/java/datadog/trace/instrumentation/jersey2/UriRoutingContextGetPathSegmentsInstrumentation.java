@@ -7,13 +7,14 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 import com.google.auto.service.AutoService;
 import datadog.trace.advice.RequiresRequestContext;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.gateway.RequestContextSlot;
 import net.bytebuddy.asm.Advice;
 import org.glassfish.jersey.server.internal.routing.UriRoutingContext;
 
-@AutoService(Instrumenter.class)
-public class UriRoutingContextGetPathSegmentsInstrumentation extends Instrumenter.AppSec
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class UriRoutingContextGetPathSegmentsInstrumentation extends InstrumenterModule.AppSec
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public UriRoutingContextGetPathSegmentsInstrumentation() {
     super("jersey");
   }
@@ -29,8 +30,8 @@ public class UriRoutingContextGetPathSegmentsInstrumentation extends Instrumente
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("getPathSegments").and(takesArguments(1)).and(takesArgument(0, boolean.class)),
         getClass().getName() + "$GetPathSegmentsAdvice");
   }

@@ -1,6 +1,7 @@
 package datadog.trace.logging.simplelogger
 
 import datadog.trace.logging.LogLevel
+import datadog.trace.logging.PrintStreamWrapper
 import spock.lang.Specification
 
 import java.text.SimpleDateFormat
@@ -63,13 +64,14 @@ class SLCompatSettingsTest extends Specification {
     then:
     settings.warnLevelString == null
     settings.levelInBrackets == false
-    settings.printStream == System.err
+    ((PrintStreamWrapper) settings.printStream).getOriginalPrintStream()  == System.err
     settings.showShortLogName == false
     settings.showLogName == true
     settings.showThreadName == true
     settings.dateTimeFormatter.class == SLCompatSettings.DiffDTFormatter
     settings.showDateTime == false
     settings.defaultLogLevel == LogLevel.INFO
+    settings.jsonEnabled == false
   }
 
   def "test file properties"() {
@@ -83,13 +85,14 @@ class SLCompatSettingsTest extends Specification {
     then:
     settings.warnLevelString == "WRN"
     settings.levelInBrackets == true
-    settings.printStream == System.out
+    ((PrintStreamWrapper) settings.printStream).getOriginalPrintStream()  == System.out
     settings.showShortLogName == true
     settings.showLogName == false
     settings.showThreadName == false
     formatted.toString() == new SimpleDateFormat("'['yy-dd-MM HH:mm:ss:SSS Z']'").format(new Date(4711 << 20))
     settings.showDateTime == true
     settings.defaultLogLevel == LogLevel.DEBUG
+    settings.jsonEnabled == true
   }
 
   def "test log file creation"() {
@@ -124,8 +127,6 @@ class SLCompatSettingsTest extends Specification {
 
     expect:
     file.exists()
-    settings.printStream != System.err
-    settings.printStream != System.out
 
     cleanup:
     settings.printStream.close()
@@ -146,7 +147,7 @@ class SLCompatSettingsTest extends Specification {
 
     expect:
     !file.exists()
-    settings.printStream == System.err
+    ((PrintStreamWrapper) settings.printStream).getOriginalPrintStream() == System.err
 
     cleanup:
     dir.setWritable(true, true)
@@ -191,7 +192,7 @@ class SLCompatSettingsTest extends Specification {
     ["bar": "trace", "foo.bar.baz": "warn"]     | [LogLevel.INFO, LogLevel.INFO, LogLevel.WARN]
   }
 
-  def "test DTFormatter"() {
+  def "test DTFormatter #iterationIndex"() {
     when:
     def formatted = new StringBuilder()
     dtFormatter.appendFormattedDate(formatted, timeMillis, startTimeMillis)

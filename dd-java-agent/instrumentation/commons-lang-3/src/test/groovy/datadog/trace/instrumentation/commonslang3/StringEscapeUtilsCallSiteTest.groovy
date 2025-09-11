@@ -1,6 +1,6 @@
 package datadog.trace.instrumentation.commonslang3
 
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.iast.InstrumentationBridge
 import datadog.trace.api.iast.VulnerabilityMarks
 import datadog.trace.api.iast.propagation.PropagationModule
@@ -8,7 +8,7 @@ import foo.bar.TestStringEscapeUtilsSuite
 import groovy.transform.CompileDynamic
 
 @CompileDynamic
-class StringEscapeUtilsCallSiteTest extends AgentTestRunner {
+class StringEscapeUtilsCallSiteTest extends InstrumentationSpecification {
 
   @Override
   protected void configurePreAgent() {
@@ -25,7 +25,7 @@ class StringEscapeUtilsCallSiteTest extends AgentTestRunner {
 
     then:
     result == expected
-    1 * module.taintIfTainted(_ as String, args[0], false, VulnerabilityMarks.XSS_MARK)
+    1 * module.taintStringIfTainted(_ as String, args[0], false, VulnerabilityMarks.HTML_ESCAPED_MARK)
     0 * _
 
     where:
@@ -47,7 +47,7 @@ class StringEscapeUtilsCallSiteTest extends AgentTestRunner {
 
     then:
     result == expected
-    1 * module.taintIfTainted(_ as String, args[0])
+    1 * module.taintStringIfTainted(_ as String, args[0])
     0 * _
 
     where:

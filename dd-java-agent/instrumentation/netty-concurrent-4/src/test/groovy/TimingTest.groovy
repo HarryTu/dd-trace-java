@@ -1,18 +1,19 @@
-import datadog.trace.agent.test.AgentTestRunner
-import datadog.trace.agent.test.timer.TestTimer
+import datadog.trace.agent.test.InstrumentationSpecification
+import datadog.trace.agent.test.TestProfilingContextIntegration
 import datadog.trace.bootstrap.instrumentation.jfr.InstrumentationBasedProfiling
 import io.netty.util.concurrent.DefaultEventExecutorGroup
 
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
 import static datadog.trace.agent.test.utils.TraceUtils.runUnderTrace
 
-class TimingTest extends AgentTestRunner {
+class TimingTest extends InstrumentationSpecification {
 
   @Override
   protected void configurePreAgent() {
     injectSysConfig("dd.profiling.enabled", "true")
-    injectSysConfig("dd.profiling.experimental.queueing.time.enabled", "true")
+    injectSysConfig("dd.profiling.queueing.time.enabled", "true")
     InstrumentationBasedProfiling.enableInstrumentationBasedProfiling()
     super.configurePreAgent()
   }
@@ -27,11 +28,11 @@ class TimingTest extends AgentTestRunner {
     })
 
     then:
-    verify()
+    verify([LinkedBlockingQueue])
 
     cleanup:
     defaultEventExecutorGroup.shutdownGracefully()
-    TEST_TIMER.closedTimings.clear()
+    TEST_PROFILING_CONTEXT_INTEGRATION.closedTimings.clear()
   }
 
   def "test queue timing with schedule"() {
@@ -44,19 +45,20 @@ class TimingTest extends AgentTestRunner {
     })
 
     then:
-    verify()
+    // later netty versions may schedule on the task queue, older versions on the scheduled/delayed queue
+    verify([PriorityQueue, LinkedBlockingQueue])
 
     cleanup:
     defaultEventExecutorGroup.shutdownGracefully()
-    TEST_TIMER.closedTimings.clear()
+    TEST_PROFILING_CONTEXT_INTEGRATION.closedTimings.clear()
   }
 
-  void verify() {
-    assert TEST_TIMER.isBalanced()
-    assert !TEST_TIMER.closedTimings.isEmpty()
+  void verify(acceptableQueueTypes) {
+    assert TEST_PROFILING_CONTEXT_INTEGRATION.isBalanced()
+    assert !TEST_PROFILING_CONTEXT_INTEGRATION.closedTimings.isEmpty()
     int numAsserts = 0
-    while (!TEST_TIMER.closedTimings.isEmpty()) {
-      def timing = TEST_TIMER.closedTimings.takeFirst() as TestTimer.TestQueueTiming
+    while (!TEST_PROFILING_CONTEXT_INTEGRATION.closedTimings.isEmpty()) {
+      def timing = TEST_PROFILING_CONTEXT_INTEGRATION.closedTimings.takeFirst() as TestProfilingContextIntegration.TestQueueTiming
       // filter out any netty chores, filtering these out by class name in the instrumentation
       // may be too expensive. They should get filtered out by duration anyway.
       if (!(timing.task as Class).simpleName.isEmpty()) {
@@ -64,6 +66,8 @@ class TimingTest extends AgentTestRunner {
         assert timing.task == TestRunnable
         assert timing.scheduler == DefaultEventExecutorGroup
         assert timing.origin == Thread.currentThread()
+        assert timing.queueLength == 0
+        assert acceptableQueueTypes.contains(timing.queue)
         numAsserts++
       }
     }

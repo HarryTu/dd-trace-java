@@ -27,6 +27,9 @@ public interface CallSiteAdvice {
     /** Performs a method invocation (static, special, virtual, interface...) */
     void method(int opcode, String owner, String name, String descriptor, boolean isInterface);
 
+    /** Performs an advice invocation (always static) */
+    void advice(String owner, String name, String descriptor);
+
     /** Performs a dynamic method invocation */
     void invokeDynamic(
         String name,
@@ -62,12 +65,20 @@ public interface CallSiteAdvice {
     COPY,
     /** Copies the parameters in an array and prepends it */
     PREPEND_ARRAY,
-    /**
-     * Copies the parameters in an array, prepends it and swaps the array with the uninitialized
-     * instance in a ctor
-     */
+    /** Copies the parameters in an array and adds it between NEW and DUP opcodes */
     PREPEND_ARRAY_CTOR,
+    /** Copies the parameters in an array and adds it before the uninitialized instance in a ctor */
+    PREPEND_ARRAY_SUPER_CTOR,
     /** Copies the parameters in an array and appends it */
     APPEND_ARRAY
+  }
+
+  abstract class AdviceType {
+
+    private AdviceType() {}
+
+    public static final byte BEFORE = -1;
+    public static final byte AROUND = 0;
+    public static final byte AFTER = 1;
   }
 }

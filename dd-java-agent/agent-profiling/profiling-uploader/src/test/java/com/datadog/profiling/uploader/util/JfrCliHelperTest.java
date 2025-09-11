@@ -9,6 +9,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
+import datadog.environment.JavaVirtualMachine;
+import datadog.environment.SystemProperties;
 import datadog.trace.api.profiling.RecordingData;
 import datadog.trace.api.profiling.RecordingInputStream;
 import datadog.trace.relocate.api.IOLogger;
@@ -24,6 +26,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.zip.GZIPOutputStream;
 import org.apache.commons.io.IOUtils;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -44,6 +47,9 @@ public class JfrCliHelperTest {
 
   @Test
   public void testInvokeOn() throws Exception {
+    // J9 may have 'jfr' command present but it requires additional setup
+    // Currently we don't support J9 JFR so we can safely skip this test
+    Assumptions.assumeFalse(JavaVirtualMachine.isJ9());
     final RecordingData recording = mockRecordingData();
 
     JfrCliHelper.invokeOn(recording, ioLogger);
@@ -70,7 +76,7 @@ public class JfrCliHelperTest {
   }
 
   private boolean hasJfr() {
-    return Files.exists(Paths.get(System.getProperty("java.home"), "bin", "jfr"));
+    return Files.exists(Paths.get(SystemProperties.get("java.home"), "bin", "jfr"));
   }
 
   private RecordingData mockRecordingData() throws IOException {

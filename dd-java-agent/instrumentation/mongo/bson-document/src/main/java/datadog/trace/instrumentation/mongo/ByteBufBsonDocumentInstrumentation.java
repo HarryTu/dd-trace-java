@@ -8,6 +8,7 @@ import static net.bytebuddy.matcher.ElementMatchers.isConstructor;
 import com.google.auto.service.AutoService;
 import com.mongodb.MongoClientOptions;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.InstrumentationContext;
 import java.util.Map;
 import net.bytebuddy.asm.Advice;
@@ -16,9 +17,11 @@ import net.bytebuddy.matcher.ElementMatcher;
 import org.bson.BsonDocument;
 import org.bson.ByteBuf;
 
-@AutoService(Instrumenter.class)
-public class ByteBufBsonDocumentInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType, Instrumenter.WithTypeStructure {
+@AutoService(InstrumenterModule.class)
+public class ByteBufBsonDocumentInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType,
+        Instrumenter.WithTypeStructure,
+        Instrumenter.HasMethodAdvice {
 
   public ByteBufBsonDocumentInstrumentation() {
     super("mongo");
@@ -40,8 +43,8 @@ public class ByteBufBsonDocumentInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(isConstructor(), getClass().getName() + "$ExposeBuffer");
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(isConstructor(), getClass().getName() + "$ExposeBuffer");
   }
 
   public static final class ExposeBuffer {

@@ -11,7 +11,6 @@ import static datadog.trace.core.propagation.HttpCodec.X_CLIENT_IP_KEY;
 import static datadog.trace.core.propagation.HttpCodec.X_CLUSTER_CLIENT_IP_KEY;
 import static datadog.trace.core.propagation.HttpCodec.X_FORWARDED_FOR_KEY;
 import static datadog.trace.core.propagation.HttpCodec.X_FORWARDED_HOST_KEY;
-import static datadog.trace.core.propagation.HttpCodec.X_FORWARDED_KEY;
 import static datadog.trace.core.propagation.HttpCodec.X_FORWARDED_PORT_KEY;
 import static datadog.trace.core.propagation.HttpCodec.X_FORWARDED_PROTO_KEY;
 import static datadog.trace.core.propagation.HttpCodec.X_REAL_IP_KEY;
@@ -20,6 +19,7 @@ import datadog.trace.api.Config;
 import datadog.trace.api.DDSpanId;
 import datadog.trace.api.DDTraceId;
 import datadog.trace.api.Functions;
+import datadog.trace.api.TagMap;
 import datadog.trace.api.TraceConfig;
 import datadog.trace.api.TracePropagationStyle;
 import datadog.trace.api.cache.DDCache;
@@ -32,6 +32,10 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.TreeMap;
 
+/**
+ * When adding new context fields to the ContextInterpreter class remember to clear them in the
+ * reset() method.
+ */
 public abstract class ContextInterpreter implements AgentPropagation.KeyClassifier {
   private TraceConfig traceConfig;
 
@@ -41,9 +45,10 @@ public abstract class ContextInterpreter implements AgentPropagation.KeyClassifi
   protected DDTraceId traceId;
   protected long spanId;
   protected int samplingPriority;
-  protected Map<String, String> tags;
+  protected TagMap.Ledger tagLedger;
   protected Map<String, String> baggage;
 
+  protected CharSequence lastParentId;
   protected CharSequence origin;
   protected long endToEndStartTime;
   protected boolean valid;
@@ -56,6 +61,7 @@ public abstract class ContextInterpreter implements AgentPropagation.KeyClassifi
   private final boolean clientIpResolutionEnabled;
   private final boolean clientIpWithoutAppSec;
   private boolean collectIpHeaders;
+  private final boolean requestHeaderTagsCommaAllowed;
 
   protected static final boolean LOG_EXTRACT_HEADER_NAMES = Config.get().isLogExtractHeaderNames();
   private static final DDCache<String, String> CACHE = DDCaches.newFixedSizeCache(64);
@@ -69,6 +75,14 @@ public abstract class ContextInterpreter implements AgentPropagation.KeyClassifi
     this.clientIpResolutionEnabled = config.isTraceClientIpResolverEnabled();
     this.clientIpWithoutAppSec = config.isClientIpEnabled();
     this.propagationTagsFactory = PropagationTags.factory(config);
+    this.requestHeaderTagsCommaAllowed = config.isRequestHeaderTagsCommaAllowed();
+  }
+
+  final TagMap.Ledger tagLedger() {
+    if (tagLedger == null) {
+      tagLedger = TagMap.ledger();
+    }
+    return tagLedger;
   }
 
   /**
@@ -113,10 +127,6 @@ public abstract class ContextInterpreter implements AgentPropagation.KeyClassifi
     }
     if (X_FORWARDED_PORT_KEY.equalsIgnoreCase(key)) {
       getHeaders().xForwardedPort = value;
-      return true;
-    }
-    if (X_FORWARDED_KEY.equalsIgnoreCase(key)) {
-      getHeaders().xForwarded = value;
       return true;
     }
     return false;
@@ -187,10 +197,11 @@ public abstract class ContextInterpreter implements AgentPropagation.KeyClassifi
     final String lowerCaseKey = toLowerCase(key);
     final String mappedKey = headerTags.get(lowerCaseKey);
     if (null != mappedKey) {
-      if (tags.isEmpty()) {
-        tags = new TreeMap<>();
-      }
-      tags.put(mappedKey, HttpCodec.decode(HttpCodec.firstHeaderValue(value)));
+      tagLedger()
+          .set(
+              mappedKey,
+              HttpCodec.decode(
+                  requestHeaderTagsCommaAllowed ? value : HttpCodec.firstHeaderValue(value)));
       return true;
     }
     return false;
@@ -219,7 +230,7 @@ public abstract class ContextInterpreter implements AgentPropagation.KeyClassifi
     samplingPriority = PrioritySampling.UNSET;
     origin = null;
     endToEndStartTime = 0;
-    tags = Collections.emptyMap();
+    if (tagLedger != null) tagLedger.reset();
     baggage = Collections.emptyMap();
     valid = true;
     fullContext = true;
@@ -229,6 +240,8 @@ public abstract class ContextInterpreter implements AgentPropagation.KeyClassifi
             || this.clientIpResolutionEnabled && ActiveSubsystems.APPSEC_ACTIVE;
     headerTags = traceConfig.getRequestHeaderTags();
     baggageMapping = traceConfig.getBaggageMapping();
+    propagationTags = null;
+    lastParentId = null;
     return this;
   }
 
@@ -245,24 +258,25 @@ public abstract class ContextInterpreter implements AgentPropagation.KeyClassifi
             origin,
             endToEndStartTime,
             baggage,
-            tags,
+            tagLedger == null ? null : tagLedger.build(),
             httpHeaders,
             propagationTags,
             traceConfig,
             style());
       } else if (origin != null
-          || !tags.isEmpty()
+          || (tagLedger != null && !tagLedger.isDefinitelyEmpty())
           || httpHeaders != null
           || !baggage.isEmpty()
           || samplingPriority != PrioritySampling.UNSET) {
         return new TagContext(
             origin,
-            tags,
+            tagLedger == null ? null : tagLedger.build(),
             httpHeaders,
             baggage,
             samplingPriorityOrDefault(traceId, samplingPriority),
             traceConfig,
-            style());
+            style(),
+            DDTraceId.ZERO);
       }
     }
     return null;

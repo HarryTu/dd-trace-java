@@ -2,11 +2,11 @@ package datadog.trace.agent.test;
 
 import static datadog.trace.test.util.ForkedTestUtils.getMaxMemoryArgumentForFork;
 import static datadog.trace.test.util.ForkedTestUtils.getMinMemoryArgumentForFork;
+import static java.util.stream.Collectors.toList;
 
 import datadog.trace.bootstrap.BootstrapProxy;
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -15,8 +15,9 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.RuntimeMXBean;
 import java.lang.reflect.Field;
 import java.net.URL;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -28,7 +29,6 @@ import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
 
 public class IntegrationTestUtils {
-
   /** Returns the classloader the core agent is running on. */
   public static ClassLoader getAgentClassLoader() {
     Field classloaderField = null;
@@ -52,39 +52,52 @@ public class IntegrationTestUtils {
     return BootstrapProxy.INSTANCE;
   }
 
+  public static File createJarFileWithClasses(final Class<?>... classes) throws IOException {
+    return createJarFileWithClasses(null, classes);
+  }
+
   /** See {@link IntegrationTestUtils#createJarWithClasses(String, Class[])} */
   public static URL createJarWithClasses(final Class<?>... classes) throws IOException {
     return createJarWithClasses(null, classes);
   }
+
   /**
    * Create a temporary jar on the filesystem with the bytes of the given classes.
    *
    * <p>The jar file will be removed when the jvm exits.
    *
-   * @param mainClassname The name of the class to use for Main-Class and Premain-Class. May be null
+   * @param mainClassName The name of the class to use for Main-Class and Premain-Class. May be null
    * @param classes classes to package into the jar.
    * @return the location of the newly created jar.
-   * @throws IOException
+   * @throws IOException if an I/O error occurs.
    */
-  public static URL createJarWithClasses(final String mainClassname, final Class<?>... classes)
+  public static File createJarFileWithClasses(final String mainClassName, final Class<?>... classes)
       throws IOException {
-    final File tmpJar = File.createTempFile(UUID.randomUUID().toString() + "-", ".jar");
+    final File tmpJar = File.createTempFile(UUID.randomUUID() + "-", ".jar");
     tmpJar.deleteOnExit();
 
     final Manifest manifest = new Manifest();
-    if (mainClassname != null) {
+    if (mainClassName != null) {
       final Attributes mainAttributes = manifest.getMainAttributes();
       mainAttributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
-      mainAttributes.put(Attributes.Name.MAIN_CLASS, mainClassname);
-      mainAttributes.put(new Attributes.Name("Premain-Class"), mainClassname);
+      mainAttributes.put(Attributes.Name.MAIN_CLASS, mainClassName);
+      mainAttributes.put(new Attributes.Name("Premain-Class"), mainClassName);
     }
-    final JarOutputStream target = new JarOutputStream(new FileOutputStream(tmpJar), manifest);
-    for (final Class<?> clazz : classes) {
-      addToJar(clazz, target);
-    }
-    target.close();
 
-    return tmpJar.toURI().toURL();
+    try (final JarOutputStream target =
+        new JarOutputStream(Files.newOutputStream(tmpJar.toPath()), manifest)) {
+      for (final Class<?> clazz : classes) {
+        addToJar(clazz, target);
+      }
+    }
+
+    return tmpJar;
+  }
+
+  public static URL createJarWithClasses(final String mainClassName, final Class<?>... classes)
+      throws IOException {
+
+    return createJarFileWithClasses(mainClassName, classes).toURI().toURL();
   }
 
   private static void addToJar(final Class<?> clazz, final JarOutputStream jarOutputStream)
@@ -132,7 +145,8 @@ public class IntegrationTestUtils {
   private static String getAgentArgument() {
     final RuntimeMXBean runtimeMxBean = ManagementFactory.getRuntimeMXBean();
     for (final String arg : runtimeMxBean.getInputArguments()) {
-      if (arg.startsWith("-javaagent")) {
+      // Pick only `dd-java-agent` and exclude IDE debugger agent.
+      if (arg.startsWith("-javaagent") && arg.contains("dd-java-agent")) {
         return arg;
       }
     }
@@ -146,8 +160,8 @@ public class IntegrationTestUtils {
 
   public static int runOnSeparateJvm(
       final String mainClassName,
-      final String[] jvmArgs,
-      final String[] mainMethodArgs,
+      final List<? extends CharSequence> jvmArgs,
+      final List<String> mainMethodArgs,
       final Map<String, String> envVars,
       final boolean printOutputStreams)
       throws Exception {
@@ -157,8 +171,8 @@ public class IntegrationTestUtils {
 
   public static int runOnSeparateJvm(
       final String mainClassName,
-      final String[] jvmArgs,
-      final String[] mainMethodArgs,
+      final List<? extends CharSequence> jvmArgs,
+      final List<String> mainMethodArgs,
       final Map<String, String> envVars,
       final PrintStream out)
       throws Exception {
@@ -168,8 +182,20 @@ public class IntegrationTestUtils {
 
   public static int runOnSeparateJvm(
       final String mainClassName,
-      final String[] jvmArgs,
-      final String[] mainMethodArgs,
+      final List<? extends CharSequence> jvmArgs,
+      final List<String> mainMethodArgs,
+      final Map<String, String> envVars,
+      final File classpath,
+      final boolean printOutputStreams)
+      throws Exception {
+    return runOnSeparateJvm(
+        mainClassName, jvmArgs, mainMethodArgs, envVars, classpath.getPath(), printOutputStreams);
+  }
+
+  public static int runOnSeparateJvm(
+      final String mainClassName,
+      final List<? extends CharSequence> jvmArgs,
+      final List<String> mainMethodArgs,
       final Map<String, String> envVars,
       final String classpath,
       final boolean printOutputStreams)
@@ -189,12 +215,12 @@ public class IntegrationTestUtils {
    * @param mainClassName The name of the entry point class. Must declare a main method.
    * @param out Optional stream to print the stdout and stderr of the child jvm
    * @return the return code of the child jvm
-   * @throws Exception
+   * @throws Exception If failed to run on separate JVM.
    */
   public static int runOnSeparateJvm(
       final String mainClassName,
-      final String[] jvmArgs,
-      final String[] mainMethodArgs,
+      final List<? extends CharSequence> jvmArgs,
+      final List<String> mainMethodArgs,
       final Map<String, String> envVars,
       final String classpath,
       final PrintStream out)
@@ -217,15 +243,17 @@ public class IntegrationTestUtils {
 
   public static Process startOnSeparateJvm(
       final String mainClassName,
-      final String[] jvmArgs,
-      final String[] mainMethodArgs,
+      final List<? extends CharSequence> jvmArgs,
+      final List<String> mainMethodArgs,
       final Map<String, String> envVars,
       final String classpath)
       throws Exception {
-    final String separator = System.getProperty("file.separator");
+    final String separator = FileSystems.getDefault().getSeparator();
     final String path = System.getProperty("java.home") + separator + "bin" + separator + "java";
 
-    final List<String> vmArgsList = new ArrayList<>(Arrays.asList(jvmArgs));
+    // Groovy may produce a mix of `String` and `GString` instances.
+    // To ensure consistent handling, map all values to plain `String`:
+    final List<String> vmArgsList = jvmArgs.stream().map(CharSequence::toString).collect(toList());
 
     boolean runAsJar = "datadog.trace.bootstrap.AgentJar".equals(mainClassName);
 
@@ -247,7 +275,7 @@ public class IntegrationTestUtils {
       commands.add(classpath);
       commands.add(mainClassName);
     }
-    commands.addAll(Arrays.asList(mainMethodArgs));
+    commands.addAll(mainMethodArgs);
     final ProcessBuilder processBuilder = new ProcessBuilder(commands.toArray(new String[0]));
     processBuilder.environment().putAll(envVars);
 
@@ -256,21 +284,9 @@ public class IntegrationTestUtils {
 
   private static void waitFor(final Process process, final long timeout, final TimeUnit unit)
       throws InterruptedException, TimeoutException {
-    final long startTime = System.nanoTime();
-    long rem = unit.toNanos(timeout);
-
-    do {
-      try {
-        process.exitValue();
-        return;
-      } catch (final IllegalThreadStateException ex) {
-        if (rem > 0) {
-          Thread.sleep(Math.min(TimeUnit.NANOSECONDS.toMillis(rem) + 1, 100));
-        }
-      }
-      rem = unit.toNanos(timeout) - (System.nanoTime() - startTime);
-    } while (rem > 0);
-    throw new TimeoutException();
+    if (!process.waitFor(timeout, unit)) {
+      throw new TimeoutException();
+    }
   }
 
   private static class StreamGobbler extends Thread {
@@ -288,7 +304,7 @@ public class IntegrationTestUtils {
     public void run() {
       try {
         final BufferedReader reader = new BufferedReader(new InputStreamReader(stream));
-        String line = null;
+        String line;
         while ((line = reader.readLine()) != null) {
           if (null != out) {
             out.println(type + "> " + line);

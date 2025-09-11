@@ -1,14 +1,15 @@
 package com.datadog.profiling.ddprof;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadog.profiling.controller.OngoingRecording;
-import com.datadog.profiling.controller.UnsupportedEnvironmentException;
 import com.datadog.profiling.utils.ProfilingMode;
-import datadog.trace.api.Platform;
+import datadog.environment.OperatingSystem;
+import datadog.libs.ddprof.DdprofLibraryLoader;
 import datadog.trace.api.config.ProfilingConfig;
 import datadog.trace.api.profiling.ProfilingScope;
 import datadog.trace.api.profiling.RecordingData;
@@ -37,16 +38,14 @@ class DatadogProfilerTest {
 
   @BeforeEach
   public void setup() {
-    Assumptions.assumeTrue(Platform.isLinux());
+    Assumptions.assumeTrue(OperatingSystem.isLinux());
   }
 
   @Test
   void test() throws Exception {
+    assertDoesNotThrow(
+        () -> DdprofLibraryLoader.jvmAccess().getReasonNotLoaded(), "Profiler not available");
     DatadogProfiler profiler = DatadogProfiler.newInstance(ConfigProvider.getInstance());
-    if (!profiler.isAvailable()) {
-      log.warn("Datadog Profiler not available. Skipping test.");
-      return;
-    }
     assertFalse(profiler.enabledModes().isEmpty());
 
     if (profiler.isActive()) {
@@ -78,12 +77,10 @@ class DatadogProfilerTest {
   @ParameterizedTest
   @MethodSource("profilingModes")
   void testStartCmd(boolean cpu, boolean wall, boolean alloc, boolean memleak) throws Exception {
+    assertDoesNotThrow(
+        () -> DdprofLibraryLoader.jvmAccess().getReasonNotLoaded(), "Profiler not available");
     DatadogProfiler profiler =
         DatadogProfiler.newInstance(configProvider(cpu, wall, alloc, memleak));
-    if (!profiler.isAvailable()) {
-      log.warn("Datadog Profiler not available. Skipping test.");
-      return;
-    }
 
     Path targetFile = Paths.get("/tmp/target.jfr");
     String cmd = profiler.cmdStartProfiling(targetFile);
@@ -110,7 +107,7 @@ class DatadogProfilerTest {
   }
 
   @Test
-  public void testContextRegistration() throws UnsupportedEnvironmentException {
+  public void testContextRegistration() {
     // warning - the profiler is a process wide singleton and can't be reinitialised
     // so there is only one shot to test it here, 'foo,bar' need to be kept in the same
     // order whether in the list or the enum, and any other test which tries to register
@@ -126,7 +123,7 @@ class DatadogProfilerTest {
     DatadogProfilerContextSetter fooSetter = new DatadogProfilerContextSetter("foo", profiler);
     DatadogProfilerContextSetter barSetter = new DatadogProfilerContextSetter("bar", profiler);
     int[] snapshot0 = profiler.snapshot();
-    try (ProfilingScope outer = new DatadogProfilingScope(profiler)) {
+    try (ProfilingScope ignored = new DatadogProfilingScope(profiler)) {
       fooSetter.set("foo0");
       barSetter.set("bar0");
       int[] snapshot1 = profiler.snapshot();

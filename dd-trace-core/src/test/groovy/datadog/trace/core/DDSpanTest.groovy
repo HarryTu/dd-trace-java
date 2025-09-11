@@ -3,10 +3,11 @@ package datadog.trace.core
 import datadog.trace.api.DDSpanId
 import datadog.trace.api.DDTags
 import datadog.trace.api.DDTraceId
+import datadog.trace.api.TagMap
 import datadog.trace.api.gateway.RequestContextSlot
 import datadog.trace.api.sampling.PrioritySampling
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan
-import datadog.trace.bootstrap.instrumentation.api.AgentTracer.NoopPathwayContext
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext
+import datadog.trace.api.datastreams.NoopPathwayContext
 import datadog.trace.bootstrap.instrumentation.api.ErrorPriorities
 import datadog.trace.bootstrap.instrumentation.api.TagContext
 import datadog.trace.bootstrap.instrumentation.api.UTF8BytesString
@@ -138,7 +139,7 @@ class DDSpanTest extends DDCoreSpecification {
 
     then: "has no effect"
     span.durationNano == 0
-    span.context().trace.pendingReferenceCount == 1
+    span.context().traceCollector.pendingReferenceCount == 1
     writer.size() == 0
 
     when:
@@ -147,8 +148,8 @@ class DDSpanTest extends DDCoreSpecification {
 
     then:
     finish
-    span.context().trace.pendingReferenceCount == 1
-    span.context().trace.spans.isEmpty()
+    span.context().traceCollector.pendingReferenceCount == 1
+    span.context().traceCollector.spans.isEmpty()
     writer.isEmpty()
 
     and: "duration is recorded as negative to allow publishing"
@@ -166,8 +167,8 @@ class DDSpanTest extends DDCoreSpecification {
 
     then: "have no effect"
     !finish
-    span.context().trace.pendingReferenceCount == 1
-    span.context().trace.spans.isEmpty()
+    span.context().traceCollector.pendingReferenceCount == 1
+    span.context().traceCollector.spans.isEmpty()
     writer.isEmpty()
 
     when:
@@ -176,14 +177,14 @@ class DDSpanTest extends DDCoreSpecification {
     then: "duration is flipped to positive"
     span.durationNano > 0
     span.durationNano == actualDurationNano
-    span.context().trace.pendingReferenceCount == 0
+    span.context().traceCollector.pendingReferenceCount == 0
     writer.size() == 1
 
     when: "duplicate call to publish"
     span.publish()
 
     then: "has no effect"
-    span.context().trace.pendingReferenceCount == 0
+    span.context().traceCollector.pendingReferenceCount == 0
     writer.size() == 1
   }
 
@@ -274,13 +275,13 @@ class DDSpanTest extends DDCoreSpecification {
 
     where:
     extractedContext                                                                                                              | _
-    new TagContext("some-origin", [:])                                                                                            | _
+    new TagContext("some-origin", TagMap.fromMap([:]))                                                                                            | _
     new ExtractedContext(DDTraceId.ONE, 2, PrioritySampling.SAMPLER_DROP, "some-origin", propagationTagsFactory.empty(), DATADOG) | _
   }
 
   def "isRootSpan() in and not in the context of distributed tracing"() {
     setup:
-    def root = tracer.buildSpan("root").asChildOf((AgentSpan.Context) extractedContext).start()
+    def root = tracer.buildSpan("root").asChildOf((AgentSpanContext) extractedContext).start()
     def child = tracer.buildSpan("child").asChildOf(root).start()
 
     expect:
@@ -299,7 +300,7 @@ class DDSpanTest extends DDCoreSpecification {
 
   def "getApplicationRootSpan() in and not in the context of distributed tracing"() {
     setup:
-    def root = tracer.buildSpan("root").asChildOf((AgentSpan.Context) extractedContext).start()
+    def root = tracer.buildSpan("root").asChildOf((AgentSpanContext) extractedContext).start()
     def child = tracer.buildSpan("child").asChildOf(root).start()
 
     expect:
@@ -362,7 +363,7 @@ class DDSpanTest extends DDCoreSpecification {
       false,
       "fakeType",
       0,
-      tracer.pendingTraceFactory.create(DDTraceId.ONE),
+      tracer.traceCollectorFactory.create(DDTraceId.ONE),
       null,
       null,
       NoopPathwayContext.INSTANCE,
@@ -455,6 +456,11 @@ class DDSpanTest extends DDCoreSpecification {
     span.setError(true, ErrorPriorities.HTTP_SERVER_DECORATOR)
     then:
     !span.isError()
+
+    when:
+    span.setError(true, ErrorPriorities.MANUAL_INSTRUMENTATION)
+    then:
+    span.isError()
 
     when:
     span.setError(true, Byte.MAX_VALUE)

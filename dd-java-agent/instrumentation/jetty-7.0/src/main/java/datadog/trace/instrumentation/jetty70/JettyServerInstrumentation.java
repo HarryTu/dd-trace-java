@@ -1,7 +1,7 @@
 package datadog.trace.instrumentation.jetty70;
 
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
+import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.spanFromContext;
 import static datadog.trace.bootstrap.instrumentation.decorator.HttpServerDecorator.DD_SPAN_ATTRIBUTE;
 import static datadog.trace.instrumentation.jetty70.JettyDecorator.DECORATE;
 import static java.util.Collections.singletonMap;
@@ -10,13 +10,14 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 import static net.bytebuddy.matcher.ElementMatchers.takesNoArguments;
 
 import com.google.auto.service.AutoService;
+import datadog.context.Context;
+import datadog.context.ContextScope;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.Config;
 import datadog.trace.api.CorrelationIdentifier;
-import datadog.trace.api.GlobalTracer;
 import datadog.trace.api.ProductActivation;
 import datadog.trace.bootstrap.InstrumentationContext;
-import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import datadog.trace.instrumentation.jetty.ConnectionHandleRequestVisitor;
 import java.util.Map;
@@ -36,9 +37,11 @@ import org.eclipse.jetty.server.HttpConnection;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 
-@AutoService(Instrumenter.class)
-public final class JettyServerInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class JettyServerInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType,
+        Instrumenter.HasTypeAdvice,
+        Instrumenter.HasMethodAdvice {
 
   public JettyServerInstrumentation() {
     super("jetty");
@@ -69,20 +72,20 @@ public final class JettyServerInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
-        isConstructor(), JettyServerInstrumentation.class.getName() + "$ConstructorAdvice");
-    transformation.applyAdvice(
-        named("handleRequest").and(takesNoArguments()),
-        JettyServerInstrumentation.class.getName() + "$HandleRequestAdvice");
-    transformation.applyAdvice(
-        named("reset").and(takesArgument(0, boolean.class)),
-        JettyServerInstrumentation.class.getName() + "$ResetAdvice");
+  public void typeAdvice(TypeTransformer transformer) {
+    transformer.applyAdvice(new ConnectionHandleRequestVisitorWrapper());
   }
 
   @Override
-  public AdviceTransformer transformer() {
-    return new VisitingTransformer(new ConnectionHandleRequestVisitorWrapper());
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
+        isConstructor(), JettyServerInstrumentation.class.getName() + "$ConstructorAdvice");
+    transformer.applyAdvice(
+        named("handleRequest").and(takesNoArguments()),
+        JettyServerInstrumentation.class.getName() + "$HandleRequestAdvice");
+    transformer.applyAdvice(
+        named("reset").and(takesArgument(0, boolean.class)),
+        JettyServerInstrumentation.class.getName() + "$ResetAdvice");
   }
 
   public static class ConnectionHandleRequestVisitorWrapper implements AsmVisitorWrapper {
@@ -142,31 +145,31 @@ public final class JettyServerInstrumentation extends Instrumenter.Tracing
   public static class HandleRequestAdvice {
 
     @Advice.OnMethodEnter(suppress = Throwable.class)
-    public static AgentScope onEnter(
+    public static ContextScope onEnter(
         @Advice.This final HttpConnection connection, @Advice.Local("agentSpan") AgentSpan span) {
       Request req = connection.getRequest();
 
       Object existingSpan = req.getAttribute(DD_SPAN_ATTRIBUTE);
       if (existingSpan instanceof AgentSpan) {
         // Request already gone through initial processing, so just activate the span.
-        return activateSpan((AgentSpan) existingSpan);
+        return ((AgentSpan) existingSpan).attach();
       }
 
-      final AgentSpan.Context.Extracted extractedContext = DECORATE.extract(req);
-      span = DECORATE.startSpan(req, extractedContext);
-      final AgentScope scope = activateSpan(span);
-      scope.setAsyncPropagation(true);
+      final Context parentContext = DECORATE.extract(req);
+      final Context context = DECORATE.startSpan(req, parentContext);
+      final ContextScope scope = context.attach();
+      span = spanFromContext(context);
       DECORATE.afterStart(span);
-      DECORATE.onRequest(span, req, req, extractedContext);
+      DECORATE.onRequest(span, req, req, parentContext);
 
       req.setAttribute(DD_SPAN_ATTRIBUTE, span);
-      req.setAttribute(CorrelationIdentifier.getTraceIdKey(), GlobalTracer.get().getTraceId());
-      req.setAttribute(CorrelationIdentifier.getSpanIdKey(), GlobalTracer.get().getSpanId());
+      req.setAttribute(CorrelationIdentifier.getTraceIdKey(), CorrelationIdentifier.getTraceId());
+      req.setAttribute(CorrelationIdentifier.getSpanIdKey(), CorrelationIdentifier.getSpanId());
       return scope;
     }
 
     @Advice.OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
-    public static void closeScope(@Advice.Enter final AgentScope scope) {
+    public static void closeScope(@Advice.Enter final ContextScope scope) {
       // Span is finished when the connection is reset, so we only need to close the scope here.
       scope.close();
     }

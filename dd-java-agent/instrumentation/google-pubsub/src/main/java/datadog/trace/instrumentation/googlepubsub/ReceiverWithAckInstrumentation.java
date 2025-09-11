@@ -8,11 +8,12 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 import com.google.auto.service.AutoService;
 import com.google.cloud.pubsub.v1.MessageReceiverWithAckResponse;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public final class ReceiverWithAckInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class ReceiverWithAckInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public ReceiverWithAckInstrumentation() {
     super("google-pubsub", "google-pubsub-receiver");
@@ -35,8 +36,8 @@ public final class ReceiverWithAckInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("newBuilder"))
             .and(takesArgument(0, String.class))

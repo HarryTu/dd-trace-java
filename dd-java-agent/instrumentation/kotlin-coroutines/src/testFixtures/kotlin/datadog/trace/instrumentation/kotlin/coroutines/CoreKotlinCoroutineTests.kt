@@ -2,10 +2,9 @@ package datadog.trace.instrumentation.kotlin.coroutines
 
 import datadog.trace.api.Trace
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan
-import datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeScope
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeSpan
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer.get
-import datadog.trace.bootstrap.instrumentation.api.ScopeSource.INSTRUMENTATION
+import datadog.trace.bootstrap.instrumentation.api.AgentTracer.setAsyncPropagationEnabled
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
@@ -312,6 +311,61 @@ abstract class CoreKotlinCoroutineTests(private val dispatcher: CoroutineDispatc
   }
 
   @Trace
+  open fun traceAfterTimeout(): Int = runTest {
+    childSpan("1-before-timeout").activateAndUse {
+      delay(10)
+    }
+    withTimeout(50) {
+      childSpan("2-inside-timeout").activateAndUse {
+        delay(10)
+      }
+    }
+    childSpan("3-after-timeout").activateAndUse {
+      delay(10)
+    }
+    childSpan("4-after-timeout-2").activateAndUse {
+      delay(10)
+    }
+    childSpan("5-after-timeout-3").activateAndUse {
+      delay(10)
+    }
+
+    6
+  }
+
+  @Trace
+  open fun traceAfterDelay(): Int = runTest {
+    tracedChild("before-process")
+
+    val inputs = listOf("a", "b", "c")
+
+    coroutineScope {
+      inputs.map { data ->
+        async {
+          upload(data)
+        }
+      }.awaitAll().map {
+        tracedChild("process-$it")
+        encrypt(it)
+      }
+    }
+
+    tracedChild("after-process")
+
+    6
+  }
+
+  private suspend fun upload(data: String): String {
+    delay(100)
+    return "url-$data"
+  }
+
+  private suspend fun encrypt(message: String): String {
+    delay(100)
+    return "encrypted-$message"
+  }
+
+  @Trace
   protected open fun tracedChild(opName: String) {
     activeSpan().setSpanName(opName)
   }
@@ -324,7 +378,7 @@ abstract class CoreKotlinCoroutineTests(private val dispatcher: CoroutineDispatc
 
   protected suspend fun AgentSpan.activateAndUse(block: suspend () -> Unit) {
     try {
-      get().activateSpan(this, INSTRUMENTATION).use {
+      get().activateManualSpan(this).use {
         block()
       }
     } finally {
@@ -333,7 +387,7 @@ abstract class CoreKotlinCoroutineTests(private val dispatcher: CoroutineDispatc
   }
 
   protected fun <T> runTest(asyncPropagation: Boolean = true, block: suspend CoroutineScope.() -> T): T {
-    activeScope()?.setAsyncPropagation(asyncPropagation)
+    setAsyncPropagationEnabled(asyncPropagation)
     return runBlocking(jobName("test") + dispatcher, block = block)
   }
 }

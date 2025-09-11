@@ -1,43 +1,30 @@
 package com.datadog.iast.sink
 
 import com.datadog.iast.IastModuleImplTestBase
-import com.datadog.iast.IastRequestContext
+import com.datadog.iast.Reporter
 import com.datadog.iast.model.Source
 import com.datadog.iast.model.Vulnerability
 import com.datadog.iast.model.VulnerabilityType
 import com.datadog.iast.taint.Ranges
-import datadog.trace.api.gateway.RequestContext
-import datadog.trace.api.gateway.RequestContextSlot
 import datadog.trace.api.iast.SourceTypes
 import datadog.trace.api.iast.VulnerabilityMarks
 import datadog.trace.api.iast.sink.XssModule
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan
 
-import static datadog.trace.api.iast.VulnerabilityMarks.NOT_MARKED
 import static com.datadog.iast.taint.TaintUtils.addFromTaintFormat
 import static com.datadog.iast.taint.TaintUtils.taintFormat
+import static datadog.trace.api.iast.VulnerabilityMarks.NOT_MARKED
 
 class XssModuleTest extends IastModuleImplTestBase {
 
   private XssModule module
 
-  private List<Object> objectHolder
-
-  private IastRequestContext ctx
-
   def setup() {
     module = new XssModuleImpl(dependencies)
-    objectHolder = []
-    ctx = new IastRequestContext()
-    final reqCtx = Mock(RequestContext) {
-      getData(RequestContextSlot.IAST) >> ctx
-    }
-    final span = Mock(AgentSpan) {
-      getSpanId() >> 123456
-      getRequestContext() >> reqCtx
-    }
-    tracer.activeSpan() >> span
-    overheadController.consumeQuota(_, _) >> true
+  }
+
+  @Override
+  protected Reporter buildReporter() {
+    return Mock(Reporter)
   }
 
   void 'module detects String XSS'() {
@@ -166,6 +153,45 @@ class XssModuleTest extends IastModuleImplTestBase {
     '/var'       | NOT_MARKED| null
     '/==>var<==' | VulnerabilityMarks.XSS_MARK| null
     '/==>var<==' | VulnerabilityMarks.SQL_INJECTION_MARK| "/==>var<=="
+  }
+
+  void 'class and method names are truncated when exceeding max length'() {
+    setup:
+    final param = mapTainted('/==>value<==', NOT_MARKED)
+    final clazz = 'c' * 600
+    final method = 'm' * 600
+
+    when:
+    module.onXss(param, clazz, method)
+
+    then:
+    1 * reporter.report(_, _) >> { args ->
+      final vuln = args[1] as Vulnerability
+      assertEvidence(vuln, '/==>value<==')
+      assert vuln.location.path.length() == 500
+      assert vuln.location.method.length() == 500
+      assert vuln.location.path == clazz.substring(0, 500)
+      assert vuln.location.method == method.substring(0, 500)
+    }
+  }
+
+  void 'file name is truncated when exceeding max length'() {
+    setup:
+    final param = mapTainted('/==>value<==', NOT_MARKED)
+    final file = 'f' * 600
+    final line = 42
+
+    when:
+    module.onXss(param as CharSequence, file, line)
+
+    then:
+    1 * reporter.report(_, _) >> { args ->
+      final vuln = args[1] as Vulnerability
+      assertEvidence(vuln, '/==>value<==')
+      assert vuln.location.path.length() == 500
+      assert vuln.location.line == line
+      assert vuln.location.path == file.substring(0, 500)
+    }
   }
 
 

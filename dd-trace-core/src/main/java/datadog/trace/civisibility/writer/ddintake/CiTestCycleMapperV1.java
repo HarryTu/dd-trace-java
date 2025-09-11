@@ -1,11 +1,19 @@
 package datadog.trace.civisibility.writer.ddintake;
 
+import static datadog.communication.http.OkHttpUtils.gzippedMsgpackRequestBodyOf;
 import static datadog.communication.http.OkHttpUtils.msgpackRequestBodyOf;
+import static datadog.json.JsonMapper.toJson;
 
 import datadog.communication.serialization.GrowableBuffer;
 import datadog.communication.serialization.Writable;
 import datadog.communication.serialization.msgpack.MsgPackWriter;
-import datadog.trace.api.WellKnownTags;
+import datadog.trace.api.DDTags;
+import datadog.trace.api.DDTraceId;
+import datadog.trace.api.civisibility.CiVisibilityWellKnownTags;
+import datadog.trace.api.civisibility.InstrumentationBridge;
+import datadog.trace.api.civisibility.telemetry.CiVisibilityDistributionMetric;
+import datadog.trace.api.civisibility.telemetry.CiVisibilityMetricCollector;
+import datadog.trace.api.civisibility.telemetry.tag.Endpoint;
 import datadog.trace.bootstrap.instrumentation.api.InternalSpanTypes;
 import datadog.trace.bootstrap.instrumentation.api.Tags;
 import datadog.trace.bootstrap.instrumentation.api.UTF8BytesString;
@@ -14,17 +22,11 @@ import datadog.trace.common.writer.RemoteMapper;
 import datadog.trace.core.CoreSpan;
 import datadog.trace.core.Metadata;
 import datadog.trace.core.MetadataConsumer;
-import datadog.trace.util.Strings;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import okhttp3.RequestBody;
 
 public class CiTestCycleMapperV1 implements RemoteMapper {
@@ -36,40 +38,75 @@ public class CiTestCycleMapperV1 implements RemoteMapper {
   private static final byte[] ENV = "env".getBytes(StandardCharsets.UTF_8);
   private static final byte[] TYPE = "type".getBytes(StandardCharsets.UTF_8);
   private static final byte[] CONTENT = "content".getBytes(StandardCharsets.UTF_8);
+  private static final byte[] TEST_SESSION_ID =
+      Tags.TEST_SESSION_ID.getBytes(StandardCharsets.UTF_8);
+  private static final byte[] TEST_MODULE_ID = Tags.TEST_MODULE_ID.getBytes(StandardCharsets.UTF_8);
+  private static final byte[] TEST_SUITE_ID = Tags.TEST_SUITE_ID.getBytes(StandardCharsets.UTF_8);
+  private static final byte[] TEST_IS_USER_PROVIDED_SERVICE =
+      DDTags.TEST_IS_USER_PROVIDED_SERVICE.getBytes(StandardCharsets.UTF_8);
+  private static final byte[] ITR_CORRELATION_ID =
+      Tags.ITR_CORRELATION_ID.getBytes(StandardCharsets.UTF_8);
+
+  private static final byte[] RUNTIME_NAME = Tags.RUNTIME_NAME.getBytes(StandardCharsets.UTF_8);
+  private static final byte[] RUNTIME_VENDOR = Tags.RUNTIME_VENDOR.getBytes(StandardCharsets.UTF_8);
+  private static final byte[] RUNTIME_VERSION =
+      Tags.RUNTIME_VERSION.getBytes(StandardCharsets.UTF_8);
+  private static final byte[] OS_ARCHITECTURE =
+      Tags.OS_ARCHITECTURE.getBytes(StandardCharsets.UTF_8);
+  private static final byte[] OS_PLATFORM = Tags.OS_PLATFORM.getBytes(StandardCharsets.UTF_8);
+  private static final byte[] OS_VERSION = Tags.OS_VERSION.getBytes(StandardCharsets.UTF_8);
 
   private static final UTF8BytesString SPAN_TYPE = UTF8BytesString.create("span");
 
   private static final Collection<String> DEFAULT_TOP_LEVEL_TAGS =
-      Arrays.asList(Tags.TEST_SESSION_ID, Tags.TEST_MODULE_ID, Tags.TEST_SUITE_ID);
+      Arrays.asList(
+          Tags.TEST_SESSION_ID, Tags.TEST_MODULE_ID, Tags.TEST_SUITE_ID, Tags.ITR_CORRELATION_ID);
 
-  private final WellKnownTags wellKnownTags;
-  private final Collection<String> topLevelTags;
+  private final CiVisibilityWellKnownTags wellKnownTags;
   private final int size;
   private final GrowableBuffer headerBuffer;
   private final MsgPackWriter headerWriter;
-  private int eventCount = 0;
+  private final boolean compressionEnabled;
+  private int eventCount;
+  private int serializationTimeMillis;
 
-  public CiTestCycleMapperV1(WellKnownTags wellKnownTags) {
-    this(wellKnownTags, DEFAULT_TOP_LEVEL_TAGS, 5 << 20);
-  }
-
-  private CiTestCycleMapperV1(
-      WellKnownTags wellKnownTags, Collection<String> topLevelTags, int size) {
+  public CiTestCycleMapperV1(CiVisibilityWellKnownTags wellKnownTags, boolean compressionEnabled) {
     this.wellKnownTags = wellKnownTags;
-    this.topLevelTags = topLevelTags;
-    this.size = size;
+    this.size = 5 << 20;
+    this.compressionEnabled = compressionEnabled;
     headerBuffer = new GrowableBuffer(16);
     headerWriter = new MsgPackWriter(headerBuffer);
   }
 
   @Override
   public void map(List<? extends CoreSpan<?>> trace, Writable writable) {
+    long serializationStartTimestamp = System.currentTimeMillis();
+
     for (final CoreSpan<?> span : trace) {
+      DDTraceId testSessionId = span.getTag(Tags.TEST_SESSION_ID);
+      span.removeTag(Tags.TEST_SESSION_ID);
+
+      Number testModuleId = span.getTag(Tags.TEST_MODULE_ID);
+      span.removeTag(Tags.TEST_MODULE_ID);
+
+      Number testSuiteId = span.getTag(Tags.TEST_SUITE_ID);
+      span.removeTag(Tags.TEST_SUITE_ID);
+
+      String itrCorrelationId = span.getTag(Tags.ITR_CORRELATION_ID);
+      span.removeTag(Tags.ITR_CORRELATION_ID);
+
       int topLevelTagsCount = 0;
-      for (String topLevelTag : topLevelTags) {
-        if (span.getTag(topLevelTag) != null) {
-          topLevelTagsCount++;
-        }
+      if (testSessionId != null) {
+        topLevelTagsCount++;
+      }
+      if (testModuleId != null) {
+        topLevelTagsCount++;
+      }
+      if (testSuiteId != null) {
+        topLevelTagsCount++;
+      }
+      if (itrCorrelationId != null) {
+        topLevelTagsCount++;
       }
 
       UTF8BytesString type;
@@ -147,20 +184,21 @@ public class CiTestCycleMapperV1 implements RemoteMapper {
         writable.writeUTF8(PARENT_ID);
         writable.writeUnsignedLong(parentId);
       }
-
-      for (String topLevelTag : topLevelTags) {
-        Object tagValue = span.getTag(topLevelTag);
-        if (tagValue != null) {
-          writable.writeString(topLevelTag, null);
-
-          if (tagValue instanceof Number) {
-            writable.writeObject(tagValue, null);
-          } else {
-            writable.writeObjectString(tagValue, null);
-          }
-
-          span.removeTag(topLevelTag);
-        }
+      if (testSessionId != null) {
+        writable.writeUTF8(TEST_SESSION_ID);
+        writable.writeObject(testSessionId.toLong(), null);
+      }
+      if (testModuleId != null) {
+        writable.writeUTF8(TEST_MODULE_ID);
+        writable.writeObject(testModuleId, null);
+      }
+      if (testSuiteId != null) {
+        writable.writeUTF8(TEST_SUITE_ID);
+        writable.writeObject(testSuiteId, null);
+      }
+      if (itrCorrelationId != null) {
+        writable.writeUTF8(ITR_CORRELATION_ID);
+        writable.writeObjectString(itrCorrelationId, null);
       }
 
       /* 1  */
@@ -185,6 +223,7 @@ public class CiTestCycleMapperV1 implements RemoteMapper {
       span.processTagsAndBaggage(metaWriter.withWritable(writable));
     }
     eventCount += trace.size();
+    serializationTimeMillis += (int) (System.currentTimeMillis() - serializationStartTimestamp);
   }
 
   private static boolean equals(CharSequence a, CharSequence b) {
@@ -204,7 +243,7 @@ public class CiTestCycleMapperV1 implements RemoteMapper {
     headerWriter.startMap(1);
     /* 2,1 */
     headerWriter.writeUTF8(METADATA_ASTERISK);
-    headerWriter.startMap(3);
+    headerWriter.startMap(10);
     /* 2,1,1 */
     headerWriter.writeUTF8(ENV);
     headerWriter.writeUTF8(wellKnownTags.getEnv());
@@ -214,6 +253,27 @@ public class CiTestCycleMapperV1 implements RemoteMapper {
     /* 2,1,3 */
     headerWriter.writeUTF8(LANGUAGE);
     headerWriter.writeUTF8(wellKnownTags.getLanguage());
+    /* 2,1,4 */
+    headerWriter.writeUTF8(RUNTIME_NAME);
+    headerWriter.writeUTF8(wellKnownTags.getRuntimeName());
+    /* 2,1,5 */
+    headerWriter.writeUTF8(RUNTIME_VENDOR);
+    headerWriter.writeUTF8(wellKnownTags.getRuntimeVendor());
+    /* 2,1,6 */
+    headerWriter.writeUTF8(RUNTIME_VERSION);
+    headerWriter.writeUTF8(wellKnownTags.getRuntimeVersion());
+    /* 2,1,7 */
+    headerWriter.writeUTF8(OS_ARCHITECTURE);
+    headerWriter.writeUTF8(wellKnownTags.getOsArch());
+    /* 2,1,8 */
+    headerWriter.writeUTF8(OS_PLATFORM);
+    headerWriter.writeUTF8(wellKnownTags.getOsPlatform());
+    /* 2,1,9 */
+    headerWriter.writeUTF8(OS_VERSION);
+    headerWriter.writeUTF8(wellKnownTags.getOsVersion());
+    /* 2,1,10 */
+    headerWriter.writeUTF8(TEST_IS_USER_PROVIDED_SERVICE);
+    headerWriter.writeUTF8(wellKnownTags.getIsUserProvidedService());
     /* 3  */
     headerWriter.writeUTF8(EVENTS);
     headerWriter.startArray(eventCount);
@@ -222,7 +282,18 @@ public class CiTestCycleMapperV1 implements RemoteMapper {
   @Override
   public Payload newPayload() {
     writeHeader();
-    return new PayloadV1().withHeader(headerBuffer.slice());
+
+    CiVisibilityMetricCollector metricCollector = InstrumentationBridge.getMetricCollector();
+    metricCollector.add(
+        CiVisibilityDistributionMetric.ENDPOINT_PAYLOAD_EVENTS_COUNT,
+        eventCount,
+        Endpoint.TEST_CYCLE);
+    metricCollector.add(
+        CiVisibilityDistributionMetric.ENDPOINT_PAYLOAD_EVENTS_SERIALIZATION_MS,
+        serializationTimeMillis,
+        Endpoint.TEST_CYCLE);
+
+    return new PayloadV1(compressionEnabled).withHeader(headerBuffer.slice());
   }
 
   @Override
@@ -233,6 +304,7 @@ public class CiTestCycleMapperV1 implements RemoteMapper {
   @Override
   public void reset() {
     eventCount = 0;
+    serializationTimeMillis = 0;
   }
 
   @Override
@@ -291,7 +363,7 @@ public class CiTestCycleMapperV1 implements RemoteMapper {
           if (!(value instanceof Iterable)) {
             writable.writeObjectString(value, null);
           } else {
-            String serializedValue = Strings.toJson((Iterable<String>) value);
+            String serializedValue = toJson((Collection<String>) value);
             writable.writeString(serializedValue, null);
           }
         }
@@ -301,7 +373,13 @@ public class CiTestCycleMapperV1 implements RemoteMapper {
 
   private static class PayloadV1 extends Payload {
 
+    private final boolean compressionEnabled;
+
     ByteBuffer header = null;
+
+    private PayloadV1(boolean compressionEnabled) {
+      this.compressionEnabled = compressionEnabled;
+    }
 
     PayloadV1 withHeader(ByteBuffer header) {
       this.header = header;
@@ -343,13 +421,17 @@ public class CiTestCycleMapperV1 implements RemoteMapper {
     @Override
     public RequestBody toRequest() {
       // If traceCount is 0, we write a map with 0 elements in MsgPack format.
+      List<ByteBuffer> buffers;
       if (traceCount() == 0) {
-        return msgpackRequestBodyOf(Collections.singletonList(msgpackMapHeader(0)));
+        buffers = Collections.singletonList(msgpackMapHeader(0));
       } else if (header != null) {
-        return msgpackRequestBodyOf(Arrays.asList(header, body));
+        buffers = Arrays.asList(header, body);
       } else {
-        return msgpackRequestBodyOf(Collections.singletonList(body));
+        buffers = Collections.singletonList(body);
       }
+      return compressionEnabled
+          ? gzippedMsgpackRequestBodyOf(buffers)
+          : msgpackRequestBodyOf(buffers);
     }
   }
 }

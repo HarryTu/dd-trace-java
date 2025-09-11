@@ -1,15 +1,21 @@
 import datadog.trace.agent.test.asserts.TraceAssert
 import datadog.trace.agent.test.base.HttpServer
 import datadog.trace.agent.test.naming.TestingGenericHttpNamingConventions
+import datadog.trace.api.iast.InstrumentationBridge
+import datadog.trace.api.iast.sink.ApplicationModule
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan
 import datadog.trace.bootstrap.instrumentation.api.Tags
 import datadog.trace.instrumentation.servlet3.AsyncDispatcherDecorator
+import datadog.trace.instrumentation.servlet3.HtmlRumServlet
 import datadog.trace.instrumentation.servlet3.TestServlet3
+import datadog.trace.instrumentation.servlet3.XmlRumServlet
 import groovy.servlet.AbstractHttpServlet
 import org.eclipse.jetty.server.Request
 import org.eclipse.jetty.server.Server
 import org.eclipse.jetty.server.handler.ErrorHandler
+import org.eclipse.jetty.server.session.SessionHandler
 import org.eclipse.jetty.servlet.ServletContextHandler
+import spock.lang.Retry
 
 import javax.servlet.AsyncEvent
 import javax.servlet.AsyncListener
@@ -50,7 +56,8 @@ abstract class JettyServlet3Test extends AbstractServlet3Test<Server, ServletCon
         it.setHost('localhost')
       }
 
-      ServletContextHandler servletContext = new ServletContextHandler(null, "/$context")
+      ServletContextHandler servletContext = new ServletContextHandler(null, "/$context", ServletContextHandler.SESSIONS)
+      servletContext.sessionHandler = new SessionHandler()
       servletContext.errorHandler = new ErrorHandler() {
           @Override
           void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException {
@@ -140,6 +147,12 @@ abstract class JettyServlet3Test extends AbstractServlet3Test<Server, ServletCon
   }
 
   @Override
+  boolean testSessionId() {
+    // TODO enable when session id management is added to Jetty
+    false
+  }
+
+  @Override
   boolean hasResponseSpan(ServerEndpoint endpoint) {
     if (IS_LATEST) {
       return [NOT_FOUND, ERROR, REDIRECT].contains(endpoint)
@@ -156,8 +169,8 @@ abstract class JettyServlet3Test extends AbstractServlet3Test<Server, ServletCon
   Map<String, Serializable> expectedExtraErrorInformation(ServerEndpoint endpoint) {
     if (endpoint.throwsException) {
       ["error.message": "${endpoint.body}",
-        "error.type": { it == Exception.name || it == InputMismatchException.name },
-        "error.stack": String]
+        "error.type"   : { it == Exception.name || it == InputMismatchException.name },
+        "error.stack"  : String]
     } else {
       Collections.emptyMap()
     }
@@ -222,6 +235,19 @@ class JettyServlet3TestSync extends JettyServlet3Test {
   }
 }
 
+class JettyServlet3SyncRumInjectionForkedTest extends JettyServlet3TestSync {
+  @Override
+  boolean testRumInjection() {
+    true
+  }
+
+  @Override
+  protected void setupServlets(ServletContextHandler servletContextHandler) {
+    super.setupServlets(servletContextHandler)
+    addServlet(servletContextHandler, "/gimme-html", HtmlRumServlet)
+    addServlet(servletContextHandler, "/gimme-xml", XmlRumServlet)
+  }
+}
 
 class JettyServlet3SyncV1ForkedTest extends JettyServlet3TestSync implements TestingGenericHttpNamingConventions.ServerV1 {
 
@@ -249,6 +275,7 @@ class JettyServlet3TestAsync extends JettyServlet3Test {
 class JettyServlet3ASyncV1ForkedTest extends JettyServlet3TestAsync implements TestingGenericHttpNamingConventions.ServerV1 {
 
 }
+
 class JettyServlet3TestFakeAsync extends JettyServlet3Test {
 
   @Override
@@ -428,6 +455,11 @@ class JettyServlet3TestSyncDispatchOnAsyncTimeout extends JettyServlet3Test {
   }
 
   @Override
+  boolean testParallelRequest() {
+    false
+  }
+
+  @Override
   void handlerSpan(TraceAssert trace, ServerEndpoint endpoint = SUCCESS) {
     dispatchSpan(trace, endpoint)
   }
@@ -440,6 +472,8 @@ class JettyServlet3TestSyncDispatchOnAsyncTimeout extends JettyServlet3Test {
   }
 }
 
+//@Flaky("Fails with timeout very often under high load")
+@Retry(exceptions = SocketTimeoutException, count = 3, delay = 500, mode = Retry.Mode.SETUP_FEATURE_CLEANUP)
 class JettyServlet3TestAsyncDispatchOnAsyncTimeout extends JettyServlet3Test {
   @Override
   Class<Servlet> servlet() {
@@ -459,6 +493,11 @@ class JettyServlet3TestAsyncDispatchOnAsyncTimeout extends JettyServlet3Test {
   @Override
   boolean isDispatch() {
     true
+  }
+
+  @Override
+  boolean testParallelRequest() {
+    false
   }
 
   @Override
@@ -507,6 +546,8 @@ class ServeFromOnAsyncTimeout extends AbstractHttpServlet {
   }
 }
 
+//@Flaky("Fails with timeout very often under high load")
+@Retry(exceptions = SocketTimeoutException, count = 3, delay = 500, mode = Retry.Mode.SETUP_FEATURE_CLEANUP)
 class JettyServlet3ServeFromAsyncTimeout extends JettyServlet3Test {
   @Override
   Class<Servlet> servlet() {
@@ -517,4 +558,61 @@ class JettyServlet3ServeFromAsyncTimeout extends JettyServlet3Test {
   boolean testException() {
     false
   }
+
+  @Override
+  boolean testParallelRequest() {
+    false
+  }
+}
+
+class IastJettyServlet3ForkedTest extends JettyServlet3TestSync {
+
+  @Override
+  Class<Servlet> servlet() {
+    return TestServlet3.GetSession
+  }
+
+  @Override
+  void configurePreAgent() {
+    super.configurePreAgent()
+    injectSysConfig('dd.iast.enabled', 'true')
+  }
+
+  void 'test no calls if no modules registered'() {
+    given:
+    final appModule = Mock(ApplicationModule)
+    def request = request(SUCCESS, "GET", null).build()
+
+    when:
+    client.newCall(request).execute()
+
+    then:
+    0 * appModule.onRealPath(_)
+    0 * appModule.checkSessionTrackingModes(_)
+    0 * _
+  }
+
+  void 'test that iast module is called'() {
+    given:
+    final appModule = Mock(ApplicationModule)
+    InstrumentationBridge.registerIastModule(appModule)
+    def request = request(SUCCESS, "GET", null).build()
+
+    when:
+    client.newCall(request).execute()
+
+    then:
+    1 * appModule.onRealPath(_)
+    1 * appModule.checkSessionTrackingModes(_)
+    0 * _
+
+    when:
+    client.newCall(request).execute()
+
+    then: //Only call once per application context
+    0 * appModule.onRealPath(_)
+    0 * appModule.checkSessionTrackingModes(_)
+    0 * _
+  }
+
 }

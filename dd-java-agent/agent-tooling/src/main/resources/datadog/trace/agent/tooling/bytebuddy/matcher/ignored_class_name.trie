@@ -41,11 +41,14 @@
 1 io.micronaut.tracing.*
 1 io.opentelemetry.javaagent.*
 1 java.*
+0 java.lang.ClassLoader
 # allow exception profiling instrumentation
 0 java.lang.Exception
 0 java.lang.Error
 # allow ProcessImpl instrumentation
 0 java.lang.ProcessImpl
+# allow Runtime instrumentation for RASP
+0 java.lang.Runtime
 0 java.net.http.*
 0 java.net.HttpURLConnection
 0 java.net.Socket
@@ -78,6 +81,7 @@
 1 org.groovy.*
 1 org.jinspired.*
 1 org.springframework.context.support.ContextTypeMatchClassLoader
+1 org.springframework.context.support.DefaultLifecycleProcessor*
 1 org.springframework.core.DecoratingClassLoader
 1 org.springframework.core.OverridingClassLoader
 1 org.springframework.core.$Proxy*
@@ -96,6 +100,7 @@
 # USM needs it
 0 sun.security.ssl.*
 0 javax.net.ssl.SSLSocket
+1 org.mockito.codegen.*
 
 # Prevent IllegalAccessError in OpenJDK 17.0.4
 1 javax.management.*
@@ -185,6 +190,8 @@
 0 com.fasterxml.jackson.databind.util.TokenBuffer$Parser
 0 com.fasterxml.jackson.databind.ObjectMapper
 0 com.fasterxml.jackson.module.afterburner.util.MyClassLoader
+# Included for API Security response schema collection
+0 com.fasterxml.jackson.jaxrs.*
 2 com.github.mustachejava.*
 2 com.google.api.*
 0 com.google.api.client.http.HttpRequest
@@ -209,6 +216,7 @@
 2 com.google.logging.*
 2 com.google.longrunning.*
 2 com.google.protobuf.*
+0 com.google.protobuf.DynamicMessage
 2 com.google.rpc.*
 2 com.google.thirdparty.*
 2 com.google.type.*
@@ -257,7 +265,9 @@
 0 org.springframework.beans.factory.support.AbstractBeanFactory
 0 org.springframework.beans.factory.support.DefaultListableBeanFactory
 0 org.springframework.beans.factory.support.DisposableBeanAdapter
+0 org.springframework.boot.SpringApplicationRunListeners
 1 org.springframework.boot.SpringApplicationShutdownHook$Handlers
+1 org.springframework.boot.autoconfigure.ssl.FileWatcher$WatcherThread
 2 org.springframework.boot.*
 0 org.apache.xalan.transformer.TransformerImpl
 # More runnables to deal with
@@ -272,6 +282,8 @@
 0 org.springframework.boot.web.embedded.tomcat.TomcatWebServer$1
 0 org.springframework.boot.web.servlet.context.AnnotationConfigServletWebServerApplicationContext
 0 org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext
+0 org.springframework.boot.web.servlet.support.SpringBootServletInitializer
+0 org.springframework.boot.web.support.SpringBootServletInitializer
 2 org.springframework.cache.*
 2 org.springframework.cglib.*
 # LoadingCache.createEntry constructs FutureTasks which it executes synchronously,
@@ -300,9 +312,14 @@
 0 org.springframework.http.ReadOnlyHttpHeaders
 0 org.springframework.http.codec.json.Jackson2Tokenizer
 0 org.springframework.http.server.reactive.UndertowServerHttpRequest$UndertowDataBuffer
+0 org.springframework.http.server.ServletServerHttpRequest
+0 org.springframework.http.server.reactive.ReactorServerHttpRequest
+0 org.springframework.http.client.reactive.AbstractClientHttpRequest
+0 org.springframework.http.client.reactive.ReactorClientHttpRequest
 0 org.springframework.core.io.buffer.DataBuffer
 0 org.springframework.core.io.buffer.DefaultDataBuffer
 0 org.springframework.core.io.buffer.NettyDataBuffer
+0 org.springframework.core.io.buffer.SubscriberInputStream
 # There are some Mono implementation that get instrumented
 0 org.springframework.http.server.reactive.*
 2 org.springframework.instrument.*
@@ -333,16 +350,21 @@
 0 org.springframework.web.context.support.AbstractRefreshableWebApplicationContext
 0 org.springframework.web.context.support.GenericWebApplicationContext
 0 org.springframework.web.context.support.XmlWebApplicationContext
+1 org.springframework.web.filter.CompositeFilter$VirtualFilterChain
 0 org.springframework.web.reactive.*
 0 org.springframework.web.servlet.*
+0 org.springframework.web.socket.*
 # Need for IAST so propagation of tainted objects is complete in spring 2.7.5
 0 org.springframework.util.StreamUtils$NonClosingInputStream
 # Need for IAST gson propagation
 0 org.springframework.util.StreamUtils
 # Included for IAST Spring mvc unvalidated redirect and xss vulnerability
 0 org.springframework.web.method.support.HandlerMethodReturnValueHandlerComposite
+0 org.springframework.web.method.support.InvocableHandlerMethod
 2 org.xml.*
 2 org.yaml.snakeyaml.*
+# Need for IAST sink
+0 org.yaml.snakeyaml.Yaml
 # saves ~0.5s skipping instrumentation of almost ~470 classes
 2 scala.collection.*
 

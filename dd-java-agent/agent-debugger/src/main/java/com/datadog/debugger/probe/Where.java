@@ -1,28 +1,35 @@
 package com.datadog.debugger.probe;
 
+import static java.util.Arrays.stream;
+
 import com.datadog.debugger.agent.Generated;
 import com.datadog.debugger.instrumentation.Types;
+import com.datadog.debugger.util.ClassFileLines;
 import com.squareup.moshi.JsonAdapter;
 import com.squareup.moshi.JsonReader;
 import com.squareup.moshi.JsonWriter;
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.tree.MethodNode;
 
 /** Stores probe location definition */
 public class Where {
   private static final String UNKNOWN_RETURN_TYPE = "$com.datadog.debugger.UNKNOWN$";
   private static final Pattern JVM_CLASS_PATTERN = Pattern.compile("L([^;]+);");
 
-  private String typeName;
-  private String methodName;
-  private String sourceFile;
-  private String signature;
-  private SourceLine[] lines;
+  private final String typeName;
+  private final String methodName;
+  private final String sourceFile;
+  private final String signature;
+  private final SourceLine[] lines;
   // used as cache for matching signature
   private String probeMethodDescriptor;
 
@@ -39,35 +46,21 @@ public class Where {
     this(typeName, methodName, signature, sourceLines(lines), sourceFile);
   }
 
-  public Where() {}
-
-  public Where typeName(String typeName) {
-    this.typeName = typeName;
-    return this;
+  public static Where of(String typeName, String methodName, String signature, String... lines) {
+    return new Where(typeName, methodName, signature, lines, null);
   }
 
-  public Where methodName(String methodName) {
-    this.methodName = methodName;
-    return this;
-  }
-
-  public Where signature(String signature) {
-    this.signature = signature;
-    return this;
-  }
-
-  public Where lines(String... lines) {
-    this.lines = sourceLines(lines);
-    return this;
-  }
-
-  public Where sourceFile(String sourceFile) {
-    this.sourceFile = sourceFile;
-    return this;
+  public static Where of(Method method) {
+    return of(
+        method.getDeclaringClass().getName(),
+        method.getName(),
+        stream(method.getParameterTypes())
+            .map(Class::getTypeName)
+            .collect(Collectors.joining(", ", "(", ")")));
   }
 
   protected static SourceLine[] sourceLines(String[] defs) {
-    if (defs == null) {
+    if (defs == null || defs.length == 0) {
       return null;
     }
     SourceLine[] lines = new SourceLine[defs.length];
@@ -75,6 +68,24 @@ public class Where {
       lines[i] = SourceLine.fromString(defs[i]);
     }
     return lines;
+  }
+
+  public static Where convertLineToMethod(Where lineWhere, ClassFileLines classFileLines) {
+    if (lineWhere.methodName != null && lineWhere.lines != null) {
+      List<MethodNode> methodsByLine =
+          classFileLines.getMethodsByLine(lineWhere.lines[0].getFrom());
+      if (methodsByLine != null && !methodsByLine.isEmpty()) {
+        // pick the first method, as we can have multiple methods (lambdas) on the same line
+        MethodNode method = methodsByLine.get(0);
+        return new Where(
+            lineWhere.typeName,
+            method.name,
+            Types.descriptorToSignature(method.desc),
+            (SourceLine[]) null,
+            null);
+      }
+    }
+    return lineWhere;
   }
 
   public String getTypeName() {
@@ -112,17 +123,42 @@ public class Where {
     return typeName == null || typeName.equals("*") || typeName.equals(targetType);
   }
 
-  public boolean isMethodMatching(String targetMethod) {
+  public boolean isMethodNameMatching(String targetMethod) {
     return methodName == null || methodName.equals("*") || methodName.equals(targetMethod);
   }
 
-  public boolean isMethodMatching(String targetName, String targetMethodDescriptor) {
+  public enum MethodMatching {
+    MATCH,
+    SKIP,
+    FAIL
+  }
+
+  public MethodMatching isMethodMatching(MethodNode methodNode, ClassFileLines classFileLines) {
+    String targetName = methodNode.name;
+    String targetMethodDescriptor = methodNode.desc;
     // try exact matching: name + FQN signature
-    if (!isMethodMatching(targetName)) {
-      return false;
+    if (!isMethodNameMatching(targetName)) {
+      return MethodMatching.FAIL;
     }
-    if (signature == null || signature.equals("*") || signature.equals(targetMethodDescriptor)) {
-      return true;
+    if ((methodNode.access & Opcodes.ACC_BRIDGE) == Opcodes.ACC_BRIDGE) {
+      // name is matching but method is a bridge method
+      return MethodMatching.SKIP;
+    }
+    if (signature == null) {
+      if (lines == null || lines.length == 0) {
+        return MethodMatching.MATCH;
+      }
+      // try matching by line
+      List<MethodNode> methodsByLine = classFileLines.getMethodsByLine(lines[0].getFrom());
+      if (methodsByLine == null || methodsByLine.isEmpty()) {
+        return MethodMatching.FAIL;
+      }
+      return methodsByLine.stream().anyMatch(m -> m == methodNode)
+          ? MethodMatching.MATCH
+          : MethodMatching.FAIL;
+    }
+    if (signature.equals("*") || signature.equals(targetMethodDescriptor)) {
+      return MethodMatching.MATCH;
     }
     // try full JVM signature: "(Ljava.lang.String;Ljava.util.Map;I)V"
     if (probeMethodDescriptor == null) {
@@ -135,20 +171,22 @@ public class Where {
       }
     }
     if (probeMethodDescriptor.isEmpty()) {
-      return true;
+      return MethodMatching.MATCH;
     }
     if (probeMethodDescriptor.equals(targetMethodDescriptor)) {
-      return true;
+      return MethodMatching.MATCH;
     }
     // fallback to signature without return type: "Ljava.lang.String;Ljava.util.Map;I"
     String noRetTypeDescriptor = removeReturnType(probeMethodDescriptor);
     targetMethodDescriptor = removeReturnType(targetMethodDescriptor);
     if (noRetTypeDescriptor.equals(targetMethodDescriptor)) {
-      return true;
+      return MethodMatching.MATCH;
     }
     // Fallback to signature without Fully Qualified Name: "LString;LMap;I"
     String simplifiedSignature = removeFQN(targetMethodDescriptor);
-    return noRetTypeDescriptor.equals(simplifiedSignature);
+    return noRetTypeDescriptor.equals(simplifiedSignature)
+        ? MethodMatching.MATCH
+        : MethodMatching.FAIL;
   }
 
   private static boolean isMissingReturnType(String probeMethodDescriptor) {

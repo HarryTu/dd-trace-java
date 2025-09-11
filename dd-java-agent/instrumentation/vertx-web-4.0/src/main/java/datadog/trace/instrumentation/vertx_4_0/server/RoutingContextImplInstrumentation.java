@@ -6,6 +6,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.agent.tooling.muzzle.Reference;
 import io.vertx.ext.web.impl.RoutingContextImpl;
 
@@ -13,9 +14,9 @@ import io.vertx.ext.web.impl.RoutingContextImpl;
  * @see RoutingContextImpl#getBodyAsJson(int)
  * @see RoutingContextImpl#getBodyAsJsonArray(int)
  */
-@AutoService(Instrumenter.class)
-public class RoutingContextImplInstrumentation extends Instrumenter.AppSec
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class RoutingContextImplInstrumentation extends InstrumenterModule.AppSec
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public RoutingContextImplInstrumentation() {
     super("vertx", "vertx-4.0");
@@ -32,12 +33,15 @@ public class RoutingContextImplInstrumentation extends Instrumenter.AppSec
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("getBodyAsJson")
             .or(named("getBodyAsJsonArray"))
             .and(takesArguments(1))
             .and(takesArgument(0, int.class)),
         packageName + ".RoutingContextJsonAdvice");
+    transformer.applyAdvice(
+        named("setSession").and(takesArgument(0, named("io.vertx.ext.web.Session"))),
+        packageName + ".RoutingContextSessionAdvice");
   }
 }

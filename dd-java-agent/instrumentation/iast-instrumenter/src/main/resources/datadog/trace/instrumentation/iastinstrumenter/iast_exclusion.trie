@@ -39,6 +39,9 @@
 0 datadog.smoketest.*
 1 com.timgroup.statsd.*
 
+# -------- Agents -----------
+1. com.instana.*
+
 # -------- Libraries --------
 1 aj.org.objectweb.*
 1 akka.*
@@ -53,6 +56,15 @@
 1 com.apple.crypto.*
 1 com.arjuna.*
 1 com.atlassian.jira.*
+#APPSEC-56887
+1 com.azure.core.amqp.ExponentialAmqpRetryPolicy
+1 com.azure.core.util.CoreUtils
+1 com.azure.cosmos.implementation.directconnectivity.GoneAndRetryWithRetryPolicy$RetryWithRetryPolicy
+1 com.azure.cosmos.implementation.directconnectivity.StoreReader
+1 com.azure.cosmos.implementation.directconnectivity.addressEnumerator.AddressEnumeratorUsingPermutations
+1 com.azure.cosmos.implementation.uuid.UUIDTimer
+1 com.azure.messaging.eventhubs.EventProcessorClient
+1 com.azure.messaging.eventhubs.PartitionBasedLoadBalancer
 1 com.bea.*
 1 com.blogspot.*
 1 com.certicom.*
@@ -89,9 +101,15 @@
 1 com.jcraft.*
 1 com.jhlabs.*
 1 com.jprofiler.*
+#APPSEC-56887
+1 com.launchdarkly.shaded.com.launchdarkly.eventsource.EventSource
 1 com.liferay.*
 1 com.lowagie.*
 1 com.mchange.*
+# APPSEC-56323
+1 com.microsoft.azure.storage.RetryExponentialRetry
+#APPSEC-56887
+1 com.microsoft.sqlserver.jdbc.SQLServerConnection
 1 com.mongodb.*
 1 com.mysql.*
 1 com.neo4j.*
@@ -109,6 +127,9 @@
 1 com.safelayer.*
 1 com.solarmetric.*
 1 com.squareup.*
+1 com.stripe.*
+# APPSEC-56641
+2 com.stripe.net.HttpURLConnectionClient
 # Required for propagation purposes
 2 com.squareup.okhttp.Request
 2 com.squareup.okhttp.Request$*
@@ -116,14 +137,26 @@
 1 com.thoughtworks.*
 1 com.typesafe.*
 1 com.zaxxer.*
+# APPSEC-56331
+1 com.facebook.presto.hive.RetryDriver
+1 com.facebook.presto.verifier.retry.RetryDriver
 1 commonj.work.*
 1 cryptix.*
+# Avoid weak random in dev.failsafe.internal.RetryPolicyExecutor
+1 dev.failsafe.*
 1 edu.emory.*
 1 edu.oswego.*
 1 freemarker.*
 1 gnu.*
 1 graphql.*
+1 ibm.security.*
+# APPSEC-56801
+1 io.confluent.kafka.schemaregistry.client.rest.utils.UrlList
 1 io.dropwizard.*
+2 io.ebean.*
+2 io.ebeaninternal.*
+# APPSEC-56322
+1 io.fabric8.kubernetes.client.informers.impl.cache.Reflector
 1 io.github.lukehutch.fastclasspathscanner.*
 1 io.grpc.*
 1 io.leangen.geantyref.*
@@ -139,6 +172,9 @@
 1 io.smallrye.*
 1 io.springfox.*
 1 io.swagger.*
+# APPSEC-56331
+1 io.trino.hdfs.s3.RetryDriver
+1 io.trino.plugin.hive.metastore.thrift.RetryDriver
 1 io.undertow.*
 1 io.vertx.*
 # https://github.com/tsegismont/vertx-musicstore
@@ -157,6 +193,7 @@
 1 jva_cup.*
 1 liquibase.*
 1 kodo.*
+2 kong.unirest.*
 1 macromedia.*
 1 Microsoft.*
 1 nanoxml.*
@@ -182,13 +219,22 @@
 1 okhttp3.*
 2 okhttp3.Request
 2 okhttp3.Request$*
+2 okio.*
 1 ognl.*
+2 oracle.j2ee.*
 1 oracle.jdbc.*
+# APPSEC-57044
+1 oracle.security.o5logon.O5Logon
 1 oracle.sql.*
+# APPSEC-57044
+1 oracle.ucp.util.OpaqueString
 1 org.ajax4jsf.*
 1 org.aopalliance.*
 1 org.antlr.*
 1 org.apache.*
+#apache httpClient needs URI propagation
+0 org.apache.http.client.methods.*
+0 org.apache.hc.client5.http.classic.methods.*
 # apache compiled jsps
 0 org.apache.jsp.*
 1 org.apiguardian.*
@@ -234,8 +280,12 @@
 1 org.jnp.*
 1 org.joda.*
 1 org.jooq.*
+# APPSEC-57044
+2 org.jose4j.lang.HashUtil
 1 org.jruby.*
 1 org.json.*
+#Needed for JSON propagation
+2 org.json.JSONTokener
 1 org.jsoup.*
 1 org.junit.*
 1 org.jvnet.hk2.*
@@ -248,6 +298,11 @@
 1 org.mongodb.*
 1 org.mortbay.*
 1 org.objectweb.*
+1 org.openid4java.*
+# Weak randomness false positive on HotspotUnsafe.guessAlignment
+1 org.openjdk.jol.vm.*
+# Weak randomness false positive on RandomIdGenerator.generateTraceId
+1 io.opentelemetry.sdk.trace.*
 1 org.openxmlformats.*
 1 org.osgi.*
 1 org.owasp.*
@@ -265,11 +320,13 @@
 1 org.relaxng.*
 1 org.renjin.*
 1 org.richfaces.*
+1 org.seasar.*
 1 org.slf4j.*
 1 org.springdoc.*
 1 org.springframework.*
-# Update when JdbcTemplate call sites are ready
+# Update when spring template call sites are ready
 2 org.springframework.jdbc.core.JdbcTemplate$*
+2 org.springframework.ldap.core.LdapTemplate$*
 # https://github.com/spring-projects/spring-petclinic
 0 org.springframework.samples.*
 # Used by insecure-bank
@@ -300,6 +357,8 @@
 1 serp.*
 1 sl.org.objectweb.asm.*
 1 software.amazon.awssdk.*
+# Avoid header injection reported within spark.Response
+2 spark.*
 1 springfox.*
 1 System.*
 1 tech.jhipster.*

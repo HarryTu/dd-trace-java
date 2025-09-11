@@ -10,6 +10,7 @@ import com.fasterxml.jackson.core.ObjectCodec;
 import com.fasterxml.jackson.databind.util.TokenBuffer;
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.iast.InstrumentationBridge;
 import datadog.trace.api.iast.Propagation;
 import datadog.trace.api.iast.propagation.PropagationModule;
@@ -20,9 +21,9 @@ import net.bytebuddy.asm.Advice;
  * @see TokenBuffer#asParser(ObjectCodec codec)
  * @see TokenBuffer#asParser(JsonParser codec)
  */
-@AutoService(Instrumenter.class)
-public class TokenBufferInstrumentation extends Instrumenter.Iast
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class TokenBufferInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public TokenBufferInstrumentation() {
     super("jackson-core");
   }
@@ -33,8 +34,8 @@ public class TokenBufferInstrumentation extends Instrumenter.Iast
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("asParser"))
             .and(isPublic())
@@ -49,7 +50,7 @@ public class TokenBufferInstrumentation extends Instrumenter.Iast
         @Advice.This TokenBuffer tokenBuffer, @Advice.Return JsonParser parser) {
       final PropagationModule module = InstrumentationBridge.PROPAGATION;
       if (module != null) {
-        module.taintIfTainted(parser, tokenBuffer);
+        module.taintObjectIfTainted(parser, tokenBuffer);
       }
     }
   }

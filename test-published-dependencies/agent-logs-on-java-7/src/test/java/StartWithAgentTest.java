@@ -14,8 +14,8 @@ import org.junit.jupiter.api.Test;
 
 public class StartWithAgentTest {
 
-  private static final Pattern WARNING_PATTERN = Pattern.compile("^Warning: Version [^ ]+ of dd-java-agent is not compatible with Java [^ ]+ and will not be installed\\.$");
-  private static final String UPGRADE_MESSAGE = "Please upgrade your Java version to 8+ or use the 0.x version of dd-java-agent in your build tool or download it from https://dtdg.co/java-tracer-v0";
+  private static final Pattern WARNING_PATTERN = Pattern.compile("^Warning: Version [^ ]+ of dd-java-agent is not compatible with Java [^ ]+ found at [^ ]+ and is effectively disabled\\.$");
+  private static final String UPGRADE_MESSAGE = "Please upgrade your Java version to 8+";
 
   @Test
   void ensureThatApplicationStartsWithAgentOnJava7() throws InterruptedException, IOException {
@@ -27,8 +27,8 @@ public class StartWithAgentTest {
     logProcessOutput(output, errors);
     assertEquals(0, exitCode, "Command failed with unexpected exit code");
     assertTrue(output.contains(expectedMessage), "Output does not contain '" + expectedMessage + "'");
-    assertTrue(output.stream().anyMatch(WARNING_PATTERN.asPredicate()), "Output does not contain line matching '" + WARNING_PATTERN + "'");
-    assertTrue(output.contains(UPGRADE_MESSAGE), "Output does not contain '" + UPGRADE_MESSAGE + "'");
+    assertTrue(errors.stream().anyMatch(WARNING_PATTERN.asPredicate()), "Output does not contain line matching '" + WARNING_PATTERN + "'");
+    assertTrue(errors.contains(UPGRADE_MESSAGE), "Output does not contain '" + UPGRADE_MESSAGE + "'");
   }
 
   @Test
@@ -50,8 +50,8 @@ public class StartWithAgentTest {
     logProcessOutput(output, errors);
     assertEquals(0, exitCode, "Command failed with unexpected exit code");
     assertTrue(output.contains(expectedMessage), "Output does not contain '" + expectedMessage + "'");
-    assertFalse(output.stream().anyMatch(WARNING_PATTERN.asPredicate()), "Output contains unexpected line matching '" + WARNING_PATTERN + "'");
-    assertFalse(output.contains(UPGRADE_MESSAGE), "Output contains unexpected line '" + UPGRADE_MESSAGE + "'");
+    assertFalse(errors.stream().anyMatch(WARNING_PATTERN.asPredicate()), "Output contains unexpected line matching '" + WARNING_PATTERN + "'");
+    assertFalse(errors.contains(UPGRADE_MESSAGE), "Output contains unexpected line '" + UPGRADE_MESSAGE + "'");
   }
 
   private static Process startAndWaitForJvmWithAgentForJava(String javaHomeEnv, String message) throws IOException {

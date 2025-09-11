@@ -2,18 +2,21 @@ package datadog.trace.core.propagation.ptags;
 
 import static datadog.trace.api.internal.util.LongStringUtils.toHexStringPadded;
 
+import datadog.trace.api.ProductTraceSource;
 import datadog.trace.api.sampling.PrioritySampling;
 import datadog.trace.core.propagation.PropagationTags;
 import datadog.trace.core.propagation.ptags.PTagsFactory.PTags;
 import datadog.trace.core.propagation.ptags.TagElement.Encoding;
+import datadog.trace.relocate.api.RatelimitedLogger;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.function.IntPredicate;
-import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class W3CPTagsCodec extends PTagsCodec {
-  private static final Logger log = LoggerFactory.getLogger(W3CPTagsCodec.class);
+  private static final RatelimitedLogger log =
+      new RatelimitedLogger(LoggerFactory.getLogger(W3CPTagsCodec.class), 5, TimeUnit.MINUTES);
 
   private static final int MAX_HEADER_SIZE = 256;
   private static final String DATADOG_MEMBER_KEY = "dd=";
@@ -91,7 +94,9 @@ public class W3CPTagsCodec extends PTagsCodec {
     CharSequence origin = null;
     TagValue decisionMakerTagValue = null;
     TagValue traceIdTagValue = null;
+    int traceSource = ProductTraceSource.UNSET;
     int maxUnknownSize = 0;
+    CharSequence lastParentId = null;
     while (tagPos < ddMemberValueEnd) {
       int tagKeyEndsAt =
           validateCharsUntilSeparatorOrEnd(
@@ -124,43 +129,47 @@ public class W3CPTagsCodec extends PTagsCodec {
       if (tagValueEndsAt == ddMemberValueEnd) {
         tagValueEndsAt = stripTrailingOWC(value, tagValuePos, tagValueEndsAt);
       }
-      TagKey tagKey = TagKey.from(Encoding.W3C, value, tagPos, tagKeyEndsAt);
-      if (tagKey != null) {
-        TagValue tagValue = TagValue.from(Encoding.W3C, value, tagValuePos, tagValueEndsAt);
-        if (!tagKey.equals(UPSTREAM_SERVICES_DEPRECATED_TAG)) {
-          if (!validateTagValue(tagKey, tagValue)) {
-            log.warn(
-                "Invalid datadog tags header value: '{}' invalid tag value at {}",
-                value,
-                tagValuePos);
-            if (tagKey.equals(TRACE_ID_TAG)) {
-              return tagsFactory.createInvalid(PROPAGATION_ERROR_MALFORMED_TID + tagValue);
-            }
-            // TODO drop parts?
-            return empty(tagsFactory, value, firstMemberStart, ddMemberStart, ddMemberValueEnd);
-          }
-          if (tagKey.equals(DECISION_MAKER_TAG)) {
-            decisionMakerTagValue = tagValue;
-          } else if (tagKey.equals(TRACE_ID_TAG)) {
-            traceIdTagValue = tagValue;
-          } else {
-            if (tagPairs == null) {
-              // This is roughly the size of a two element linked list but can hold six
-              tagPairs = new ArrayList<>(6);
-            }
-            tagPairs.add(tagKey);
-            tagPairs.add(tagValue);
-          }
-        }
+      int keyLength = tagKeyEndsAt - tagPos;
+      char c = value.charAt(tagPos);
+      if (keyLength == 1 && c == 's') {
+        samplingPriority = validateSamplingPriority(value, tagValuePos, tagValueEndsAt);
+      } else if (keyLength == 1 && c == 'o') {
+        origin = TagValue.from(Encoding.W3C, value, tagValuePos, tagValueEndsAt);
+      } else if (keyLength == 1 && c == 'p') {
+        lastParentId = TagValue.from(Encoding.W3C, value, tagValuePos, tagValueEndsAt);
       } else {
-        // This was not a propagating tag, so check if we know it
-        int keyLength = tagKeyEndsAt - tagPos;
-        char c = value.charAt(tagPos);
-        if (keyLength == 1 && c == 's') {
-          samplingPriority = validateSamplingPriority(value, tagValuePos, tagValueEndsAt);
-        } else if (keyLength == 1 && c == 'o') {
-          origin = TagValue.from(Encoding.W3C, value, tagValuePos, tagValueEndsAt);
+        TagKey tagKey = TagKey.from(Encoding.W3C, value, tagPos, tagKeyEndsAt);
+        if (tagKey != null) {
+          TagValue tagValue = TagValue.from(Encoding.W3C, value, tagValuePos, tagValueEndsAt);
+          if (!tagKey.equals(UPSTREAM_SERVICES_DEPRECATED_TAG)) {
+            if (!validateTagValue(tagKey, tagValue)) {
+              log.warn(
+                  "Invalid datadog tags header value: '{}' invalid tag value at {}",
+                  value,
+                  tagValuePos);
+              if (tagKey.equals(TRACE_ID_TAG)) {
+                return tagsFactory.createInvalid(PROPAGATION_ERROR_MALFORMED_TID + tagValue);
+              }
+              // TODO drop parts?
+              return empty(tagsFactory, value, firstMemberStart, ddMemberStart, ddMemberValueEnd);
+            }
+            if (tagKey.equals(DECISION_MAKER_TAG)) {
+              decisionMakerTagValue = tagValue;
+            } else if (tagKey.equals(TRACE_ID_TAG)) {
+              traceIdTagValue = tagValue;
+            } else if (tagKey.equals(TRACE_SOURCE_TAG)) {
+              traceSource = ProductTraceSource.parseBitfieldHex(tagValue.toString());
+            } else {
+              if (tagPairs == null) {
+                // This is roughly the size of a two element linked list but can hold six
+                tagPairs = new ArrayList<>(6);
+              }
+              tagPairs.add(tagKey);
+              tagPairs.add(tagValue);
+            }
+          }
         } else {
+          // Not a propagating tag and not a known tag
           if (maxUnknownSize != 0) {
             maxUnknownSize++; // delimiter
           }
@@ -174,13 +183,15 @@ public class W3CPTagsCodec extends PTagsCodec {
         tagPairs,
         decisionMakerTagValue,
         traceIdTagValue,
+        traceSource,
         samplingPriority,
         origin,
         value,
         firstMemberStart,
         ddMemberStart,
         ddMemberValueEnd,
-        maxUnknownSize);
+        maxUnknownSize,
+        lastParentId);
   }
 
   @Override
@@ -227,6 +238,19 @@ public class W3CPTagsCodec extends PTagsCodec {
         sb.append(((TagValue) origin).forType(Encoding.W3C));
       } else {
         sb.append(origin);
+      }
+    }
+    // append last ParentId (p)
+    CharSequence lastParent = ptags.getLastParentId();
+    if (lastParent != null) {
+      if (sb.length() > EMPTY_SIZE) {
+        sb.append(';');
+      }
+      sb.append("p:");
+      if (lastParent instanceof TagValue) {
+        sb.append(((TagValue) lastParent).forType(Encoding.W3C));
+      } else {
+        sb.append(lastParent);
       }
     }
     return sb.length();
@@ -684,13 +708,15 @@ public class W3CPTagsCodec extends PTagsCodec {
         null,
         null,
         null,
+        ProductTraceSource.UNSET,
         PrioritySampling.UNSET,
         null,
         original,
         firstMemberStart,
         ddMemberStart,
         ddMemberValueEnd,
-        0);
+        0,
+        null);
   }
 
   private static class W3CPTags extends PTags {
@@ -714,14 +740,24 @@ public class W3CPTagsCodec extends PTagsCodec {
         List<TagElement> tagPairs,
         TagValue decisionMakerTagValue,
         TagValue traceIdTagValue,
+        int traceSource,
         int samplingPriority,
         CharSequence origin,
         String original,
         int firstMemberStart,
         int ddMemberStart,
         int ddMemberValueEnd,
-        int maxUnknownSize) {
-      super(factory, tagPairs, decisionMakerTagValue, traceIdTagValue, samplingPriority, origin);
+        int maxUnknownSize,
+        CharSequence lastParentId) {
+      super(
+          factory,
+          tagPairs,
+          decisionMakerTagValue,
+          traceIdTagValue,
+          traceSource,
+          samplingPriority,
+          origin,
+          lastParentId);
       this.tracestate = original;
       this.firstMemberStart = firstMemberStart;
       this.ddMemberStart = ddMemberStart;

@@ -1,19 +1,16 @@
 package datadog.trace.instrumentation.rabbitmq.amqp;
 
+import static datadog.context.propagation.Propagators.defaultPropagator;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.HierarchyMatchers.extendsClass;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.HierarchyMatchers.implementsInterface;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.nameEndsWith;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.namedOneOf;
+import static datadog.trace.api.datastreams.DataStreamsTags.Direction.OUTBOUND;
+import static datadog.trace.api.datastreams.DataStreamsTags.createWithExchange;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.noopSpan;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.propagate;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
-import static datadog.trace.core.datastreams.TagsProcessor.DIRECTION_OUT;
-import static datadog.trace.core.datastreams.TagsProcessor.DIRECTION_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.EXCHANGE_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.HAS_ROUTING_KEY_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.TYPE_TAG;
 import static datadog.trace.instrumentation.rabbitmq.amqp.RabbitDecorator.CLIENT_DECORATE;
 import static datadog.trace.instrumentation.rabbitmq.amqp.RabbitDecorator.CONSUMER_DECORATE;
 import static datadog.trace.instrumentation.rabbitmq.amqp.RabbitDecorator.OPERATION_AMQP_COMMAND;
@@ -38,21 +35,23 @@ import com.rabbitmq.client.Consumer;
 import com.rabbitmq.client.GetResponse;
 import com.rabbitmq.client.MessageProperties;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.Config;
+import datadog.trace.api.datastreams.DataStreamsContext;
+import datadog.trace.api.datastreams.DataStreamsTags;
 import datadog.trace.bootstrap.CallDepthThreadLocalMap;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import java.io.IOException;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public class RabbitChannelInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class RabbitChannelInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   public RabbitChannelInstrumentation() {
     super("amqp", "rabbitmq");
@@ -80,9 +79,9 @@ public class RabbitChannelInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
+  public void methodAdvice(MethodTransformer transformer) {
     // We want the advice applied in a specific order.
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(
                 not(
@@ -101,13 +100,13 @@ public class RabbitChannelInstrumentation extends Instrumenter.Tracing
             .and(isPublic())
             .and(canThrow(IOException.class).or(canThrow(InterruptedException.class))),
         RabbitChannelInstrumentation.class.getName() + "$ChannelMethodAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod().and(named("basicPublish")).and(takesArguments(6)),
         RabbitChannelInstrumentation.class.getName() + "$ChannelPublishAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod().and(named("basicGet")).and(takesArgument(0, String.class)),
         RabbitChannelInstrumentation.class.getName() + "$ChannelGetAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(named("basicConsume"))
             .and(takesArgument(0, String.class))
@@ -188,14 +187,11 @@ public class RabbitChannelInstrumentation extends Instrumenter.Tracing
         if (TIME_IN_QUEUE_ENABLED) {
           RabbitDecorator.injectTimeInQueueStart(headers);
         }
-        propagate().inject(span, headers, SETTER);
-        LinkedHashMap<String, String> sortedTags = new LinkedHashMap<>();
-        sortedTags.put(DIRECTION_TAG, DIRECTION_OUT);
-        sortedTags.put(EXCHANGE_TAG, exchange);
-        sortedTags.put(
-            HAS_ROUTING_KEY_TAG, routingKey == null || routingKey.equals("") ? "false" : "true");
-        sortedTags.put(TYPE_TAG, "rabbitmq");
-        propagate().injectPathwayContext(span, headers, SETTER, sortedTags);
+        DataStreamsTags tags =
+            createWithExchange(
+                "rabbitmq", OUTBOUND, exchange, routingKey != null && !routingKey.isEmpty());
+        DataStreamsContext dsmContext = DataStreamsContext.fromTags(tags);
+        defaultPropagator().inject(span.with(dsmContext), headers, SETTER);
         props =
             new AMQP.BasicProperties(
                 props.getContentType(),

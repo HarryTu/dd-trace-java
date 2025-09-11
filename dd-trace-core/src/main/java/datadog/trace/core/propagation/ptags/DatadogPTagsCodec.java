@@ -1,17 +1,20 @@
 package datadog.trace.core.propagation.ptags;
 
+import datadog.trace.api.ProductTraceSource;
 import datadog.trace.core.propagation.PropagationTags;
 import datadog.trace.core.propagation.ptags.PTagsFactory.PTags;
 import datadog.trace.core.propagation.ptags.TagElement.Encoding;
+import datadog.trace.relocate.api.RatelimitedLogger;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.function.IntPredicate;
-import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** Captures configuration required for PropagationTags logic */
 final class DatadogPTagsCodec extends PTagsCodec {
-  private static final Logger log = LoggerFactory.getLogger(DatadogPTagsCodec.class);
+  private static final RatelimitedLogger log =
+      new RatelimitedLogger(LoggerFactory.getLogger(DatadogPTagsCodec.class), 5, TimeUnit.MINUTES);
   private static final String PROPAGATION_ERROR_EXTRACT_MAX_SIZE = "extract_max_size";
   private static final String PROPAGATION_ERROR_DECODING_ERROR = "decoding_error";
   private static final char TAGS_SEPARATOR = ',';
@@ -59,6 +62,7 @@ final class DatadogPTagsCodec extends PTagsCodec {
     int tagPos = 0;
     TagValue decisionMakerTagValue = null;
     TagValue traceIdTagValue = null;
+    int traceSource = 0;
     while (tagPos < len) {
       int tagKeyEndsAt =
           validateCharsUntilSeparatorOrEnd(
@@ -93,6 +97,8 @@ final class DatadogPTagsCodec extends PTagsCodec {
             decisionMakerTagValue = tagValue;
           } else if (tagKey.equals(TRACE_ID_TAG)) {
             traceIdTagValue = tagValue;
+          } else if (tagKey.equals(TRACE_SOURCE_TAG)) {
+            traceSource = ProductTraceSource.parseBitfieldHex(tagValue.toString());
           } else {
             if (tagPairs == null) {
               // This is roughly the size of a two element linked list but can hold six
@@ -105,7 +111,7 @@ final class DatadogPTagsCodec extends PTagsCodec {
       }
       tagPos = tagValueEndsAt + 1;
     }
-    return tagsFactory.createValid(tagPairs, decisionMakerTagValue, traceIdTagValue);
+    return tagsFactory.createValid(tagPairs, decisionMakerTagValue, traceIdTagValue, traceSource);
   }
 
   @Override

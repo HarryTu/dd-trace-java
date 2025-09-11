@@ -23,6 +23,31 @@ class ConfigConverterTest extends DDSpecification {
     "0"         | false
   }
 
+  def "Convert boolean properties throws exception for invalid values"() {
+    when:
+    ConfigConverter.valueOf(invalidValue, Boolean)
+
+    then:
+    def exception = thrown(ConfigConverter.InvalidBooleanValueException)
+    exception.message.contains("Invalid boolean value:")
+
+    where:
+    invalidValue << [
+      "42.42",
+      "tru",
+      "truee",
+      "true ",
+      " true",
+      " true ",
+      "   true  ",
+      "notABool",
+      "yes",
+      "no",
+      "on",
+      "off"
+    ]
+  }
+
   def "parse map properly for #mapString"() {
     when:
     def result = ConfigConverter.parseMap(mapString, "test")
@@ -99,30 +124,72 @@ class ConfigConverterTest extends DDSpecification {
     // spotless:on
   }
 
-  def "render a single interval bitset"() {
-    def set = new BitSet()
-    set.set(200, 299)
+  def "parsing map #mapString with List of arg separators for with key value separator #separator"() {
+    //testing parsing for DD_TAGS
+    setup:
+    def separatorList = [',' as char, ' ' as char]
 
-    expect:
-    ConfigConverter.renderIntegerRange(set) == "200-299"
+    when:
+    def result = ConfigConverter.parseTraceTagsMap(mapString, separator as char, separatorList as List<Character>)
+
+    then:
+    result == expected
+
+    where:
+    // spotless:off
+    mapString                                       | separator | expected
+    "key1:value1,key2:value2"                       | ':'       | [key1: "value1", key2: "value2"]
+    "key1:value1 key2:value2"                       | ':'       | [key1: "value1", key2: "value2"]
+    "env:test aKey:aVal bKey:bVal cKey:"            | ':'       | [env: "test", aKey: "aVal", bKey: "bVal", cKey:""]
+    "env:test,aKey:aVal,bKey:bVal,cKey:"            | ':'       | [env: "test", aKey: "aVal", bKey: "bVal", cKey:""]
+    "env:test,aKey:aVal bKey:bVal cKey:"            | ':'       | [env: "test", aKey: "aVal bKey:bVal cKey:"]
+    "env:test     bKey :bVal dKey: dVal cKey:"      | ':'       | [env: "test", bKey: "", dKey: "", dVal: "", cKey: ""]
+    'env :test, aKey : aVal bKey:bVal cKey:'        | ':'       | [env: "test", aKey : "aVal bKey:bVal cKey:"]
+    "env:keyWithA:Semicolon bKey:bVal cKey"         | ':'       | [env: "keyWithA:Semicolon", bKey: "bVal", cKey: ""]
+    "env:keyWith:  , ,   Lots:Of:Semicolons "       | ':'       | [env: "keyWith:", Lots: "Of:Semicolons"]
+    "a:b,c,d"                                       | ':'       | [a: "b", c: "", d: ""]
+    "a,1"                                           | ':'       | [a: "", "1": ""]
+    "a:b:c:d"                                       | ':'       | [a: "b:c:d"]
+    //edge cases
+    "noDelimiters"                                  | ':'       | [noDelimiters: ""]
+    "            "                                  | ':'       | [:]
+    ",,,,,,,,,,,,"                                  | ':'       | [:]
+    ", , , , , , "                                  | ':'       | [:]
+    // spotless:on
   }
 
-  def "render a single value bitset"() {
-    def set = new BitSet()
-    set.set(33)
+  def "test parseMapWithOptionalMappings"() {
+    when:
+    def result = ConfigConverter.parseMapWithOptionalMappings(mapString, "test", defaultPrefix, lowercaseKeys)
 
-    expect:
-    ConfigConverter.renderIntegerRange(set) == "33"
-  }
+    then:
+    result == expected
 
-  def "render bitset intervals"() {
-    def set = new BitSet()
-    set.set(33)
-    set.set(200, 300)
-    set.set(303)
-    set.set(400, 500)
-
-    expect:
-    ConfigConverter.renderIntegerRange(set) == "33,200-300,303,400-500"
+    where:
+    mapString                     | expected                               | lowercaseKeys | defaultPrefix
+    "header1:one,header2:two"     | [header1: "one", header2: "two"]       | false         | ""
+    "header1:one, header2:two"    | [header1: "one", header2: "two"]       | false         | ""
+    "header1,header2:two"         | [header1: "header1", header2: "two"]   | false         | ""
+    "Header1:one,header2:two"     | [header1: "one", header2: "two"]       | true          | ""
+    "\"header1:one,header2:two\"" | ["\"header1": "one", header2: "two\""] | true          | ""
+    "header1"                     | [header1: "header1"]                   | true          | ""
+    ",header1:tag"                | [header1: "tag"]                       | true          | ""
+    "header1:tag,"                | [header1: "tag"]                       | true          | ""
+    "header:tag:value"            | [header: "tag:value"]                  | true          | ""
+    ""                            | [:]                                    | true          | ""
+    null                          | [:]                                    | true          | ""
+    // Test for wildcard header tags
+    "*"                           | ["*":"datadog.response.headers."]      | true          | "datadog.response.headers"
+    "*:"                          | [:]                                    | true          | "datadog.response.headers"
+    "*,header1:tag"               | ["*":"datadog.response.headers."]      | true          | "datadog.response.headers"
+    "header1:tag,*"               | ["*":"datadog.response.headers."]      | true          | "datadog.response.headers"
+    // logs warning: Illegal key only tag starting with non letter '1header'
+    "1header,header2:two"         | [:]                                    | true          | ""
+    // logs warning: Illegal tag starting with non letter for key 'header'
+    "header::tag"                 | [:]                                    | true          | ""
+    // logs warning: Illegal empty key at position 0
+    ":tag"                        | [:]                                    | true          | ""
+    // logs warning: Illegal empty key at position 11
+    "header:tag,:tag"             | [:]                                    | true          | ""
   }
 }

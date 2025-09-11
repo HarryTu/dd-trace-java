@@ -4,7 +4,7 @@ import datadog.trace.api.Config
 import datadog.trace.api.DDSpanId
 import datadog.trace.api.DDTraceId
 import datadog.trace.api.DynamicConfig
-import datadog.trace.bootstrap.instrumentation.api.AgentTracer.NoopPathwayContext
+import datadog.trace.api.datastreams.NoopPathwayContext
 import datadog.trace.core.CoreTracer
 import datadog.trace.test.util.StringUtils
 
@@ -141,7 +141,7 @@ class B3HttpInjectorTest extends DDCoreSpecification {
       false,
       "fakeType",
       0,
-      tracer.pendingTraceFactory.create(DDTraceId.ONE),
+      tracer.traceCollectorFactory.create(DDTraceId.ONE),
       null,
       null,
       NoopPathwayContext.INSTANCE,

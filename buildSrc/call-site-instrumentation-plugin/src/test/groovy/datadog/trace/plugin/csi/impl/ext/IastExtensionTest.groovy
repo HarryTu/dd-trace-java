@@ -151,6 +151,7 @@ class IastExtensionTest extends BaseCsiPluginTest {
 
     IastExtensionCallSiteAssert(CallSiteAssert base) {
       interfaces = base.interfaces
+      spi = base.spi
       helpers = base.helpers
       advices = base.advices
       enabled = base.enabled
@@ -216,8 +217,8 @@ class IastExtensionTest extends BaseCsiPluginTest {
       return getMethodCalls(acceptMethod).findAll {
         it.nameAsString == 'addAdvice'
       }.collect {
-        def (owner, method, descriptor) = it.arguments.subList(0, 3)*.asStringLiteralExpr()*.asString()
-        final handlerLambda = it.arguments[3].asLambdaExpr()
+        def (owner, method, descriptor) = it.arguments.subList(1, 4)*.asStringLiteralExpr()*.asString()
+        final handlerLambda = it.arguments[4].asLambdaExpr()
         final statements = handlerLambda.body.asBlockStmt().statements
         final instrumentedStmt = statements.get(0).asIfStmt()
         final executedStmt = statements.get(1).asIfStmt()

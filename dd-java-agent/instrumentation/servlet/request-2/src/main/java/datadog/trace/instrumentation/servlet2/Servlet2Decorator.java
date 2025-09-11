@@ -2,6 +2,7 @@ package datadog.trace.instrumentation.servlet2;
 
 import static datadog.trace.instrumentation.servlet2.HttpServletRequestExtractAdapter.GETTER;
 
+import datadog.context.Context;
 import datadog.trace.bootstrap.instrumentation.api.AgentPropagation;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import datadog.trace.bootstrap.instrumentation.api.URIDataAdapter;
@@ -25,6 +26,11 @@ public class Servlet2Decorator
   @Override
   protected CharSequence component() {
     return JAVA_WEB_SERVLET;
+  }
+
+  @Override
+  protected String requestedSessionId(final HttpServletRequest request) {
+    return request.getRequestedSessionId();
   }
 
   @Override
@@ -73,7 +79,7 @@ public class Servlet2Decorator
       final AgentSpan span,
       final HttpServletRequest connection,
       final HttpServletRequest request,
-      AgentSpan.Context.Extracted context) {
+      final Context context) {
     assert span != null;
     if (request != null) {
       span.setTag("servlet.context", request.getContextPath());

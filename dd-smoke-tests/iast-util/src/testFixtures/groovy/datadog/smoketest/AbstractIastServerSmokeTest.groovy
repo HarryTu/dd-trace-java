@@ -2,6 +2,7 @@ package datadog.smoketest
 
 import datadog.smoketest.model.TaintedObject
 import datadog.smoketest.model.Vulnerability
+import datadog.smoketest.model.Vulnerability.Source
 import groovy.json.JsonBuilder
 import groovy.json.JsonSlurper
 import groovy.transform.CompileDynamic
@@ -17,6 +18,7 @@ import java.util.concurrent.TimeoutException
 abstract class AbstractIastServerSmokeTest extends AbstractServerSmokeTest {
 
   private static final String TAG_NAME = '_dd.iast.json'
+  private static final String IAST_STARTED_MSG = 'IAST started'
 
   @Shared
   private final JsonSlurper jsonSlurper = new JsonSlurper()
@@ -29,6 +31,14 @@ abstract class AbstractIastServerSmokeTest extends AbstractServerSmokeTest {
   @Override
   Closure decodedTracesCallback() {
     return {} // force traces decoding
+  }
+
+  def setupSpec() {
+    try {
+      processTestLogLines { it.contains(IAST_STARTED_MSG) }
+    } catch (TimeoutException toe) {
+      throw new AssertionError("'$IAST_STARTED_MSG' not found in logs", toe)
+    }
   }
 
   protected static String withSystemProperty(final String config, final Object value) {
@@ -53,10 +63,7 @@ abstract class AbstractIastServerSmokeTest extends AbstractServerSmokeTest {
     try {
       processTestLogLines(closure)
     } catch (TimeoutException toe) {
-      checkLogPostExit(closure)
-      if (!found) {
-        throw new AssertionError("No matching tainted found. Tainteds found: ${new JsonBuilder(tainteds).toPrettyString()}")
-      }
+      assert found, "No matching tainted found. Tainteds found: ${new JsonBuilder(tainteds).toPrettyString()}"
     }
   }
 
@@ -82,10 +89,7 @@ abstract class AbstractIastServerSmokeTest extends AbstractServerSmokeTest {
     try {
       processTestLogLines(closure)
     } catch (TimeoutException toe) {
-      checkLogPostExit(closure)
-      if (!found) {
-        throw new AssertionError("No matching vulnerability found. Vulnerabilities found: ${new JsonBuilder(discovered).toPrettyString()}")
-      }
+      assert found, "No matching vulnerability found. Vulnerabilities found: ${new JsonBuilder(vulnerabilities).toPrettyString()}"
     }
   }
 
@@ -107,6 +111,16 @@ abstract class AbstractIastServerSmokeTest extends AbstractServerSmokeTest {
     }
   }
 
+  protected void hasMeta(final String name) {
+    try {
+      waitForSpan(pollingConditions()) { span ->
+        return span.meta.containsKey(name)
+      }
+    } catch (SpockTimeoutError toe) {
+      throw new AssertionError("No matching meta with name $name found")
+    }
+  }
+
   protected void hasVulnerability(@ClosureParams(value = SimpleType, options = ['datadog.smoketest.model.Vulnerability'])
     final Closure<Boolean> matcher) {
     final found = []
@@ -116,13 +130,35 @@ abstract class AbstractIastServerSmokeTest extends AbstractServerSmokeTest {
         if (!json) {
           return false
         }
-        final batch = jsonSlurper.parseText(json) as Map
-        final vulnerabilities = batch.vulnerabilities as List<Vulnerability>
+        final vulnerabilities = parseVulnerabilities(json)
         found.addAll(vulnerabilities)
         return vulnerabilities.find(matcher) != null
       }
     } catch (SpockTimeoutError toe) {
       throw new AssertionError("No matching vulnerability found. Vulnerabilities found: ${new JsonBuilder(found).toPrettyString()}")
+    }
+  }
+
+  protected void hasVulnerabilityStack() {
+    try {
+      waitForSpan(pollingConditions()) { span ->
+        final json = span.meta.get(TAG_NAME)
+        if (!json) {
+          return false
+        }
+        final vulnerabilities = parseVulnerabilities(json)
+        def stack = span.metaStruct.get('_dd.stack')
+        if (stack == null) {
+          return false
+        }
+        def stackVulnerabilities = stack.get('vulnerability')
+        if (stackVulnerabilities == null) {
+          return false
+        }
+        return stackVulnerabilities.size() == vulnerabilities.size()
+      }
+    } catch (SpockTimeoutError toe) {
+      throw new AssertionError("Some error occurred while checking vulnerability stack")
     }
   }
 
@@ -135,14 +171,12 @@ abstract class AbstractIastServerSmokeTest extends AbstractServerSmokeTest {
         if (!json) {
           return false
         }
-        final batch = jsonSlurper.parseText(json) as Map
-        final vulnerabilities = batch.vulnerabilities as List<Vulnerability>
-        found.addAll(vulnerabilities)
+        return parseVulnerabilities(json)
       }
     } catch (SpockTimeoutError toe) {
       // do nothing
     }
-    if ( found.find(matcher) != null){
+    if (found.find(matcher) != null) {
       throw new AssertionError("A matching vulnerability was found while expecting none. Vulnerabilities found: ${new JsonBuilder(found).toPrettyString()}")
     }
   }
@@ -180,10 +214,7 @@ abstract class AbstractIastServerSmokeTest extends AbstractServerSmokeTest {
             break
           }
         }
-        final parsed = jsonSlurper.parseText(builder.toString())
-        if (parsed instanceof Map) {
-          return parsed.vulnerabilities as List<Vulnerability>
-        }
+        return parseVulnerabilities(builder.toString())
       } catch (Exception e) {
       }
     }
@@ -192,5 +223,26 @@ abstract class AbstractIastServerSmokeTest extends AbstractServerSmokeTest {
 
   protected PollingConditions pollingConditions() {
     return new PollingConditions(timeout: 5)
+  }
+
+  protected List<Vulnerability> parseVulnerabilities(final String json) {
+    final batch = jsonSlurper.parseText(json)
+    if (!(batch instanceof Map)) {
+      return []
+    }
+    final vulnerabilities = batch.vulnerabilities as List<Vulnerability>
+    final sources = batch.sources as List<Source>
+    vulnerabilities.each {
+      final evidence = it.evidence
+      if (evidence?.valueParts != null) {
+        evidence.valueParts.each {
+          if (it.source != null) {
+            final index = it.source as Integer
+            it.source = sources[index]
+          }
+        }
+      }
+    }
+    return vulnerabilities
   }
 }

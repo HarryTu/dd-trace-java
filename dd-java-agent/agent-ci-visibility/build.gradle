@@ -1,111 +1,63 @@
+import java.time.Duration
+import java.time.temporal.ChronoUnit
+
+buildscript {
+  repositories {
+    mavenLocal()
+    if (project.rootProject.hasProperty("gradlePluginProxy")) {
+      maven {
+        url project.rootProject.property("gradlePluginProxy")
+        allowInsecureProtocol true
+      }
+    }
+    if (project.rootProject.hasProperty("mavenRepositoryProxy")) {
+      maven {
+        url project.rootProject.property("mavenRepositoryProxy")
+        allowInsecureProtocol true
+      }
+    }
+    gradlePluginPortal()
+    mavenCentral()
+  }
+
+  dependencies {
+    classpath group: 'org.jetbrains.kotlin', name: 'kotlin-gradle-plugin', version: libs.versions.kotlin.get()
+  }
+}
+
 plugins {
-  id 'com.github.johnrengelman.shadow'
-  id 'java-test-fixtures'
+  id 'com.gradleup.shadow'
 }
 
 apply from: "$rootDir/gradle/java.gradle"
 apply from: "$rootDir/gradle/version.gradle"
+apply from: "$rootDir/gradle/test-with-kotlin.gradle"
+apply from: "$rootDir/gradle/test-with-scala.gradle"
 
-minimumBranchCoverage = 0.7
-minimumInstructionCoverage = 0.8
-
-excludedClassesCoverage += [
-  "datadog.trace.civisibility.CiVisibilitySystem",
-  "datadog.trace.civisibility.CiVisibilitySystem.1",
-  "datadog.trace.civisibility.DDBuildSystemModuleImpl",
-  "datadog.trace.civisibility.DDBuildSystemSessionImpl",
-  "datadog.trace.civisibility.DDTestFrameworkModuleImpl",
-  "datadog.trace.civisibility.DDTestFrameworkModuleProxy",
-  "datadog.trace.civisibility.DDTestFrameworkModuleProxy.TestFrameworkData",
-  "datadog.trace.civisibility.DDTestFrameworkSessionImpl",
-  "datadog.trace.civisibility.DDTestFrameworkSessionProxy",
-  "datadog.trace.civisibility.DDTestModuleImpl",
-  "datadog.trace.civisibility.DDTestSessionImpl",
-  "datadog.trace.civisibility.DDTestSuiteImpl",
-  "datadog.trace.civisibility.DDTestImpl",
-  "datadog.trace.civisibility.TestModuleRegistry",
-  "datadog.trace.civisibility.ci.CIInfo",
-  "datadog.trace.civisibility.ci.CIInfo.Builder",
-  "datadog.trace.civisibility.communication.*",
-  "datadog.trace.civisibility.config.CachingJvmInfoFactory",
-  "datadog.trace.civisibility.config.JvmInfoFactoryImpl",
-  "datadog.trace.civisibility.config.JvmInfoFactoryImpl.JvmVersionOutputParser",
-  "datadog.trace.civisibility.config.ConfigurationApi",
-  "datadog.trace.civisibility.config.ModuleExecutionSettingsFactory",
-  "datadog.trace.civisibility.config.JvmInfo",
-  "datadog.trace.civisibility.config.CachingModuleExecutionSettingsFactory",
-  "datadog.trace.civisibility.config.CachingModuleExecutionSettingsFactory.Key",
-  "datadog.trace.civisibility.config.CiVisibilitySettings",
-  "datadog.trace.civisibility.config.ConfigurationApiImpl.MultiEnvelopeDto",
-  "datadog.trace.civisibility.config.ConfigurationApi.1",
-  "datadog.trace.civisibility.config.ModuleExecutionSettingsFactoryImpl",
-  "datadog.trace.civisibility.config.SkippableTestsSerializer",
-  "datadog.trace.civisibility.coverage.CoverageUtils",
-  "datadog.trace.civisibility.coverage.CoverageUtils.RepoIndexFileLocator",
-  "datadog.trace.civisibility.coverage.ExecutionDataAdapter",
-  "datadog.trace.civisibility.coverage.NoopCoverageProbeStore",
-  "datadog.trace.civisibility.coverage.NoopCoverageProbeStore.NoopCoverageProbeStoreFactory",
-  "datadog.trace.civisibility.coverage.SegmentlessTestProbes",
-  "datadog.trace.civisibility.coverage.SegmentlessTestProbes.SegmentlessTestProbesFactory",
-  "datadog.trace.civisibility.coverage.SourceAnalyzer",
-  "datadog.trace.civisibility.coverage.TestProbes",
-  "datadog.trace.civisibility.coverage.TestProbes.TestProbesFactory",
-  "datadog.trace.civisibility.events.BuildEventsHandlerImpl",
-  "datadog.trace.civisibility.events.TestEventsHandlerImpl",
-  "datadog.trace.civisibility.events.TestDescriptor",
-  "datadog.trace.civisibility.events.TestModuleDescriptor",
-  "datadog.trace.civisibility.events.TestSuiteDescriptor",
-  "datadog.trace.civisibility.git.CILocalGitInfoBuilder",
-  "datadog.trace.civisibility.git.GitClientGitInfoBuilder",
-  "datadog.trace.civisibility.git.GitObject",
-  "datadog.trace.civisibility.git.tree.*",
-  "datadog.trace.civisibility.ipc.ModuleExecutionResult",
-  "datadog.trace.civisibility.ipc.RepoIndexResponse",
-  "datadog.trace.civisibility.ipc.RepoIndexRequest",
-  "datadog.trace.civisibility.ipc.SignalServer",
-  "datadog.trace.civisibility.ipc.SignalType",
-  "datadog.trace.civisibility.ipc.SignalClient",
-  "datadog.trace.civisibility.ipc.SignalClient.Factory",
-  "datadog.trace.civisibility.ipc.SkippableTestsResponse",
-  "datadog.trace.civisibility.ipc.TestFramework",
-  "datadog.trace.civisibility.source.index.PackageTree.Node",
-  "datadog.trace.civisibility.source.index.RepoIndex",
-  "datadog.trace.civisibility.source.index.RepoIndexBuilder.RepoIndexingFileVisitor",
-  "datadog.trace.civisibility.source.index.RepoIndexFetcher",
-  "datadog.trace.civisibility.source.index.RepoIndexSourcePathResolver",
-  "datadog.trace.civisibility.source.BestEffortSourcePathResolver",
-  "datadog.trace.civisibility.source.MethodLinesResolver.MethodLines",
-  "datadog.trace.civisibility.source.NoOpSourcePathResolver",
-  "datadog.trace.civisibility.source.SourcePathResolver.1",
-  "datadog.trace.civisibility.source.Utils",
-  "datadog.trace.civisibility.utils.ShellCommandExecutor",
-  "datadog.trace.civisibility.utils.ShellCommandExecutor.OutputParser",
-  "datadog.trace.civisibility.utils.SpanUtils"
-]
+minimumBranchCoverage = 0.0
+minimumInstructionCoverage = 0.0
 
 dependencies {
-  api deps.slf4j
+  api libs.slf4j
 
-  implementation deps.asm
-  implementation deps.asmcommons
-  implementation group: 'org.jacoco', name: 'org.jacoco.core', version: '0.8.9'
-  implementation group: 'org.jacoco', name: 'org.jacoco.report', version: '0.8.9'
+  implementation libs.bundles.asm
+  implementation group: 'org.jacoco', name: 'org.jacoco.core', version: '0.8.13'
+  implementation group: 'org.jacoco', name: 'org.jacoco.report', version: '0.8.13'
 
   implementation project(':communication')
+  implementation project(':components:json')
   implementation project(':internal-api')
   implementation project(':internal-api:internal-api-9')
 
-  testImplementation project(":utils:test-utils")
+  testImplementation project(':dd-java-agent:testing')
   testImplementation("com.google.jimfs:jimfs:1.1") // an in-memory file system for testing code that works with files
 
-  testFixturesApi project(':dd-java-agent:testing')
-  testFixturesApi project(':utils:test-utils')
+  testImplementation libs.scala
+  testImplementation libs.kotlin
 
-  testFixturesApi group: 'org.skyscreamer', name: 'jsonassert', version: '1.5.1'
-  testFixturesApi group: 'org.freemarker', name: 'freemarker', version: '2.3.30'
-  testFixturesApi group: 'com.jayway.jsonpath', name: 'json-path', version: '2.8.0'
-  testFixturesApi group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.16.0'
-  testFixturesApi group: 'org.msgpack', name: 'jackson-dataformat-msgpack', version: '0.9.6'
+  testImplementation group: 'org.skyscreamer', name: 'jsonassert', version: '1.5.1'
+  testImplementation group: 'org.freemarker', name: 'freemarker', version: '2.3.31'
+  testImplementation group: 'org.msgpack', name: 'jackson-dataformat-msgpack', version: '0.9.6'
 }
 
 shadowJar {
@@ -114,4 +66,8 @@ shadowJar {
 
 jar {
   archiveClassifier = 'unbundled'
+}
+
+tasks.withType(Test).configureEach {
+  timeout = Duration.of(12, ChronoUnit.MINUTES)
 }

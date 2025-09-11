@@ -8,6 +8,7 @@ import datadog.trace.api.DDTags
 import datadog.trace.api.config.TraceInstrumentationConfig
 import datadog.trace.bootstrap.instrumentation.api.Tags
 import datadog.trace.instrumentation.play25.PlayController
+import datadog.trace.test.util.Flaky
 import groovy.transform.CompileStatic
 import scala.concurrent.ExecutionContext$
 import spock.lang.Shared
@@ -53,6 +54,12 @@ class PlayScalaRoutesServerTest extends PlayServerTest {
     '/path/?/param'
   }
 
+  @Flaky("https://github.com/DataDog/dd-trace-java/issues/6952")
+  @Override
+  boolean testUserBlocking() {
+    "false" != System.getProperty("run.flaky.tests") // Set when using -PskipFlakyTests gradle parameter
+  }
+
   @Override
   Map<String, ?> expectedIGPathParams() {
     [path: '123']
@@ -91,8 +98,8 @@ class PlayScalaRoutesServerTest extends PlayServerTest {
       tags {
         "$Tags.COMPONENT" 'play-action'
         "$Tags.SPAN_KIND" Tags.SPAN_KIND_SERVER
-        "$Tags.PEER_HOST_IPV4" { it == (endpoint == FORWARDED ? endpoint.body : '127.0.0.1') }
-        "$Tags.HTTP_CLIENT_IP" { it == (endpoint == FORWARDED ? endpoint.body : '127.0.0.1') }
+        "$Tags.PEER_HOST_IPV4" (endpoint == FORWARDED ? endpoint.body : '127.0.0.1')
+        "$Tags.HTTP_CLIENT_IP" (endpoint == FORWARDED ? endpoint.body : '127.0.0.1')
         "$Tags.HTTP_URL" String
         "$Tags.HTTP_HOSTNAME" address.host
         "$Tags.HTTP_METHOD" String

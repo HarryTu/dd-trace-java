@@ -1,7 +1,10 @@
 package datadog.trace.instrumentation.junit5;
 
 import datadog.trace.api.Pair;
-import datadog.trace.api.civisibility.InstrumentationBridge;
+import datadog.trace.api.civisibility.config.TestSourceData;
+import datadog.trace.api.civisibility.coverage.CoveragePerTestBridge;
+import datadog.trace.api.civisibility.execution.TestExecutionHistory;
+import datadog.trace.api.civisibility.telemetry.tag.TestFrameworkInstrumentation;
 import java.util.List;
 import java.util.stream.Collectors;
 import org.junit.platform.engine.EngineExecutionListener;
@@ -35,62 +38,73 @@ public class CucumberTracingListener implements EngineExecutionListener {
   }
 
   @Override
-  public void executionStarted(final TestDescriptor testDescriptor) {
-    if (testDescriptor.isContainer()) {
-      containerExecutionStarted(testDescriptor);
-    } else if (testDescriptor.isTest()) {
-      testCaseExecutionStarted(testDescriptor);
+  public void executionStarted(final TestDescriptor descriptor) {
+    if (descriptor.isContainer()) {
+      containerExecutionStarted(descriptor);
+    } else if (descriptor.isTest()) {
+      testCaseExecutionStarted(descriptor);
     }
   }
 
   @Override
   public void executionFinished(
-      TestDescriptor testDescriptor, TestExecutionResult testExecutionResult) {
-    if (testDescriptor.isContainer()) {
-      containerExecutionFinished(testDescriptor, testExecutionResult);
-    } else if (testDescriptor.isTest()) {
-      testCaseExecutionFinished(testDescriptor, testExecutionResult);
+      TestDescriptor descriptor, TestExecutionResult testExecutionResult) {
+    if (descriptor.isContainer()) {
+      containerExecutionFinished(descriptor, testExecutionResult);
+    } else if (descriptor.isTest()) {
+      testCaseExecutionFinished(descriptor, testExecutionResult);
     }
   }
 
-  private void containerExecutionStarted(final TestDescriptor testDescriptor) {
-    UniqueId uniqueId = testDescriptor.getUniqueId();
+  private void containerExecutionStarted(final TestDescriptor suiteDescriptor) {
+    UniqueId uniqueId = suiteDescriptor.getUniqueId();
     if (!CucumberUtils.isFeature(uniqueId)) {
       return;
     }
 
-    String testSuiteName = CucumberUtils.getFeatureName(testDescriptor);
+    String testSuiteName = CucumberUtils.getFeatureName(suiteDescriptor);
     List<String> tags =
-        testDescriptor.getTags().stream().map(TestTag::getName).collect(Collectors.toList());
-    TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestSuiteStart(
-        testSuiteName, testFramework, testFrameworkVersion, null, tags, false);
+        suiteDescriptor.getTags().stream().map(TestTag::getName).collect(Collectors.toList());
+    TestEventsHandlerHolder.HANDLERS
+        .get(TestFrameworkInstrumentation.CUCUMBER)
+        .onTestSuiteStart(
+            suiteDescriptor,
+            testSuiteName,
+            testFramework,
+            testFrameworkVersion,
+            null,
+            tags,
+            false,
+            TestFrameworkInstrumentation.CUCUMBER,
+            null);
   }
 
   private void containerExecutionFinished(
-      final TestDescriptor testDescriptor, final TestExecutionResult testExecutionResult) {
-    if (!CucumberUtils.isFeature(testDescriptor.getUniqueId())) {
+      final TestDescriptor suiteDescriptor, final TestExecutionResult testExecutionResult) {
+    if (!CucumberUtils.isFeature(suiteDescriptor.getUniqueId())) {
       return;
     }
 
-    String testSuiteName = CucumberUtils.getFeatureName(testDescriptor);
     Throwable throwable = testExecutionResult.getThrowable().orElse(null);
     if (throwable != null) {
       if (JUnitPlatformUtils.isAssumptionFailure(throwable)) {
-
         String reason = throwable.getMessage();
-        TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestSuiteSkip(testSuiteName, null, reason);
+        TestEventsHandlerHolder.HANDLERS
+            .get(TestFrameworkInstrumentation.CUCUMBER)
+            .onTestSuiteSkip(suiteDescriptor, reason);
 
-        for (TestDescriptor child : testDescriptor.getChildren()) {
+        for (TestDescriptor child : suiteDescriptor.getChildren()) {
           executionSkipped(child, reason);
         }
-
       } else {
-        TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestSuiteFailure(
-            testSuiteName, null, throwable);
+        TestEventsHandlerHolder.HANDLERS
+            .get(TestFrameworkInstrumentation.CUCUMBER)
+            .onTestSuiteFailure(suiteDescriptor, throwable);
       }
     }
-
-    TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestSuiteFinish(testSuiteName, null);
+    TestEventsHandlerHolder.HANDLERS
+        .get(TestFrameworkInstrumentation.CUCUMBER)
+        .onTestSuiteFinish(suiteDescriptor, null);
   }
 
   private void testCaseExecutionStarted(final TestDescriptor testDescriptor) {
@@ -102,96 +116,87 @@ public class CucumberTracingListener implements EngineExecutionListener {
 
   private void testResourceExecutionStarted(
       TestDescriptor testDescriptor, ClasspathResourceSource testSource) {
+    TestDescriptor suiteDescriptor = CucumberUtils.getFeatureDescriptor(testDescriptor);
     String classpathResourceName = testSource.getClasspathResourceName();
-
     Pair<String, String> names =
         CucumberUtils.getFeatureAndScenarioNames(testDescriptor, classpathResourceName);
-    String testSuiteName = names.getLeft();
     String testName = names.getRight();
+    List<String> tags = JUnitPlatformUtils.getTags(testDescriptor);
+    TestEventsHandlerHolder.HANDLERS
+        .get(TestFrameworkInstrumentation.CUCUMBER)
+        .onTestStart(
+            suiteDescriptor,
+            testDescriptor,
+            testName,
+            testFramework,
+            testFrameworkVersion,
+            null,
+            tags,
+            TestSourceData.UNKNOWN,
+            null,
+            TestEventsHandlerHolder.getExecutionHistory(testDescriptor));
 
-    List<String> tags =
-        testDescriptor.getTags().stream().map(TestTag::getName).collect(Collectors.toList());
-
-    TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestStart(
-        testSuiteName,
-        testName,
-        null,
-        testFramework,
-        testFrameworkVersion,
-        null,
-        tags,
-        null,
-        null,
-        null);
-
-    InstrumentationBridge.currentCoverageProbeStoreRecordNonCode(classpathResourceName);
+    CoveragePerTestBridge.recordCoverage(classpathResourceName);
   }
 
   private void testCaseExecutionFinished(
       final TestDescriptor testDescriptor, final TestExecutionResult testExecutionResult) {
     TestSource testSource = testDescriptor.getSource().orElse(null);
     if (testSource instanceof ClasspathResourceSource) {
-      testResourceExecutionFinished(
-          testDescriptor, testExecutionResult, (ClasspathResourceSource) testSource);
+      testResourceExecutionFinished(testDescriptor, testExecutionResult);
     }
   }
 
   private void testResourceExecutionFinished(
-      TestDescriptor testDescriptor,
-      TestExecutionResult testExecutionResult,
-      ClasspathResourceSource testSource) {
-    String classpathResourceName = testSource.getClasspathResourceName();
-
-    Pair<String, String> names =
-        CucumberUtils.getFeatureAndScenarioNames(testDescriptor, classpathResourceName);
-    String testSuiteName = names.getLeft();
-    String testName = names.getRight();
-
+      TestDescriptor testDescriptor, TestExecutionResult testExecutionResult) {
     Throwable throwable = testExecutionResult.getThrowable().orElse(null);
     if (throwable != null) {
       if (JUnitPlatformUtils.isAssumptionFailure(throwable)) {
-        TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestSkip(
-            testSuiteName, null, testName, null, null, throwable.getMessage());
+        TestEventsHandlerHolder.HANDLERS
+            .get(TestFrameworkInstrumentation.CUCUMBER)
+            .onTestSkip(testDescriptor, throwable.getMessage());
       } else {
-        TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestFailure(
-            testSuiteName, null, testName, null, null, throwable);
+        TestEventsHandlerHolder.HANDLERS
+            .get(TestFrameworkInstrumentation.CUCUMBER)
+            .onTestFailure(testDescriptor, throwable);
       }
     }
-
-    TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestFinish(
-        testSuiteName, null, testName, null, null);
+    TestExecutionHistory executionHistory =
+        TestEventsHandlerHolder.getExecutionHistory(testDescriptor);
+    TestEventsHandlerHolder.HANDLERS
+        .get(TestFrameworkInstrumentation.CUCUMBER)
+        .onTestFinish(testDescriptor, null, executionHistory);
   }
 
   @Override
-  public void executionSkipped(final TestDescriptor testDescriptor, final String reason) {
-    TestSource testSource = testDescriptor.getSource().orElse(null);
+  public void executionSkipped(final TestDescriptor descriptor, final String reason) {
+    TestSource testSource = descriptor.getSource().orElse(null);
     if (testSource instanceof ClasspathResourceSource) {
-      testResourceExecutionSkipped(testDescriptor, (ClasspathResourceSource) testSource, reason);
+      testResourceExecutionSkipped(descriptor, (ClasspathResourceSource) testSource, reason);
     }
   }
 
   private void testResourceExecutionSkipped(
       TestDescriptor testDescriptor, ClasspathResourceSource testSource, String reason) {
+    TestDescriptor suiteDescriptor = CucumberUtils.getFeatureDescriptor(testDescriptor);
     String classpathResourceName = testSource.getClasspathResourceName();
     Pair<String, String> names =
         CucumberUtils.getFeatureAndScenarioNames(testDescriptor, classpathResourceName);
-    String testSuiteName = names.getLeft();
     String testName = names.getRight();
-
     List<String> tags =
         testDescriptor.getTags().stream().map(TestTag::getName).collect(Collectors.toList());
-
-    TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestIgnore(
-        testSuiteName,
-        testName,
-        null,
-        testFramework,
-        testFrameworkVersion,
-        null,
-        tags,
-        null,
-        null,
-        null,
-        reason);
+    TestEventsHandlerHolder.HANDLERS
+        .get(TestFrameworkInstrumentation.CUCUMBER)
+        .onTestIgnore(
+            suiteDescriptor,
+            testDescriptor,
+            testName,
+            testFramework,
+            testFrameworkVersion,
+            null,
+            tags,
+            TestSourceData.UNKNOWN,
+            reason,
+            TestEventsHandlerHolder.getExecutionHistory(testDescriptor));
   }
 }

@@ -19,7 +19,6 @@ import datadog.trace.bootstrap.debugger.ProbeId;
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import org.joor.Reflect;
 import org.junit.jupiter.api.Test;
@@ -32,7 +31,7 @@ public class SpanProbeInstrumentationTest extends ProbeInstrumentationTest {
   @Test
   public void methodSimpleSpan() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    MockTracer tracer = installSingleSpan(CLASS_NAME, "main", "int (java.lang.String)", null);
+    MockTracer tracer = installSingleSpan(CLASS_NAME, "main", "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     assertEquals(3, result);
@@ -41,13 +40,14 @@ public class SpanProbeInstrumentationTest extends ProbeInstrumentationTest {
     assertEquals(CLASS_NAME + ".main", span.resourceName);
     assertTrue(span.isFinished());
     assertArrayEquals(new String[] {SPAN_PROBEID_TAG}, span.tags);
+    probeStatusSink.addEmitting(eq(SPAN_ID));
   }
 
   @Test
   public void methodSimpleSpanWithPackage() throws IOException, URISyntaxException {
     final String CLASS_NAME = "com.datadog.debugger.CapturedSnapshot10";
     final String SIMPLE_CLASS_NAME = CLASS_NAME.substring(CLASS_NAME.lastIndexOf('.') + 1);
-    MockTracer tracer = installSingleSpan(CLASS_NAME, "main", "int (java.lang.String)", null);
+    MockTracer tracer = installSingleSpan(CLASS_NAME, "main", "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     assertEquals(1764, result);
@@ -74,7 +74,7 @@ public class SpanProbeInstrumentationTest extends ProbeInstrumentationTest {
   @Test
   public void lineRangeSimpleSpan() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    MockTracer tracer = installSingleSpan(CLASS_NAME + ".java", 4, 8, null);
+    MockTracer tracer = installSingleSpan(CLASS_NAME + ".java", 4, 8);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     assertEquals(3, result);
@@ -83,12 +83,13 @@ public class SpanProbeInstrumentationTest extends ProbeInstrumentationTest {
     assertEquals(CLASS_NAME + ".main:L4-8", span.resourceName);
     assertTrue(span.isFinished());
     assertArrayEquals(new String[] {SPAN_PROBEID_TAG}, span.tags);
+    probeStatusSink.addEmitting(eq(SPAN_ID));
   }
 
   @Test
   public void lineRangeErrorSimpleSpan() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    MockTracer tracer = installSingleSpan(CLASS_NAME + ".java", 5, 9, null);
+    MockTracer tracer = installSingleSpan(CLASS_NAME + ".java", 5, 9);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     assertEquals(3, result);
@@ -99,7 +100,7 @@ public class SpanProbeInstrumentationTest extends ProbeInstrumentationTest {
   @Test
   public void invalidLineSimpleSpan() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    MockTracer tracer = installSingleSpan(CLASS_NAME + ".java", 4, 10, null);
+    MockTracer tracer = installSingleSpan(CLASS_NAME + ".java", 4, 10);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     assertEquals(3, result);
@@ -110,7 +111,7 @@ public class SpanProbeInstrumentationTest extends ProbeInstrumentationTest {
   @Test
   public void spanThrows() throws IOException, URISyntaxException {
     final String CLASS_NAME = "CapturedSnapshot01";
-    MockTracer tracer = installSingleSpan(CLASS_NAME, "main", "int (java.lang.String)", null);
+    MockTracer tracer = installSingleSpan(CLASS_NAME, "main", "int (java.lang.String)");
     tracer.setThrowing(true);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
@@ -132,17 +133,14 @@ public class SpanProbeInstrumentationTest extends ProbeInstrumentationTest {
 
   private MockTracer installSpanProbes(SpanProbe... spanProbes) {
     return installSpanProbes(
-        Configuration.builder()
-            .setService(SERVICE_NAME)
-            .addSpanProbes(Arrays.asList(spanProbes))
-            .build());
+        Configuration.builder().setService(SERVICE_NAME).add(spanProbes).build());
   }
 
   private MockTracer installSpanProbes(Configuration configuration) {
     Config config = mock(Config.class);
-    when(config.isDebuggerEnabled()).thenReturn(true);
-    when(config.isDebuggerClassFileDumpEnabled()).thenReturn(true);
-    when(config.isDebuggerVerifyByteCode()).thenReturn(true);
+    when(config.isDynamicInstrumentationEnabled()).thenReturn(true);
+    when(config.isDynamicInstrumentationClassFileDumpEnabled()).thenReturn(true);
+    when(config.isDynamicInstrumentationVerifyByteCode()).thenReturn(true);
     when(config.getFinalDebuggerSnapshotUrl())
         .thenReturn("http://localhost:8126/debugger/v1/input");
     when(config.getFinalDebuggerSymDBUrl()).thenReturn("http://localhost:8126/symdb/v1/input");
@@ -153,7 +151,7 @@ public class SpanProbeInstrumentationTest extends ProbeInstrumentationTest {
     instr.addTransformer(currentTransformer);
     mockSink = new MockSink(config, probeStatusSink);
     DebuggerAgentHelper.injectSink(mockSink);
-    DebuggerContext.init(null, null);
+    DebuggerContext.initProbeResolver(null);
     DebuggerContext.initClassFilter(new DenyListHelper(null));
     MockTracer mockTracer = new MockTracer();
     DebuggerContext.initTracer(mockTracer);
@@ -165,7 +163,7 @@ public class SpanProbeInstrumentationTest extends ProbeInstrumentationTest {
     boolean throwing;
 
     @Override
-    public DebuggerSpan createSpan(String resourceName, String[] tags) {
+    public DebuggerSpan createSpan(String encodedProbeId, String resourceName, String[] tags) {
       if (throwing) {
         throw new IllegalArgumentException("oops");
       }

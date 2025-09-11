@@ -1,31 +1,44 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
+import datadog.trace.api.iast.IastContext
 import datadog.trace.api.iast.InstrumentationBridge
 import datadog.trace.api.iast.SourceTypes
 import datadog.trace.api.iast.propagation.PropagationModule
+import datadog.trace.api.iast.sink.ApplicationModule
 import datadog.trace.api.iast.sink.UnvalidatedRedirectModule
+import datadog.trace.bootstrap.instrumentation.api.AgentTracer
+import datadog.trace.bootstrap.instrumentation.api.TagContext
 import foo.bar.smoketest.JakartaHttpServletRequestTestSuite
 import foo.bar.smoketest.JakartaHttpServletRequestWrapperTestSuite
 import foo.bar.smoketest.ServletRequestTestSuite
 import jakarta.servlet.RequestDispatcher
+import jakarta.servlet.ServletContext
 import jakarta.servlet.ServletInputStream
+import jakarta.servlet.SessionTrackingMode
 import jakarta.servlet.http.Cookie
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletRequestWrapper
 
 import datadog.trace.agent.tooling.iast.TaintableEnumeration
+import jakarta.servlet.http.HttpSession
 
-class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
+class JakartaHttpServletRequestInstrumentationTest extends InstrumentationSpecification {
+
+  private Object iastCtx
 
   @Override
   protected void configurePreAgent() {
     injectSysConfig('dd.iast.enabled', 'true')
   }
 
+  void setup() {
+    iastCtx = Stub(IastContext)
+  }
+
   void cleanup() {
     InstrumentationBridge.clearIastModules()
   }
 
-  void 'test getHeader'() {
+  void 'test getHeader #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -33,19 +46,19 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getHeader('header')
+    final result = runUnderIastTrace { request.getHeader('header') }
 
     then:
     result == 'value'
     1 * mock.getHeader('header') >> 'value'
-    1 * iastModule.taint('value', SourceTypes.REQUEST_HEADER_VALUE, 'header')
+    1 * iastModule.taintString(iastCtx, 'value', SourceTypes.REQUEST_HEADER_VALUE, 'header')
     0 * _
 
     where:
     suite << testSuite()
   }
 
-  void 'test getHeaders'() {
+  void 'test getHeaders #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -54,19 +67,19 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getHeaders('headers').collect()
+    final result = runUnderIastTrace { request.getHeaders('headers').collect() }
 
     then:
     result == headers
     1 * mock.getHeaders('headers') >> Collections.enumeration(headers)
-    headers.each { 1 * iastModule.taint(_, it, SourceTypes.REQUEST_HEADER_VALUE, 'headers') }
+    headers.each { 1 * iastModule.taintString(iastCtx, it, SourceTypes.REQUEST_HEADER_VALUE, 'headers') }
     0 * _
 
     where:
     suite << testSuite()
   }
 
-  void 'test getHeaderNames'() {
+  void 'test getHeaderNames #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -75,19 +88,19 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getHeaderNames().collect()
+    final result = runUnderIastTrace { request.getHeaderNames().collect() }
 
     then:
     result == headers
     1 * mock.getHeaderNames() >> Collections.enumeration(headers)
-    headers.each { 1 * iastModule.taint(_, it, SourceTypes.REQUEST_HEADER_NAME, it) }
+    headers.each { 1 * iastModule.taintString(iastCtx, it, SourceTypes.REQUEST_HEADER_NAME, it) }
     0 * _
 
     where:
     suite << testSuite()
   }
 
-  void 'test getParameter'() {
+  void 'test getParameter #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -95,19 +108,19 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getParameter('parameter')
+    final result = runUnderIastTrace { request.getParameter('parameter') }
 
     then:
     result == 'value'
     1 * mock.getParameter('parameter') >> 'value'
-    1 * iastModule.taint('value', SourceTypes.REQUEST_PARAMETER_VALUE, 'parameter')
+    1 * iastModule.taintString(iastCtx, 'value', SourceTypes.REQUEST_PARAMETER_VALUE, 'parameter')
     0 * _
 
     where:
     suite << testSuite()
   }
 
-  void 'test getParameterValues'() {
+  void 'test getParameterValues #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -116,19 +129,19 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getParameterValues('parameter').collect()
+    final result = runUnderIastTrace { request.getParameterValues('parameter').collect() }
 
     then:
     result == values
     1 * mock.getParameterValues('parameter') >> { values as String[] }
-    values.each { 1 * iastModule.taint(_, it, SourceTypes.REQUEST_PARAMETER_VALUE, 'parameter') }
+    values.each { 1 * iastModule.taintString(iastCtx, it, SourceTypes.REQUEST_PARAMETER_VALUE, 'parameter') }
     0 * _
 
     where:
     suite << testSuite()
   }
 
-  void 'test getParameterMap'() {
+  void 'test getParameterMap #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -137,15 +150,15 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getParameterMap()
+    final result = runUnderIastTrace { request.getParameterMap() }
 
     then:
     result == parameters
     1 * mock.getParameterMap() >> parameters
     parameters.each { key, values ->
-      1 * iastModule.taint(_, key, SourceTypes.REQUEST_PARAMETER_NAME, key)
+      1 * iastModule.taintString(iastCtx, key, SourceTypes.REQUEST_PARAMETER_NAME, key)
       values.each { value ->
-        1 * iastModule.taint(_, value, SourceTypes.REQUEST_PARAMETER_VALUE, key)
+        1 * iastModule.taintString(iastCtx, value, SourceTypes.REQUEST_PARAMETER_VALUE, key)
       }
     }
     0 * _
@@ -155,7 +168,7 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
   }
 
 
-  void 'test getParameterNames'() {
+  void 'test getParameterNames #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -164,19 +177,19 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getParameterNames().collect()
+    final result = runUnderIastTrace { request.getParameterNames().collect() }
 
     then:
     result == parameters
     1 * mock.getParameterNames() >> Collections.enumeration(parameters)
-    parameters.each { 1 * iastModule.taint(_, it, SourceTypes.REQUEST_PARAMETER_NAME, it) }
+    parameters.each { 1 * iastModule.taintString(iastCtx, it, SourceTypes.REQUEST_PARAMETER_NAME, it) }
     0 * _
 
     where:
     suite << testSuite()
   }
 
-  void 'test getCookies'() {
+  void 'test getCookies #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -185,19 +198,19 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getCookies()
+    final result = runUnderIastTrace { request.getCookies() }
 
     then:
     result == cookies
     1 * mock.getCookies() >> cookies
-    cookies.each { 1 * iastModule.taint(_, it, SourceTypes.REQUEST_COOKIE_VALUE) }
+    cookies.each { 1 * iastModule.taintObject(iastCtx, it, SourceTypes.REQUEST_COOKIE_VALUE) }
     0 * _
 
     where:
     suite << testSuite()
   }
 
-  void 'test that get headers does not fail when servlet related code fails'() {
+  void 'test that get headers does not fail when servlet related code fails #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -208,7 +221,7 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final headers = request.getHeaders('header')
+    final headers = runUnderIastTrace { request.getHeaders('header') }
 
     then:
     1 * mock.getHeaders('header') >> enumeration
@@ -225,7 +238,7 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     suite << testSuite()
   }
 
-  void 'test that get header names does not fail when servlet related code fails'() {
+  void 'test that get header names does not fail when servlet related code fails #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -236,7 +249,7 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getHeaderNames()
+    final result = runUnderIastTrace { request.getHeaderNames() }
 
     then:
     1 * mock.getHeaderNames() >> enumeration
@@ -253,7 +266,7 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     suite << testSuite()
   }
 
-  void 'test get query string'() {
+  void 'test get query string #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -262,19 +275,19 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final String result = request.getQueryString()
+    final String result = runUnderIastTrace { request.getQueryString() }
 
     then:
     result == queryString
     1 * mock.getQueryString() >> queryString
-    1 * iastModule.taint(queryString, SourceTypes.REQUEST_QUERY)
+    1 * iastModule.taintString(iastCtx, queryString, SourceTypes.REQUEST_QUERY)
     0 * _
 
     where:
     suite << testSuite()
   }
 
-  void 'test getInputStream'() {
+  void 'test getInputStream #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -283,19 +296,19 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getInputStream()
+    final result = runUnderIastTrace { request.getInputStream() }
 
     then:
     result == is
     1 * mock.getInputStream() >> is
-    1 * iastModule.taint(is, SourceTypes.REQUEST_BODY)
+    1 * iastModule.taintObject(iastCtx, is, SourceTypes.REQUEST_BODY)
     0 * _
 
     where:
     suite << testSuite()
   }
 
-  void 'test getReader'() {
+  void 'test getReader #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -304,19 +317,19 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getReader()
+    final result = runUnderIastTrace { request.getReader() }
 
     then:
     result == reader
     1 * mock.getReader() >> reader
-    1 * iastModule.taint(reader, SourceTypes.REQUEST_BODY)
+    1 * iastModule.taintObject(iastCtx, reader, SourceTypes.REQUEST_BODY)
     0 * _
 
     where:
     suite << testSuite()
   }
 
-  void 'test getRequestDispatcher'() {
+  void 'test getRequestDispatcher #iterationIndex'() {
     setup:
     final iastModule = Mock(UnvalidatedRedirectModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -326,7 +339,7 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getRequestDispatcher(path)
+    final result = runUnderIastTrace { request.getRequestDispatcher(path) }
 
     then:
     result == dispatcher
@@ -338,7 +351,7 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     suite << testSuite()
   }
 
-  void 'test getRequestURI'() {
+  void 'test getRequestURI #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -347,19 +360,19 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getRequestURI()
+    final result = runUnderIastTrace { request.getRequestURI() }
 
     then:
     result == uri
     1 * mock.getRequestURI() >> uri
-    1 * iastModule.taint(uri, SourceTypes.REQUEST_PATH)
+    1 * iastModule.taintString(iastCtx, uri, SourceTypes.REQUEST_PATH)
     0 * _
 
     where:
     suite << testSuiteCallSites()
   }
 
-  void 'test getPathInfo'() {
+  void 'test getPathInfo #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -368,19 +381,19 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getPathInfo()
+    final result = runUnderIastTrace { request.getPathInfo() }
 
     then:
     result == pathInfo
     1 * mock.getPathInfo() >> pathInfo
-    1 * iastModule.taint(pathInfo, SourceTypes.REQUEST_PATH)
+    1 * iastModule.taintString(iastCtx, pathInfo, SourceTypes.REQUEST_PATH)
     0 * _
 
     where:
     suite << testSuiteCallSites()
   }
 
-  void 'test getPathTranslated'() {
+  void 'test getPathTranslated #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -389,19 +402,19 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getPathTranslated()
+    final result = runUnderIastTrace { request.getPathTranslated() }
 
     then:
     result == pathTranslated
     1 * mock.getPathTranslated() >> pathTranslated
-    1 * iastModule.taint(pathTranslated, SourceTypes.REQUEST_PATH)
+    1 * iastModule.taintString(iastCtx, pathTranslated, SourceTypes.REQUEST_PATH)
     0 * _
 
     where:
     suite << testSuiteCallSites()
   }
 
-  void 'test getRequestURL'() {
+  void 'test getRequestURL #iterationIndex'() {
     setup:
     final iastModule = Mock(PropagationModule)
     InstrumentationBridge.registerIastModule(iastModule)
@@ -410,16 +423,51 @@ class JakartaHttpServletRequestInstrumentationTest extends AgentTestRunner {
     final request = suite.call(mock)
 
     when:
-    final result = request.getRequestURL()
+    final result = runUnderIastTrace { request.getRequestURL() }
 
     then:
     result == url
     1 * mock.getRequestURL() >> url
-    1 * iastModule.taint(url, SourceTypes.REQUEST_URI)
+    1 * iastModule.taintObject(iastCtx, url, SourceTypes.REQUEST_URI)
     0 * _
 
     where:
     suite << testSuiteCallSites()
+  }
+
+  void 'test getSession #iterationIndex'() {
+    setup:
+    final iastModule = Mock(ApplicationModule)
+    InstrumentationBridge.registerIastModule(iastModule)
+    final session = Mock(HttpSession)
+    final servletContext = Mock(ServletContext) {
+      getEffectiveSessionTrackingModes() >> new HashSet<SessionTrackingMode>(Arrays.asList(SessionTrackingMode.URL))
+    }
+    final mock = Mock(HttpServletRequest)
+    final request = suite.call(mock)
+
+    when:
+    final result = runUnderIastTrace { request.getSession() }
+
+    then:
+    result == session
+    1 * mock.getSession() >> session
+    1 * mock.getServletContext() >> servletContext
+    1 * iastModule.checkSessionTrackingModes(_)
+    0 * iastModule._
+
+    where:
+    suite << testSuite()
+  }
+
+  protected <E> E runUnderIastTrace(Closure<E> cl) {
+    final ddctx = new TagContext().withRequestContextDataIast(iastCtx)
+    final span = TEST_TRACER.startSpan("test", "test-iast-span", ddctx)
+    try {
+      return AgentTracer.activateSpan(span).withCloseable(cl)
+    } finally {
+      span.finish()
+    }
   }
 
   private List<Closure<? extends HttpServletRequest>> testSuite() {

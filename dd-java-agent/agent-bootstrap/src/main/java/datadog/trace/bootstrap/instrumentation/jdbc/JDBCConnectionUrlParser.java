@@ -1,6 +1,7 @@
 package datadog.trace.bootstrap.instrumentation.jdbc;
 
 import static datadog.trace.bootstrap.instrumentation.jdbc.DBInfo.DEFAULT;
+import static java.lang.Math.max;
 
 import datadog.trace.api.Pair;
 import datadog.trace.api.cache.DDCache;
@@ -41,6 +42,7 @@ public enum JDBCConnectionUrlParser {
         }
 
         String path = uri.getPath();
+
         if (path.startsWith("/")) {
           path = path.substring(1);
         }
@@ -201,7 +203,7 @@ public enum JDBCConnectionUrlParser {
         hostEndLoc = portLoc;
         try {
           builder.port(Integer.parseInt(jdbcUrl.substring(portLoc + 1, dbLoc)));
-        } catch (final NumberFormatException e) {
+        } catch (final NumberFormatException ignored) {
         }
       } else {
         hostEndLoc = dbLoc;
@@ -216,12 +218,19 @@ public enum JDBCConnectionUrlParser {
   MARIA_SUBPROTO() {
     @Override
     DBInfo.Builder doParse(final String jdbcUrl, final DBInfo.Builder builder) {
+      if (jdbcUrl.startsWith("**internally_generated**")) {
+        // there is nothing to parse
+        builder.host(null);
+        builder.port(null);
+        return builder;
+      }
       final int hostEndLoc;
       final int clusterSepLoc = jdbcUrl.indexOf(',');
-      final int ipv6End = jdbcUrl.startsWith("[") ? jdbcUrl.indexOf(']') : -1;
-      int portLoc = jdbcUrl.indexOf(':', Math.max(0, ipv6End));
-      portLoc = clusterSepLoc < portLoc ? -1 : portLoc;
-      final int dbLoc = jdbcUrl.indexOf('/', Math.max(portLoc, clusterSepLoc));
+      final int ipv6End =
+          !jdbcUrl.isEmpty() && jdbcUrl.charAt(0) == '[' ? jdbcUrl.indexOf(']') : -1;
+      int portLoc = jdbcUrl.indexOf(':', max(0, ipv6End));
+      portLoc = -1 < clusterSepLoc && clusterSepLoc < portLoc ? -1 : portLoc;
+      final int dbLoc = jdbcUrl.indexOf('/', max(portLoc, clusterSepLoc));
 
       final int paramLoc = jdbcUrl.indexOf('?', dbLoc);
 
@@ -241,7 +250,7 @@ public enum JDBCConnectionUrlParser {
         final int portEndLoc = clusterSepLoc > 0 ? clusterSepLoc : dbLoc;
         try {
           builder.port(Integer.parseInt(jdbcUrl.substring(portLoc + 1, portEndLoc)));
-        } catch (final NumberFormatException e) {
+        } catch (final NumberFormatException ignored) {
         }
       } else {
         hostEndLoc = clusterSepLoc > 0 ? clusterSepLoc : dbLoc;
@@ -384,7 +393,7 @@ public enum JDBCConnectionUrlParser {
             Integer parsedPort = null;
             try {
               parsedPort = Integer.parseInt(portOrInstance);
-            } catch (final NumberFormatException e) {
+            } catch (final NumberFormatException ignored) {
             }
             if (parsedPort == null) {
               port = null;
@@ -560,7 +569,7 @@ public enum JDBCConnectionUrlParser {
 
     @Override
     DBInfo.Builder doParse(final String jdbcUrl, final DBInfo.Builder builder) {
-      String instance = null;
+      String instance;
       final DBInfo dbInfo = builder.build();
       if (dbInfo.getUser() == null) {
         builder.user(DEFAULT_USER);
@@ -674,9 +683,8 @@ public enum JDBCConnectionUrlParser {
         }
       } else {
         builder.subtype("directory");
-        final String urlInstance = details;
-        if (!urlInstance.isEmpty()) {
-          instance = urlInstance;
+        if (!details.isEmpty()) {
+          instance = details;
         }
       }
 
@@ -689,7 +697,6 @@ public enum JDBCConnectionUrlParser {
 
   /** http://jtds.sourceforge.net/faq.html#urlFormat */
   JTDS("jtds") {
-    private static final String DEFAULT_HOST = "localhost";
     private static final int DEFAULT_SQL_SERVER_PORT = 1433;
     private static final int DEFAULT_SYBASE_PORT = 7100;
 
@@ -735,7 +742,7 @@ public enum JDBCConnectionUrlParser {
         hostEndLoc = portLoc;
         try {
           builder.port(Integer.parseInt(details.substring(portLoc + 1, dbLoc)));
-        } catch (final NumberFormatException e) {
+        } catch (final NumberFormatException ignored) {
         }
       } else if (dbLoc > 0) {
         hostEndLoc = dbLoc;
@@ -764,7 +771,48 @@ public enum JDBCConnectionUrlParser {
       }
       return builder;
     }
-  };
+  },
+
+  SNOWFLAKE("snowflake") {
+    @Override
+    DBInfo.Builder doParse(String jdbcUrl, DBInfo.Builder builder) {
+      String url = jdbcUrl;
+      if (url.startsWith("jdbc:")) {
+        url = url.substring(5);
+      }
+      return GENERIC_URL_LIKE.doParse(url, builder);
+    }
+  },
+
+  IRIS("iris") {
+    @Override
+    DBInfo.Builder doParse(String jdbcUrl, DBInfo.Builder builder) {
+      String url = jdbcUrl;
+      int firstSlash = url.indexOf('/', "jdbc://iris:/".length());
+      int nextSlash = url.indexOf('/', firstSlash + 1);
+      if (nextSlash > firstSlash) {
+        // strip the options and preserve only the url like part
+        url = url.substring(0, nextSlash);
+      }
+      return GENERIC_URL_LIKE.doParse(url, builder);
+    }
+  },
+  // https://infocenter.sybase.com/help/index.jsp?topic=/com.sybase.infocenter.dc01776.1601/doc/html/san1357754914053.html
+  // Sybase TDS
+  SYBASE_TDS("sybase") {
+    @Override
+    DBInfo.Builder doParse(String jdbcUrl, DBInfo.Builder builder) {
+      if (jdbcUrl.startsWith("sybase:tds:")) {
+        // that uri is opaque so we need to adjust it in order to be parsed with the classical
+        // hierarchical way
+        return GENERIC_URL_LIKE
+            .doParse("sybase://" + jdbcUrl.substring("sybase:tds:".length()), builder)
+            .subtype("tds");
+      }
+      return GENERIC_URL_LIKE.doParse(jdbcUrl, builder);
+    }
+  },
+  ;
 
   private static final Map<String, JDBCConnectionUrlParser> typeParsers = new HashMap<>();
 
@@ -870,7 +918,15 @@ public enum JDBCConnectionUrlParser {
       if (props.containsKey("databaseName")) {
         builder.db((String) props.get("databaseName"));
       }
-
+      if (props.containsKey("db")) {
+        builder.db((String) props.get("db"));
+      }
+      if (props.containsKey("warehouse")) {
+        builder.warehouse((String) props.get("warehouse"));
+      }
+      if (props.containsKey("schema")) {
+        builder.schema((String) props.get("schema"));
+      }
       if (props.containsKey("servername")) {
         builder.host((String) props.get("servername"));
       }
@@ -885,6 +941,10 @@ public enum JDBCConnectionUrlParser {
         } catch (final NumberFormatException e) {
           ExceptionLogger.LOGGER.debug("Error parsing portnumber property: {}", portNumber, e);
         }
+      }
+      if (props.containsKey("servicename")) {
+        // this property is used to specify the db to use for Sybase connection strings
+        builder.instance((String) props.get("servicename"));
       }
 
       if (props.containsKey("portNumber")) {

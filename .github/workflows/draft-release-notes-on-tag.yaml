@@ -6,19 +6,25 @@ on:
 jobs:
   draft_release_notes:
     name: Draft release notes
+    permissions:
+      contents: write # Required to create a release
     if: (github.event.ref_type == 'tag' && github.event.master_branch == 'master') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Get milestone title
         id: milestoneTitle
-        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # 6.4.1
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # 7.0.1
         with:
           result-encoding: string
           script: |
-            // Get the milestone title ("X.Y.Z") from tag name ("vX.Y.Z")
-            const milestoneTitle = '${{github.event.ref}}'.startsWith('v') ?
-                '${{github.event.ref}}'.substring(1) :
-                '${{github.event.ref}}'
+            // Get the milestone title ("X.Y.Z") from tag name ("vX.Y.Z(-rc)")
+            const match = '${{github.event.ref}}'.match(/v(\d+\.\d+\.\d+)(-rc\d+)?/i)
+            if (!match) {
+              core.setFailed('Failed to parse tag name into milestone name: ${{github.event.ref}}')
+              return
+            }
+            const milestoneTitle = match[1]
+            const isReleaseCandidate = match[2] !== undefined
 
             // Look for the milestone
             const milestone = (await github.paginate('GET /repos/{owner}/{repo}/milestones', {
@@ -27,7 +33,7 @@ jobs:
               state: 'all'
             })).find(m => m.title == milestoneTitle)
             if (!milestone) {
-              core.setFailed('Failed to find milestone: ${milestoneTitle}')
+              core.setFailed(`Failed to find milestone: ${milestoneTitle}`)
               return
             }
 
@@ -119,7 +125,12 @@ jobs:
             }
             function cleanUpTitle(title) {
               // Remove tags between brackets
-              return title.replace(/\[[^\]]+\]/g, '')
+              title = title.replace(/\[[^\]]+\]/g, '')
+              // Remove cherry-pick prefix
+              if (title.startsWith('🍒 ') && title.includes(' - ')) {
+                title = title.substring(title.indexOf(' - ') + 3)
+              }
+              return title
             }
             function format(pullRequest) {
               var line = `${decorate(pullRequest)}${cleanUpTitle(pullRequest.title)} (#${pullRequest.number} - @${pullRequest.user.login}`
@@ -132,6 +143,11 @@ jobs:
             }
 
             var changelog = ''
+            if (isReleaseCandidate) {
+              changelog += '> [!WARNING]\n' +
+                '> This is a **release candidate** and is **not** intended for use in production.  \n' +
+                'Please [open an issue](https://github.com/DataDog/dd-trace-java/issues/new) regarding any problems in this release candidate.\n\n'
+            }
             if (prByComponents.size > 0) {
               changelog += '# Components\n\n';
               for (let pair of prByComponents) {

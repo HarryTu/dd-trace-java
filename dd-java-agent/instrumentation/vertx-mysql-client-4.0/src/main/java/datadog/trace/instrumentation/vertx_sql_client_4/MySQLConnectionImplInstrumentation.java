@@ -6,13 +6,14 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.jdbc.DBInfo;
 import java.util.HashMap;
 import java.util.Map;
 
-@AutoService(Instrumenter.class)
-public class MySQLConnectionImplInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class MySQLConnectionImplInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public MySQLConnectionImplInstrumentation() {
     super("vertx", "vertx-sql-client");
   }
@@ -31,8 +32,8 @@ public class MySQLConnectionImplInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isConstructor()
             .and(takesArgument(0, named("io.vertx.mysqlclient.impl.MySQLConnectionFactory"))),
         packageName + ".MySQLConnectionImplConstructorAdvice");

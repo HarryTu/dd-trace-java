@@ -10,18 +10,24 @@ import static net.bytebuddy.matcher.ElementMatchers.isPublic;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import java.net.URL;
 import java.net.URLStreamHandler;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public class UrlInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForBootstrap, Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class UrlInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForBootstrap, Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public UrlInstrumentation() {
     super("urlconnection", "httpurlconnection");
+  }
+
+  @Override
+  protected boolean defaultEnabled() {
+    return false;
   }
 
   @Override
@@ -30,8 +36,8 @@ public class UrlInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(isPublic()).and(named("openConnection")),
         UrlInstrumentation.class.getName() + "$ConnectionErrorAdvice");
   }

@@ -6,10 +6,11 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 
-@AutoService(Instrumenter.class)
-public class BaseClusterInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class BaseClusterInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public BaseClusterInstrumentation() {
     super("mongo", "mongo-reactivestreams");
   }
@@ -25,8 +26,8 @@ public class BaseClusterInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("selectServerAsync"))
             .and(takesArgument(1, named("com.mongodb.internal.async.SingleResultCallback"))),

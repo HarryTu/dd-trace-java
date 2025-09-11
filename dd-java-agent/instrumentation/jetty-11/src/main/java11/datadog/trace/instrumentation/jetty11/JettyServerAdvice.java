@@ -1,12 +1,13 @@
 package datadog.trace.instrumentation.jetty11;
 
+import static datadog.trace.bootstrap.instrumentation.api.AgentSpan.fromContext;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
 import static datadog.trace.bootstrap.instrumentation.decorator.HttpServerDecorator.DD_SPAN_ATTRIBUTE;
 import static datadog.trace.instrumentation.jetty11.JettyDecorator.DECORATE;
 
+import datadog.context.Context;
+import datadog.context.ContextScope;
 import datadog.trace.api.CorrelationIdentifier;
-import datadog.trace.api.GlobalTracer;
-import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import net.bytebuddy.asm.Advice;
 import org.eclipse.jetty.server.HttpChannel;
@@ -16,7 +17,7 @@ public class JettyServerAdvice {
   public static class HandleAdvice {
 
     @Advice.OnMethodEnter(suppress = Throwable.class)
-    public static AgentScope onEnter(
+    public static ContextScope onEnter(
         @Advice.This final HttpChannel channel, @Advice.Local("agentSpan") AgentSpan span) {
       Request req = channel.getRequest();
 
@@ -25,22 +26,22 @@ public class JettyServerAdvice {
         return activateSpan((AgentSpan) existingSpan);
       }
 
-      final AgentSpan.Context.Extracted extractedContext = DECORATE.extract(req);
-      span = DECORATE.startSpan(req, extractedContext);
-      final AgentScope scope = activateSpan(span);
-      scope.setAsyncPropagation(true);
+      final Context parentContext = DECORATE.extract(req);
+      final Context context = DECORATE.startSpan(req, parentContext);
+      final ContextScope scope = context.attach();
+      span = fromContext(context);
       span.setMeasured(true);
       DECORATE.afterStart(span);
-      DECORATE.onRequest(span, req, req, extractedContext);
+      DECORATE.onRequest(span, req, req, parentContext);
 
       req.setAttribute(DD_SPAN_ATTRIBUTE, span);
-      req.setAttribute(CorrelationIdentifier.getTraceIdKey(), GlobalTracer.get().getTraceId());
-      req.setAttribute(CorrelationIdentifier.getSpanIdKey(), GlobalTracer.get().getSpanId());
+      req.setAttribute(CorrelationIdentifier.getTraceIdKey(), CorrelationIdentifier.getTraceId());
+      req.setAttribute(CorrelationIdentifier.getSpanIdKey(), CorrelationIdentifier.getSpanId());
       return scope;
     }
 
     @Advice.OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
-    public static void closeScope(@Advice.Enter final AgentScope scope) {
+    public static void closeScope(@Advice.Enter final ContextScope scope) {
       scope.close();
     }
 

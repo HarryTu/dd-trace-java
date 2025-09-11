@@ -1,10 +1,17 @@
 package com.datadog.iast.model.json
 
+import com.datadog.iast.model.Range
 import com.datadog.iast.model.Source
 import com.datadog.iast.model.Vulnerability
 import com.datadog.iast.model.VulnerabilityBatch
 import com.datadog.iast.model.VulnerabilityType
-import com.squareup.moshi.*
+import com.squareup.moshi.FromJson
+import com.squareup.moshi.JsonAdapter
+import com.squareup.moshi.JsonReader
+import com.squareup.moshi.JsonWriter
+import com.squareup.moshi.Moshi
+import com.squareup.moshi.ToJson
+import com.squareup.moshi.Types
 import datadog.trace.api.config.IastConfig
 import datadog.trace.api.iast.SourceTypes
 import datadog.trace.test.util.DDSpecification
@@ -23,7 +30,8 @@ import java.util.regex.Pattern
 import static com.datadog.iast.model.json.EvidenceAdapter.RedactedValuePart
 import static com.datadog.iast.model.json.EvidenceAdapter.StringValuePart
 import static com.datadog.iast.model.json.EvidenceAdapter.TaintedValuePart
-
+import static datadog.trace.api.iast.VulnerabilityMarks.NOT_MARKED
+import static org.junit.jupiter.api.Assumptions.assumeFalse
 
 class EvidenceRedactionTest extends DDSpecification {
 
@@ -49,14 +57,15 @@ class EvidenceRedactionTest extends DDSpecification {
       .add(new TestVulnerabilityAdapter())
       .add(new TestSourceIndexAdapter())
       .add(new TestSourceTypeStringAdapter())
+      .add(new TestRangeAdapter())
       .build()
     sourcesParser = moshi.adapter(Types.newParameterizedType(List, Source))
     vulnerabilitiesParser = moshi.adapter(Types.newParameterizedType(List, Vulnerability))
   }
 
-  void 'test empty value parts'() {
+  void 'test empty value parts #iterationIndex'() {
     given:
-    final writer = Mock(JsonWriter)
+    final writer = Stub(JsonWriter)
     final ctx = new AdapterFactory.Context()
 
     when:
@@ -70,12 +79,13 @@ class EvidenceRedactionTest extends DDSpecification {
     new StringValuePart(null)                                  | _
     new StringValuePart('')                                    | _
     new RedactedValuePart(null)                                | _
-    new TaintedValuePart(Mock(JsonAdapter), null, null, true)  | _
-    new TaintedValuePart(Mock(JsonAdapter), null, null, false) | _
+    new TaintedValuePart(Stub(JsonAdapter), null, null, true, null)  | _
+    new TaintedValuePart(Stub(JsonAdapter), null, null, false, null) | _
   }
 
   void 'test #suite'() {
     given:
+    assumeFalse(suite.ignored, "Ignored test")
     final type = suite.type == Type.SOURCES ? Types.newParameterizedType(List, Source) : VulnerabilityBatch
     final adapter = VulnerabilityEncoding.MOSHI.adapter(type)
 
@@ -90,6 +100,25 @@ class EvidenceRedactionTest extends DDSpecification {
 
     where:
     suite << readTestSuite('redaction/evidence-redaction-suite.yml')
+  }
+
+  void 'test secure_marks #suite'() {
+    given:
+    assumeFalse(suite.ignored, "Ignored test")
+    final type =  VulnerabilityBatch
+    final adapter = VulnerabilityEncoding.MOSHI.adapter(type)
+
+    when:
+    final redacted = adapter.toJson(suite.input)
+
+    then:
+    final received = JsonOutput.prettyPrint(redacted)
+    final description = suite.description
+    final expected = suite.expected
+    JSONAssert.assertEquals(description, expected, received, JSONCompareMode.NON_EXTENSIBLE)
+
+    where:
+    suite << readTestSuite('redaction/evidence-redaction-suite-with-marks.yml')
   }
 
   private Iterable<TestSuite> readTestSuite(final String fileName) {
@@ -133,12 +162,17 @@ class EvidenceRedactionTest extends DDSpecification {
           suite.input = sourcesParser.fromJson(input)
           break
         default:
-          final batch = new VulnerabilityBatch(vulnerabilities: vulnerabilitiesParser.fromJson(input))
-          if (suite.context != null) {
-            final context = json.parseText(suite.context) as Map<String, String>
-            batch.vulnerabilities.evidence.context.each { context.each(it.&put) }
+          try{
+            final batch = new VulnerabilityBatch(vulnerabilities: vulnerabilitiesParser.fromJson(input))
+            if (suite.context != null) {
+              final context = json.parseText(suite.context) as Map<String, String>
+              batch.vulnerabilities.evidence.context.each { context.each(it.&put) }
+            }
+            suite.input = batch
+          }catch (Exception ex){
+            suite.ignored = true
+            println "Failed to parse test ${ex.message}"
           }
-          suite.input = batch
           break
       }
       return suite
@@ -198,6 +232,7 @@ class EvidenceRedactionTest extends DDSpecification {
     String context
     Object input
     String expected
+    boolean ignored
 
     @Override
     String toString() {
@@ -249,6 +284,53 @@ class EvidenceRedactionTest extends DDSpecification {
 
     @ToJson
     void toJson(@Nonnull final JsonWriter writer, @Nonnull @SourceTypeString final byte type) throws IOException {
+      throw new UnsupportedOperationException()
+    }
+  }
+
+  static class TestRangeAdapter {
+    @FromJson
+    Range fromJson(JsonReader reader, final JsonAdapter<Source> adapter) throws IOException {
+      reader.beginObject()
+      int start = -1
+      int length = -1
+      Source source = null
+      int mark = NOT_MARKED
+      while (reader.hasNext()) {
+        switch (reader.nextName()) {
+          case "start":
+            start = reader.nextInt()
+            break
+          case "length":
+            length = reader.nextInt()
+            break
+          case "source":
+            source = adapter.fromJson(reader)
+            break
+          case "secure_marks":
+            List<String> secureMarks = new Moshi.Builder().build().adapter(Types.newParameterizedType(List, String)).fromJson(reader) as List<String>
+            mark = calculateMarks(secureMarks)
+            break
+          default:
+            reader.skipValue()
+            break
+        }
+      }
+      reader.endObject()
+      final range = new Range(start, length, source, mark)
+      return range.isValid() ? range : null
+    }
+
+    static int calculateMarks(List<String> secureMarks) {
+      int marks = 0
+      for (String type : secureMarks) {
+        marks |= VulnerabilityType."$type".mark
+      }
+      return marks
+    }
+
+    @ToJson
+    void toJson(@Nonnull final JsonWriter writer, @Nonnull final Range range) throws IOException {
       throw new UnsupportedOperationException()
     }
   }

@@ -1,7 +1,10 @@
 apply plugin: 'groovy'
 
 dependencies {
-  testImplementation deps.spock
-  testImplementation deps.groovy
-  testImplementation deps.testLogging
+  testImplementation libs.bundles.spock
+  testImplementation libs.groovy
+  testImplementation libs.bundles.test.logging
+
+  // Required to update dependency lock files
+  testRuntimeOnly libs.bundles.junit.platform
 }

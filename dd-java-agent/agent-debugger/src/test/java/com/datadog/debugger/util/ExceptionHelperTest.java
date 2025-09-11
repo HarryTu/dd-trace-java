@@ -8,6 +8,8 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 
 import datadog.trace.relocate.api.RatelimitedLogger;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentMatchers;
@@ -72,10 +74,112 @@ public class ExceptionHelperTest {
     String strStackTrace = ExceptionHelper.foldExceptionStackTrace(new Exception());
     assertTrue(
         strStackTrace.startsWith(
-            "java.lang.Exception at com.datadog.debugger.util.ExceptionHelperTest.foldExceptionStackTrace(ExceptionHelperTest.java:72) at "));
+            "java.lang.Exception at com.datadog.debugger.util.ExceptionHelperTest.foldExceptionStackTrace(ExceptionHelperTest.java:74) at "),
+        strStackTrace);
     assertFalse(strStackTrace.contains("\n"));
     assertFalse(strStackTrace.contains("\t"));
     assertFalse(strStackTrace.contains("\r"));
+  }
+
+  @Test
+  public void innerMostException() {
+    Exception ex = new RuntimeException("test1");
+    Throwable innerMost = ExceptionHelper.getInnerMostThrowable(ex);
+    assertEquals(ex, innerMost);
+    Exception nested = new RuntimeException("test3", new RuntimeException("test2", ex));
+    innerMost = ExceptionHelper.getInnerMostThrowable(nested);
+    assertEquals(ex, innerMost);
+    Deque<Throwable> exceptions = new ArrayDeque<>();
+    innerMost = ExceptionHelper.getInnerMostThrowable(nested, exceptions);
+    assertEquals(ex, innerMost);
+    assertEquals(3, exceptions.size());
+    assertEquals(nested, exceptions.pollLast());
+    assertEquals(nested.getCause(), exceptions.pollLast());
+    assertEquals(nested.getCause().getCause(), exceptions.pollLast());
+  }
+
+  @Test
+  public void flattenStackTrace() {
+    Throwable simpleException =
+        new MockException(
+            "oops!",
+            new StackTraceElement[] {
+              new StackTraceElement("MyClass1", "myMethod1", "file1.java", 1)
+            });
+    Throwable nestedException =
+        new MockException(
+            "oops!",
+            new StackTraceElement[] {
+              new StackTraceElement("MyClass2", "myMethod2", "file2.java", 2)
+            },
+            simpleException);
+    StackTraceElement[] stack = ExceptionHelper.flattenStackTrace(simpleException);
+    assertEquals(1, stack.length);
+    stack = ExceptionHelper.flattenStackTrace(nestedException);
+    assertEquals(2, stack.length);
+  }
+
+  @Test
+  public void createThrowableMapping() {
+    Throwable nestedException = createNestException();
+    Throwable innerMostThrowable = ExceptionHelper.getInnerMostThrowable(nestedException);
+    int[] mapping = ExceptionHelper.createThrowableMapping(innerMostThrowable, nestedException);
+    StackTraceElement[] flattenedTrace = ExceptionHelper.flattenStackTrace(nestedException);
+    for (int i = 0; i < mapping.length; i++) {
+      assertEquals(
+          flattenedTrace[mapping[i]].getClassName(),
+          innerMostThrowable.getStackTrace()[i].getClassName());
+    }
+  }
+
+  @Test
+  public void createThrowableMappingRecursive() {
+    Throwable nestedException = createNestExceptionRecursive(4);
+    Throwable innerMostThrowable = ExceptionHelper.getInnerMostThrowable(nestedException);
+    int[] mapping = ExceptionHelper.createThrowableMapping(innerMostThrowable, nestedException);
+    StackTraceElement[] flattenedTrace = ExceptionHelper.flattenStackTrace(nestedException);
+    for (int i = 0; i < mapping.length; i++) {
+      assertEquals(
+          flattenedTrace[mapping[i]].getClassName(),
+          innerMostThrowable.getStackTrace()[i].getClassName());
+    }
+  }
+
+  private RuntimeException createNestExceptionRecursive(int depth) {
+    if (depth == 0) {
+      return createNestException();
+    }
+    return createNestExceptionRecursive(depth - 1);
+  }
+
+  private RuntimeException createNestException() {
+    return new RuntimeException("test3", createTest2Exception(createTest1Exception()));
+  }
+
+  private RuntimeException createTest1Exception() {
+    return new RuntimeException("test1");
+  }
+
+  private RuntimeException createTest2Exception(Throwable cause) {
+    return new RuntimeException("test2", cause);
+  }
+
+  private static class MockException extends Exception {
+    private final StackTraceElement[] stackTrace;
+
+    public MockException(String message, StackTraceElement[] stackTrace) {
+      this(message, stackTrace, null);
+    }
+
+    public MockException(String message, StackTraceElement[] stackTrace, Throwable cause) {
+      super(message, cause);
+      this.stackTrace = stackTrace;
+    }
+
+    @Override
+    public StackTraceElement[] getStackTrace() {
+      return stackTrace;
+    }
   }
 
   private Object logDebug(InvocationOnMock invocation) {

@@ -2,6 +2,7 @@ package datadog.trace.instrumentation.aerospike4;
 
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.nameStartsWith;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.captureSpan;
 import static datadog.trace.instrumentation.aerospike4.AerospikeClientDecorator.DECORATE;
 import static net.bytebuddy.implementation.bytecode.assign.Assigner.Typing.DYNAMIC;
 import static net.bytebuddy.matcher.ElementMatchers.isMethod;
@@ -10,13 +11,14 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public final class AerospikeClientInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class AerospikeClientInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public AerospikeClientInstrumentation() {
     super("aerospike");
   }
@@ -34,13 +36,13 @@ public final class AerospikeClientInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(isPublic())
             .and(takesArgument(0, nameStartsWith("com.aerospike.client.policy"))),
         getClass().getName() + "$TraceSyncRequestAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(isPublic())
             .and(takesArgument(1, nameStartsWith("com.aerospike.client.listener"))),
@@ -70,7 +72,7 @@ public final class AerospikeClientInstrumentation extends Instrumenter.Tracing
       AgentSpan clientSpan = DECORATE.startAerospikeSpan(methodName);
       AgentScope scope = activateSpan(clientSpan);
       // always want to wrap even when there's no listener so we get the true async time
-      listener = new TracingListener(clientSpan, scope.capture(), listener);
+      listener = new TracingListener(clientSpan, captureSpan(clientSpan), listener);
       return scope;
     }
 

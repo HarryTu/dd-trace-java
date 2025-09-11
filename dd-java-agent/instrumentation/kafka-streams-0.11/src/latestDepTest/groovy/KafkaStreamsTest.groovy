@@ -1,4 +1,4 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.DDTags
 import datadog.trace.bootstrap.instrumentation.api.InstrumentationTags
 import datadog.trace.bootstrap.instrumentation.api.Tags
@@ -29,7 +29,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
 @Flaky("https://github.com/DataDog/dd-trace-java/issues/3865")
-class KafkaStreamsTest extends AgentTestRunner {
+class KafkaStreamsTest extends InstrumentationSpecification {
   static final STREAM_PENDING = "test.pending"
   static final STREAM_PROCESSED = "test.processed"
 
@@ -131,6 +131,7 @@ class KafkaStreamsTest extends AgentTestRunner {
           tags {
             "$Tags.COMPONENT" "java-kafka"
             "$Tags.SPAN_KIND" Tags.SPAN_KIND_PRODUCER
+            "$InstrumentationTags.MESSAGING_DESTINATION_NAME" "$STREAM_PENDING"
             if ({ isDataStreamsEnabled()}) {
               "$DDTags.PATHWAY_HASH" { String }
             }
@@ -158,6 +159,7 @@ class KafkaStreamsTest extends AgentTestRunner {
             "$InstrumentationTags.PARTITION" { it >= 0 }
             "$InstrumentationTags.OFFSET" 0
             "$InstrumentationTags.PROCESSOR_NAME" "KSTREAM-SOURCE-0000000000"
+            "$InstrumentationTags.MESSAGING_DESTINATION_NAME" "$STREAM_PENDING"
             "asdf" "testing"
             if ({ isDataStreamsEnabled()}) {
               "$DDTags.PATHWAY_HASH" { String }
@@ -180,6 +182,7 @@ class KafkaStreamsTest extends AgentTestRunner {
           tags {
             "$Tags.COMPONENT" "java-kafka"
             "$Tags.SPAN_KIND" Tags.SPAN_KIND_PRODUCER
+            "$InstrumentationTags.MESSAGING_DESTINATION_NAME" "$STREAM_PROCESSED"
             if ({ isDataStreamsEnabled()}) {
               "$DDTags.PATHWAY_HASH" { String }
             }
@@ -204,6 +207,7 @@ class KafkaStreamsTest extends AgentTestRunner {
             "$InstrumentationTags.OFFSET" 0
             "$InstrumentationTags.CONSUMER_GROUP" "sender"
             "$InstrumentationTags.RECORD_QUEUE_TIME_MS" { it >= 0 }
+            "$InstrumentationTags.MESSAGING_DESTINATION_NAME" "$STREAM_PROCESSED"
             "testing" 123
             if ({ isDataStreamsEnabled()}) {
               "$DDTags.PATHWAY_HASH" { String }
@@ -222,31 +226,25 @@ class KafkaStreamsTest extends AgentTestRunner {
     if (isDataStreamsEnabled()) {
       StatsGroup originProducerPoint = TEST_DATA_STREAMS_WRITER.groups.find { it.parentHash == 0 }
       verifyAll(originProducerPoint) {
-        edgeTags == ["direction:out", "topic:$STREAM_PENDING", "type:kafka"]
-        edgeTags.size() == 3
+        tags.hasAllTags("direction:out", "topic:$STREAM_PENDING", "type:kafka")
       }
 
       StatsGroup kafkaStreamsConsumerPoint = TEST_DATA_STREAMS_WRITER.groups.find { it.parentHash == originProducerPoint.hash }
       verifyAll(kafkaStreamsConsumerPoint) {
-        edgeTags == [
-          "direction:in",
+        tags.hasAllTags("direction:in",
           "group:test-application",
           "topic:$STREAM_PENDING".toString(),
-          "type:kafka"
-        ]
-        edgeTags.size() == 4
+          "type:kafka")
       }
 
       StatsGroup kafkaStreamsProducerPoint = TEST_DATA_STREAMS_WRITER.groups.find { it.parentHash == kafkaStreamsConsumerPoint.hash }
       verifyAll(kafkaStreamsProducerPoint) {
-        edgeTags == ["direction:out", "topic:$STREAM_PROCESSED", "type:kafka"]
-        edgeTags.size() == 3
+        tags.hasAllTags("direction:out", "topic:$STREAM_PROCESSED", "type:kafka")
       }
 
       StatsGroup finalConsumerPoint = TEST_DATA_STREAMS_WRITER.groups.find { it.parentHash == kafkaStreamsProducerPoint.hash }
       verifyAll(finalConsumerPoint) {
-        edgeTags == ["direction:in", "group:sender", "topic:$STREAM_PROCESSED".toString(), "type:kafka"]
-        edgeTags.size() == 4
+        tags.hasAllTags("direction:in", "group:sender", "topic:$STREAM_PROCESSED".toString(), "type:kafka")
       }
     }
 

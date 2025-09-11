@@ -2,8 +2,11 @@ package datadog.trace.civisibility.ci;
 
 import static datadog.trace.civisibility.utils.FileUtils.findParentPathBackwards;
 
+import datadog.trace.api.civisibility.telemetry.tag.Provider;
 import datadog.trace.api.git.GitInfo;
+import datadog.trace.civisibility.ci.env.CiEnvironment;
 import java.nio.file.Path;
+import javax.annotation.Nonnull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,14 +30,12 @@ class UnknownCIInfo implements CIProviderInfo {
 
   public static final String UNKNOWN_PROVIDER_NAME = "unknown";
 
+  private final CiEnvironment environment;
   private final String targetFolder;
   private final Path currentPath;
 
-  UnknownCIInfo(Path currentPath) {
-    this(".git", currentPath);
-  }
-
-  UnknownCIInfo(String targetFolder, Path currentPath) {
+  UnknownCIInfo(CiEnvironment environment, String targetFolder, Path currentPath) {
+    this.environment = environment;
     this.targetFolder = targetFolder;
     this.currentPath = currentPath;
   }
@@ -57,7 +58,13 @@ class UnknownCIInfo implements CIProviderInfo {
       LOGGER.debug("Could not get real path for workspace folder {}", workspace, e);
     }
 
-    return CIInfo.builder().ciWorkspace(workspace.toAbsolutePath().toString()).build();
+    return CIInfo.builder(environment).ciWorkspace(workspace.toAbsolutePath().toString()).build();
+  }
+
+  @Nonnull
+  @Override
+  public PullRequestInfo buildPullRequestInfo() {
+    return PullRequestInfo.EMPTY;
   }
 
   protected String getTargetFolder() {
@@ -66,5 +73,10 @@ class UnknownCIInfo implements CIProviderInfo {
 
   protected Path getCurrentPath() {
     return currentPath;
+  }
+
+  @Override
+  public Provider getProvider() {
+    return Provider.UNSUPPORTED;
   }
 }

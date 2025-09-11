@@ -12,6 +12,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.ExcludeFilterProvider;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.ContextStore;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
@@ -27,9 +28,9 @@ import net.bytebuddy.asm.Advice;
 import scala.concurrent.impl.Promise.Transformation;
 import scala.util.Try;
 
-@AutoService(Instrumenter.class)
-public final class PromiseTransformationInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType, ExcludeFilterProvider {
+@AutoService(InstrumenterModule.class)
+public final class PromiseTransformationInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice, ExcludeFilterProvider {
 
   public PromiseTransformationInstrumentation() {
     super("scala_concurrent");
@@ -49,13 +50,13 @@ public final class PromiseTransformationInstrumentation extends Instrumenter.Tra
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isConstructor().and(takesArguments(4)), getClass().getName() + "$Construct");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod().and(named("submitWithValue")), getClass().getName() + "$SubmitWithValue");
-    transformation.applyAdvice(isMethod().and(named("run")), getClass().getName() + "$Run");
-    transformation.applyAdvice(isMethod().and(named("cancel")), getClass().getName() + "$Cancel");
+    transformer.applyAdvice(isMethod().and(named("run")), getClass().getName() + "$Run");
+    transformer.applyAdvice(isMethod().and(named("cancel")), getClass().getName() + "$Cancel");
   }
 
   @Override
@@ -81,7 +82,7 @@ public final class PromiseTransformationInstrumentation extends Instrumenter.Tra
       if (xform == 0) {
         return;
       }
-      capture(InstrumentationContext.get(Transformation.class, State.class), task, true);
+      capture(InstrumentationContext.get(Transformation.class, State.class), task);
     }
   }
 
@@ -127,7 +128,7 @@ public final class PromiseTransformationInstrumentation extends Instrumenter.Tra
       }
       // If nothing else has been picked up, then try to pick up the current Scope
       if (null == state) {
-        capture(contextStore, task, true);
+        capture(contextStore, task);
       }
     }
   }

@@ -58,15 +58,20 @@ class FixedSizeCacheTest extends DDSpecification {
     fsCache.computeIfAbsent(tk, tvc) == value
     creationCount.get() == count
 
+    and:
+    def visited = []
+    fsCache.visit { k, v -> k as String + "_value" == v && visited.add(k as String) }
+    visited == keys
+
     where:
-    tk                        | value          | count
-    new TKey(1, 1, "foo")     | "one_value"    | 3     // used the cached tk1
-    new TKey(1, 6, "foo")     | "six_value"    | 3     // used the cached tk6
-    new TKey(1, 10, "foo")    | "ten_value"    | 3     // used the cached tk10
-    new TKey(6, 6, "foo")     | "six_value"    | 3     // used the cached tk6
-    new TKey(1, 11, "eleven") | "eleven_value" | 4     // create new value in an occupied slot
-    new TKey(4, 4, "four")    | "four_value"   | 4     // create new value in empty slot
-    null                      | null           | 3     // do nothing
+    tk                        | value          | keys                          | count
+    new TKey(1, 1, "foo")     | "one_value"    | ["one", "six", "ten"]         | 3     // used the cached tk1
+    new TKey(1, 6, "foo")     | "six_value"    | ["one", "six", "ten"]         | 3     // used the cached tk6
+    new TKey(1, 10, "foo")    | "ten_value"    | ["one", "six", "ten"]         | 3     // used the cached tk10
+    new TKey(6, 6, "foo")     | "six_value"    | ["one", "six", "ten"]         | 3     // used the cached tk6
+    new TKey(1, 11, "eleven") | "eleven_value" | ["eleven", "six", "ten"]      | 4     // create new value in an occupied slot
+    new TKey(4, 4, "four")    | "four_value"   | ["one", "four", "six", "ten"] | 4     // create new value in empty slot
+    null                      | null           | ["one", "six", "ten"]         | 3     // do nothing
   }
 
   def "fixed size with array-keys should store and retrieve values"() {
@@ -87,22 +92,27 @@ class FixedSizeCacheTest extends DDSpecification {
     fsCache.computeIfAbsent(tk, tvc) == value
     creationCount.get() == count
 
+    and:
+    def visited = []
+    fsCache.visit { k, v -> k[0] as String + "_value" == v && visited.add(k[0] as String) }
+    visited == keys
+
     where:
-    tk                                         | value          | count
-    [new TKey(1 - 31, 1, "foo")] as TKey[]     | "one_value"    | 3     // used the cached tk1
-    [new TKey(1 - 31, 6, "foo")] as TKey[]     | "six_value"    | 3     // used the cached tk6
-    [new TKey(1 - 31, 10, "foo")] as TKey[]    | "ten_value"    | 3     // used the cached tk10
-    [new TKey(6 - 31, 6, "foo")] as TKey[]     | "six_value"    | 3     // used the cached tk6
-    [new TKey(1 - 31, 11, "eleven")] as TKey[] | "eleven_value" | 4     // create new value in an occupied slot
-    [new TKey(4 - 31, 4, "four")] as TKey[]    | "four_value"   | 4     // create new value in empty slot
-    null                                       | null           | 3     // do nothing
+    tk                                         | value          | keys                          | count
+    [new TKey(1 - 31, 1, "foo")] as TKey[]     | "one_value"    | ["one", "six", "ten"]         | 3     // used the cached tk1
+    [new TKey(1 - 31, 6, "foo")] as TKey[]     | "six_value"    | ["one", "six", "ten"]         | 3     // used the cached tk6
+    [new TKey(1 - 31, 10, "foo")] as TKey[]    | "ten_value"    | ["one", "six", "ten"]         | 3     // used the cached tk10
+    [new TKey(6 - 31, 6, "foo")] as TKey[]     | "six_value"    | ["one", "six", "ten"]         | 3     // used the cached tk6
+    [new TKey(1 - 31, 11, "eleven")] as TKey[] | "eleven_value" | ["eleven", "six", "ten"]      | 4     // create new value in an occupied slot
+    [new TKey(4 - 31, 4, "four")] as TKey[]    | "four_value"   | ["one", "four", "six", "ten"] | 4     // create new value in empty slot
+    null                                       | null           | ["one", "six", "ten"]         | 3     // do nothing
   }
 
   @Shared id1 = new TKey(1, 1, "one")
 
   def "identity cache should store and retrieve values"() {
     setup:
-    def fsCache = DDCaches.newFixedSizeIdentityCache(15)
+    def fsCache = DDCaches.newFixedSizeIdentityCache(256)
     def creationCount = new AtomicInteger(0)
     def tvc = new TVC(creationCount)
     fsCache.computeIfAbsent(id1, tvc)
@@ -115,17 +125,22 @@ class FixedSizeCacheTest extends DDSpecification {
     fsCache.computeIfAbsent(tk, tvc) == value
     creationCount.get() == count
 
+    and:
+    def visited = []
+    fsCache.visit { k, v -> k as String + "_value" == v && visited.add(k as String) }
+    visited.sort() == keys.sort()
+
     where:
-    tk                        | value          | count
-    id1                       | "one_value"    | 1     // used the cached id1
-    new TKey(1, 1, "1")       | "1_value"      | 2     // create new value for key with different identity
-    new TKey(6, 6, "6")       | "6_value"      | 2     // create new value for new key
-    null                      | null           | 1     // do nothing
+    tk                        | value          | keys         | count
+    id1                       | "one_value"    | ["one"]      | 1     // used the cached id1
+    new TKey(1, 1, "1")       | "1_value"      | ["one", "1"] | 2     // create new value for key with different identity
+    new TKey(6, 6, "6")       | "6_value"      | ["one", "6"] | 2     // create new value for new key
+    null                      | null           | ["one"]      | 1     // do nothing
   }
 
   def "weak key cache should store and retrieve values"() {
     setup:
-    def fsCache = DDCaches.newFixedSizeWeakKeyCache(15)
+    def fsCache = DDCaches.newFixedSizeWeakKeyCache(256)
     def creationCount = new AtomicInteger(0)
     def tvc = new TVC(creationCount)
     fsCache.computeIfAbsent(id1, tvc)
@@ -138,12 +153,17 @@ class FixedSizeCacheTest extends DDSpecification {
     fsCache.computeIfAbsent(tk, tvc) == value
     creationCount.get() == count
 
+    and:
+    def visited = []
+    fsCache.visit { k, v -> k as String + "_value" == v && visited.add(k as String) }
+    visited.sort() == keys.sort()
+
     where:
-    tk                        | value          | count
-    id1                       | "one_value"    | 1     // used the cached id1
-    new TKey(1, 1, "1")       | "1_value"      | 2     // create new value for key with different identity
-    new TKey(6, 6, "6")       | "6_value"      | 2     // create new value for new key
-    null                      | null           | 1     // do nothing
+    tk                        | value          | keys         | count
+    id1                       | "one_value"    | ["one"]      | 1     // used the cached id1
+    new TKey(1, 1, "1")       | "1_value"      | ["one", "1"] | 2     // create new value for key with different identity
+    new TKey(6, 6, "6")       | "6_value"      | ["one", "6"] | 2     // create new value for new key
+    null                      | null           | ["one"]      | 1     // do nothing
   }
 
   def "weak key cache does not hold onto key"() {
@@ -179,18 +199,23 @@ class FixedSizeCacheTest extends DDSpecification {
     fsCache.computeIfAbsent(tk, tvc) == value
     creationCount.get() == count
 
+    and:
+    def visited = []
+    fsCache.visit { k, v -> k as String + "_value" == v && visited.add(k as String) }
+    visited.sort() == keys.sort()
+
     where:
-    tk                        | value          | count
-    new TKey(1, 1, "foo")     | "one_value"    | 3
-    new TKey(1, 6, "foo")     | "foo_value"    | 4
-    new TKey(1, 10, "foo")    | "foo_value"    | 4
-    new TKey(6, 6, "foo")     | "six_value"    | 3
-    new TKey(1, 11, "eleven") | "eleven_value" | 4
-    new TKey(4, 4, "four")    | "four_value"   | 4
-    null                      | null           | 3
+    tk                        | value          | keys                            | count
+    new TKey(1, 1, "foo")     | "one_value"    | ["one", "six", "ten"]           | 3
+    new TKey(1, 6, "foo")     | "foo_value"    | ["one", "foo", "six", "ten"]    | 4
+    new TKey(1, 10, "foo")    | "foo_value"    | ["one", "foo", "six", "ten"]    | 4
+    new TKey(6, 6, "foo")     | "six_value"    | ["one", "six", "ten"]           | 3
+    new TKey(1, 11, "eleven") | "eleven_value" | ["one", "eleven", "six", "ten"] | 4
+    new TKey(4, 4, "four")    | "four_value"   | ["one", "four", "six", "ten"]   | 4
+    null                      | null           | ["one", "six", "ten"]           | 3
   }
 
-  def "should handle concurrent usage"() {
+  def "should handle concurrent usage #cacheType"() {
     setup:
     def numThreads = 5
     def numInsertions = 100000
@@ -222,11 +247,22 @@ class FixedSizeCacheTest extends DDSpecification {
     conds.await(30.0) // the test is really fast locally, but I don't know how fast CI is
 
     where:
-    cacheImpl << [
-      { capacity -> DDCaches.newFixedSizeCache(capacity) },
-      { capacity -> DDCaches.newUnboundedCache(capacity) },
-      { capacity ->
-        DDCaches.newFixedSizeWeightedCache(capacity, String.&length, 1000)}
+    [cacheType, cacheImpl] << [
+      [
+        'fixed size',
+        { capacity ->
+          DDCaches.newFixedSizeCache(capacity) }
+      ],
+      [
+        'unbounded',
+        { capacity ->
+          DDCaches.newUnboundedCache(capacity) }
+      ],
+      [
+        'fixed size weighted',
+        { capacity ->
+          DDCaches.newFixedSizeWeightedCache(capacity, String.&length, 1000)}
+      ]
     ]
   }
 
@@ -285,15 +321,20 @@ class FixedSizeCacheTest extends DDSpecification {
     fsCache.computeIfAbsent(tk, tvc) == value
     creationCount.get() == count
 
+    and:
+    def visited = []
+    fsCache.visit { k, v -> k as String + "_value" == v && visited.add(k as String) }
+    visited == keys
+
     where:
-    tk                        | value          | count
-    new TKey(1, 1, "foo")     | "one_value"    | 3     // used the cached tk1
-    new TKey(1, 6, "foo")     | "six_value"    | 3     // used the cached tk6
-    new TKey(1, 10, "foo")    | "ten_value"    | 3     // used the cached tk10
-    new TKey(6, 6, "foo")     | "six_value"    | 3     // used the cached tk6
-    new TKey(1, 11, "eleven") | "eleven_value" | 4     // create new value in an occupied slot
-    new TKey(4, 4, "four")    | "four_value"   | 4     // create new value in empty slot
-    null                      | null           | 3     // do nothing
+    tk                        | value          | keys                          | count
+    new TKey(1, 1, "foo")     | "one_value"    | ["one", "six", "ten"]         | 3     // used the cached tk1
+    new TKey(1, 6, "foo")     | "six_value"    | ["one", "six", "ten"]         | 3     // used the cached tk6
+    new TKey(1, 10, "foo")    | "ten_value"    | ["one", "six", "ten"]         | 3     // used the cached tk10
+    new TKey(6, 6, "foo")     | "six_value"    | ["one", "six", "ten"]         | 3     // used the cached tk6
+    new TKey(1, 11, "eleven") | "eleven_value" | ["eleven", "six", "ten"]      | 4     // create new value in an occupied slot
+    new TKey(4, 4, "four")    | "four_value"   | ["one", "four", "six", "ten"] | 4     // create new value in empty slot
+    null                      | null           | ["one", "six", "ten"]         | 3     // do nothing
   }
 
   def "weighted cache should respect total weight limit"() {

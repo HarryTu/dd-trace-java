@@ -9,14 +9,15 @@ import static net.bytebuddy.matcher.ElementMatchers.whereAny;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.InstrumenterConfig;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public final class WithSpanAnnotationInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public final class WithSpanAnnotationInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   public WithSpanAnnotationInstrumentation() {
     super("opentelemetry-annotations", "opentelemetry-annotations-1.20");
@@ -46,7 +47,7 @@ public final class WithSpanAnnotationInstrumentation extends Instrumenter.Tracin
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
+  public void methodAdvice(MethodTransformer transformer) {
     ElementMatcher.Junction<MethodDescription> annotatedMethodMatcher =
         isAnnotatedWith(named(hierarchyMarkerType()));
     ElementMatcher.Junction<MethodDescription> annotatedParametersMatcher =
@@ -55,11 +56,11 @@ public final class WithSpanAnnotationInstrumentation extends Instrumenter.Tracin
                 isAnnotatedWith(
                     named("io.opentelemetry.instrumentation.annotations.SpanAttribute"))));
     // Apply transformation without parameter capture
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         annotatedMethodMatcher.and(not(annotatedParametersMatcher)),
         this.packageName + ".WithSpanAdvice");
     // Apply transformation with parameter capture
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         annotatedMethodMatcher.and(annotatedParametersMatcher),
         this.packageName + ".WithSpanAttributeAdvice");
   }

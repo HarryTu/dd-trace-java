@@ -9,16 +9,18 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.CallDepthThreadLocalMap;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext;
 import java.util.Map;
 import net.bytebuddy.asm.Advice;
 import org.jboss.logmanager.ExtLogRecord;
 
-@AutoService(Instrumenter.class)
-public class LoggerNodeInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class LoggerNodeInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public LoggerNodeInstrumentation() {
     super("jboss-logmanager");
   }
@@ -30,12 +32,12 @@ public class LoggerNodeInstrumentation extends Instrumenter.Tracing
 
   @Override
   public Map<String, String> contextStore() {
-    return singletonMap("org.jboss.logmanager.ExtLogRecord", AgentSpan.Context.class.getName());
+    return singletonMap("org.jboss.logmanager.ExtLogRecord", AgentSpanContext.class.getName());
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("publish"))
             .and(takesArgument(0, named("org.jboss.logmanager.ExtLogRecord"))),
@@ -53,7 +55,7 @@ public class LoggerNodeInstrumentation extends Instrumenter.Tracing
       AgentSpan span = activeSpan();
 
       if (span != null && traceConfig(span).isLogsInjectionEnabled()) {
-        InstrumentationContext.get(ExtLogRecord.class, AgentSpan.Context.class)
+        InstrumentationContext.get(ExtLogRecord.class, AgentSpanContext.class)
             .put(record, span.context());
       }
 

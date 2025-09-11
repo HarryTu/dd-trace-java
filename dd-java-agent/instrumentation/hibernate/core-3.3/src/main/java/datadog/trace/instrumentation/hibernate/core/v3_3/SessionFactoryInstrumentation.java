@@ -12,7 +12,7 @@ import static net.bytebuddy.matcher.ElementMatchers.returns;
 import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
-import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.ContextStore;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
@@ -28,7 +28,7 @@ import org.hibernate.StatelessSession;
 import org.hibernate.classic.Validatable;
 import org.hibernate.transaction.JBossTransactionManagerLookup;
 
-@AutoService(Instrumenter.class)
+@AutoService(InstrumenterModule.class)
 public class SessionFactoryInstrumentation extends AbstractHibernateInstrumentation {
 
   @Override
@@ -56,8 +56,8 @@ public class SessionFactoryInstrumentation extends AbstractHibernateInstrumentat
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(namedOneOf("openSession", "openStatelessSession"))
             .and(takesArguments(0))

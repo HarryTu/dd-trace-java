@@ -1,7 +1,7 @@
 package datadog.trace.instrumentation.okhttp2;
 
+import static datadog.context.Context.current;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.propagate;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
 import static datadog.trace.instrumentation.okhttp2.OkHttpClientDecorator.DECORATE;
 import static datadog.trace.instrumentation.okhttp2.OkHttpClientDecorator.OKHTTP_REQUEST;
@@ -12,24 +12,19 @@ import com.squareup.okhttp.Request;
 import com.squareup.okhttp.Response;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
-import datadog.trace.bootstrap.instrumentation.decorator.HttpClientDecorator;
 import java.io.IOException;
 
 public class TracingInterceptor implements Interceptor {
   @Override
   public Response intercept(final Chain chain) throws IOException {
-    final AgentSpan span = startSpan(OKHTTP_REQUEST);
+    final AgentSpan span = startSpan("okhttp", OKHTTP_REQUEST);
 
     try (final AgentScope scope = activateSpan(span)) {
       DECORATE.afterStart(span);
-
       DECORATE.onRequest(span, chain.request());
 
       final Request.Builder requestBuilder = chain.request().newBuilder();
-      propagate().inject(span, requestBuilder, SETTER);
-      propagate()
-          .injectPathwayContext(
-              span, requestBuilder, SETTER, HttpClientDecorator.CLIENT_PATHWAY_EDGE_TAGS);
+      DECORATE.injectContext(current(), requestBuilder, SETTER);
 
       final Response response;
       try {

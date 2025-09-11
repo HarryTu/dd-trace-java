@@ -1,14 +1,19 @@
 package datadog.trace.civisibility.utils;
 
+import datadog.communication.util.IOUtils;
+import datadog.trace.api.civisibility.telemetry.tag.ExitCode;
+import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
+import datadog.trace.context.TraceScope;
 import datadog.trace.util.AgentThreadFactory;
 import datadog.trace.util.AgentThreadFactory.AgentThread;
-import datadog.trace.util.Strings;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.Charset;
+import java.util.Collections;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
@@ -22,10 +27,17 @@ public class ShellCommandExecutor {
 
   private final File executionFolder;
   private final long timeoutMillis;
+  private final Map<String, String> environment;
 
   public ShellCommandExecutor(File executionFolder, long timeoutMillis) {
+    this(executionFolder, timeoutMillis, Collections.emptyMap());
+  }
+
+  public ShellCommandExecutor(
+      File executionFolder, long timeoutMillis, Map<String, String> environment) {
     this.executionFolder = executionFolder;
     this.timeoutMillis = timeoutMillis;
+    this.environment = environment;
   }
 
   /**
@@ -83,41 +95,49 @@ public class ShellCommandExecutor {
   private <T> T executeCommand(
       OutputParser<T> outputParser, byte[] input, boolean readFromError, String... command)
       throws IOException, TimeoutException, InterruptedException {
-    ProcessBuilder processBuilder = new ProcessBuilder(command);
-    processBuilder.directory(executionFolder);
+    Process p = null;
 
-    Process p = processBuilder.start();
+    // mute tracing to prevent process instrumentation from creating a span for the forked process
+    try (TraceScope scope = AgentTracer.get().muteTracing()) {
+      ProcessBuilder processBuilder = new ProcessBuilder(command);
+      processBuilder.directory(executionFolder);
 
-    StreamConsumer inputStreamConsumer = new StreamConsumer(p.getInputStream());
-    Thread inputStreamThread =
-        AgentThreadFactory.newAgentThread(
-            AgentThread.CI_SHELL_COMMAND,
-            "-input-stream-consumer-" + command[0],
-            inputStreamConsumer,
-            true);
-    inputStreamThread.start();
+      if (!environment.isEmpty()) {
+        processBuilder.environment().putAll(environment);
+      }
 
-    StreamConsumer errorStreamConsumer = new StreamConsumer(p.getErrorStream());
-    Thread errorStreamThread =
-        AgentThreadFactory.newAgentThread(
-            AgentThread.CI_SHELL_COMMAND,
-            "-error-stream-consumer-" + command[0],
-            errorStreamConsumer,
-            true);
-    errorStreamThread.start();
+      p = processBuilder.start();
 
-    if (input != null) {
-      p.getOutputStream().write(input);
-      p.getOutputStream().close();
-    }
+      StreamConsumer inputStreamConsumer = new StreamConsumer(p.getInputStream());
+      Thread inputStreamThread =
+          AgentThreadFactory.newAgentThread(
+              AgentThread.CI_SHELL_COMMAND,
+              "-input-stream-consumer-" + command[0],
+              inputStreamConsumer,
+              true);
+      inputStreamThread.start();
 
-    try {
+      StreamConsumer errorStreamConsumer = new StreamConsumer(p.getErrorStream());
+      Thread errorStreamThread =
+          AgentThreadFactory.newAgentThread(
+              AgentThread.CI_SHELL_COMMAND,
+              "-error-stream-consumer-" + command[0],
+              errorStreamConsumer,
+              true);
+      errorStreamThread.start();
+
+      if (input != null) {
+        p.getOutputStream().write(input);
+        p.getOutputStream().close();
+      }
+
       if (p.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) {
         int exitValue = p.exitValue();
         if (exitValue != 0) {
           throw new ShellCommandFailedException(
+              exitValue,
               "Command '"
-                  + Strings.join(" ", command)
+                  + String.join(" ", command)
                   + "' failed with exit code "
                   + exitValue
                   + ": "
@@ -140,8 +160,12 @@ public class ShellCommandExecutor {
         terminate(p);
         throw new TimeoutException(
             "Timeout while waiting for '"
-                + Strings.join(" ", command)
-                + "'; "
+                + String.join(" ", command)
+                + "'; in "
+                + executionFolder
+                + "\n StdOut: \n"
+                + IOUtils.readFully(inputStreamConsumer.read(), Charset.defaultCharset())
+                + "\n StdErr: \n "
                 + IOUtils.readFully(errorStreamConsumer.read(), Charset.defaultCharset()));
       }
     } catch (InterruptedException e) {
@@ -151,6 +175,9 @@ public class ShellCommandExecutor {
   }
 
   private void terminate(Process p) throws InterruptedException {
+    if (p == null) {
+      return;
+    }
     p.destroy();
     try {
       if (!p.waitFor(NORMAL_TERMINATION_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
@@ -195,8 +222,30 @@ public class ShellCommandExecutor {
   }
 
   public static final class ShellCommandFailedException extends IOException {
-    public ShellCommandFailedException(String message) {
+    private final int exitCode;
+
+    public ShellCommandFailedException(int exitCode, String message) {
       super(message);
+      this.exitCode = exitCode;
+    }
+
+    public int getExitCode() {
+      return exitCode;
+    }
+  }
+
+  public static ExitCode getExitCode(Exception e) {
+    if (e instanceof ShellCommandFailedException) {
+      ShellCommandFailedException scfe = (ShellCommandFailedException) e;
+      return ExitCode.from(scfe.getExitCode());
+
+    } else {
+      String m = e.getMessage();
+      if (m != null && m.toLowerCase().contains("no such file or directory")) {
+        return ExitCode.EXECUTABLE_MISSING;
+      } else {
+        return ExitCode.CODE_UNKNOWN;
+      }
     }
   }
 }

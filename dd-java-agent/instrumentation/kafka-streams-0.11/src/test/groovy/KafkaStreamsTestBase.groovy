@@ -157,6 +157,7 @@ abstract class KafkaStreamsTestBase extends VersionedNamingTestBase {
           tags {
             "$Tags.COMPONENT" "java-kafka"
             "$Tags.SPAN_KIND" Tags.SPAN_KIND_PRODUCER
+            "$InstrumentationTags.MESSAGING_DESTINATION_NAME" "$STREAM_PENDING"
             if ({ isDataStreamsEnabled() }){
               "$DDTags.PATHWAY_HASH" { String }
             }
@@ -201,6 +202,7 @@ abstract class KafkaStreamsTestBase extends VersionedNamingTestBase {
             "$InstrumentationTags.PARTITION" { it >= 0 }
             "$InstrumentationTags.OFFSET" 0
             "$InstrumentationTags.PROCESSOR_NAME" "KSTREAM-SOURCE-0000000000"
+            "$InstrumentationTags.MESSAGING_DESTINATION_NAME" "$STREAM_PENDING"
             "asdf" "testing"
             if ({isDataStreamsEnabled()}) {
               "$DDTags.PATHWAY_HASH" { String }
@@ -223,6 +225,7 @@ abstract class KafkaStreamsTestBase extends VersionedNamingTestBase {
           tags {
             "$Tags.COMPONENT" "java-kafka"
             "$Tags.SPAN_KIND" Tags.SPAN_KIND_PRODUCER
+            "$InstrumentationTags.MESSAGING_DESTINATION_NAME" "$STREAM_PROCESSED"
             if ({isDataStreamsEnabled()}) {
               "$DDTags.PATHWAY_HASH" { String }
             }
@@ -267,6 +270,7 @@ abstract class KafkaStreamsTestBase extends VersionedNamingTestBase {
             "$InstrumentationTags.OFFSET" 0
             "$InstrumentationTags.CONSUMER_GROUP" "sender"
             "$InstrumentationTags.RECORD_QUEUE_TIME_MS" { it >= 0 }
+            "$InstrumentationTags.MESSAGING_DESTINATION_NAME" "$STREAM_PROCESSED"
             "testing" 123
             if ({isDataStreamsEnabled()}) {
               "$DDTags.PATHWAY_HASH" { String }
@@ -285,31 +289,25 @@ abstract class KafkaStreamsTestBase extends VersionedNamingTestBase {
     if (isDataStreamsEnabled()) {
       StatsGroup originProducerPoint = TEST_DATA_STREAMS_WRITER.groups.find { it.parentHash == 0 }
       verifyAll(originProducerPoint) {
-        edgeTags == ["direction:out", "topic:$STREAM_PENDING", "type:kafka"]
-        edgeTags.size() == 3
+        tags.hasAllTags("direction:out", "topic:$STREAM_PENDING", "type:kafka")
       }
 
       StatsGroup kafkaStreamsConsumerPoint = TEST_DATA_STREAMS_WRITER.groups.find { it.parentHash == originProducerPoint.hash }
       verifyAll(kafkaStreamsConsumerPoint) {
-        edgeTags == [
-          "direction:in",
+        tags.hasAllTags("direction:in",
           "group:test-application",
           "topic:$STREAM_PENDING".toString(),
-          "type:kafka"
-        ]
-        edgeTags.size() == 4
+          "type:kafka")
       }
 
       StatsGroup kafkaStreamsProducerPoint = TEST_DATA_STREAMS_WRITER.groups.find { it.parentHash == kafkaStreamsConsumerPoint.hash }
       verifyAll(kafkaStreamsProducerPoint) {
-        edgeTags == ["direction:out", "topic:$STREAM_PROCESSED", "type:kafka"]
-        edgeTags.size() == 3
+        tags.hasAllTags("direction:out", "topic:$STREAM_PROCESSED", "type:kafka")
       }
 
       StatsGroup finalConsumerPoint = TEST_DATA_STREAMS_WRITER.groups.find { it.parentHash == kafkaStreamsProducerPoint.hash }
       verifyAll(finalConsumerPoint) {
-        edgeTags == ["direction:in", "group:sender", "topic:$STREAM_PROCESSED".toString(), "type:kafka"]
-        edgeTags.size() == 4
+        tags.hasAllTags("direction:in", "group:sender", "topic:$STREAM_PROCESSED".toString(), "type:kafka")
       }
     }
 

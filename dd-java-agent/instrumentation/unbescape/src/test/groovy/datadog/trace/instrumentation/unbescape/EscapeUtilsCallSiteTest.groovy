@@ -1,12 +1,12 @@
 package datadog.trace.instrumentation.unbescape
 
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.iast.InstrumentationBridge
 import datadog.trace.api.iast.VulnerabilityMarks
 import datadog.trace.api.iast.propagation.PropagationModule
 import foo.bar.TestEscapeUtilsSuite
 
-class EscapeUtilsCallSiteTest extends AgentTestRunner {
+class EscapeUtilsCallSiteTest extends InstrumentationSpecification {
 
   @Override
   protected void configurePreAgent() {
@@ -23,7 +23,7 @@ class EscapeUtilsCallSiteTest extends AgentTestRunner {
 
     then:
     result == expected
-    1 * module.taintIfTainted(_ as String, args[0], false, VulnerabilityMarks.XSS_MARK)
+    1 * module.taintStringIfTainted(_ as String, args[0], false, VulnerabilityMarks.XSS_MARK)
     0 * _
 
     where:

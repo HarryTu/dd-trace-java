@@ -11,6 +11,7 @@ import datadog.appsec.api.blocking.BlockingException;
 import datadog.trace.advice.ActiveRequestContext;
 import datadog.trace.advice.RequiresRequestContext;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.gateway.BlockResponseFunction;
 import datadog.trace.api.gateway.CallbackProvider;
 import datadog.trace.api.gateway.Flow;
@@ -20,9 +21,9 @@ import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import java.util.function.BiFunction;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public class MessageBodyReaderInvocationInstrumentation extends Instrumenter.AppSec
-    implements Instrumenter.ForKnownTypes {
+@AutoService(InstrumenterModule.class)
+public class MessageBodyReaderInvocationInstrumentation extends InstrumenterModule.AppSec
+    implements Instrumenter.ForKnownTypes, Instrumenter.HasMethodAdvice {
 
   public MessageBodyReaderInvocationInstrumentation() {
     super("resteasy");
@@ -39,8 +40,8 @@ public class MessageBodyReaderInvocationInstrumentation extends Instrumenter.App
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("readFrom")
             .and(takesArguments(1))
             .and(takesArgument(0, nameEndsWith(".MessageBodyReader"))),

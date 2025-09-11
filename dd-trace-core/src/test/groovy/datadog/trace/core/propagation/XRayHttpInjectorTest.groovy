@@ -5,7 +5,8 @@ import datadog.trace.api.DDSpanId
 import datadog.trace.api.DDTraceId
 import datadog.trace.api.DynamicConfig
 import datadog.trace.api.time.TimeSource
-import datadog.trace.bootstrap.instrumentation.api.AgentTracer.NoopPathwayContext
+import datadog.trace.api.datastreams.NoopPathwayContext
+import datadog.trace.core.datastreams.DataStreamsMonitoring
 
 import static datadog.trace.api.sampling.PrioritySampling.*
 import static datadog.trace.api.sampling.SamplingMechanism.*
@@ -25,7 +26,11 @@ class XRayHttpInjectorTest extends DDCoreSpecification {
     setup:
     def writer = new ListWriter()
     def timeSource = Mock(TimeSource)
-    def tracer = tracerBuilder().writer(writer).timeSource(timeSource).build()
+    def tracer = tracerBuilder()
+      .dataStreamsMonitoring(Mock(DataStreamsMonitoring))
+      .writer(writer)
+      .timeSource(timeSource)
+      .build()
     final DDSpanContext mockedContext =
       new DDSpanContext(
       DDTraceId.from("$traceId"),
@@ -41,7 +46,7 @@ class XRayHttpInjectorTest extends DDCoreSpecification {
       false,
       "fakeType",
       0,
-      tracer.pendingTraceFactory.create(DDTraceId.ONE),
+      tracer.traceCollectorFactory.create(DDTraceId.ONE),
       null,
       null,
       NoopPathwayContext.INSTANCE,
@@ -76,7 +81,11 @@ class XRayHttpInjectorTest extends DDCoreSpecification {
     setup:
     def writer = new ListWriter()
     def timeSource = Mock(TimeSource)
-    def tracer = tracerBuilder().writer(writer).timeSource(timeSource).build()
+    def tracer = tracerBuilder()
+      .dataStreamsMonitoring(Mock(DataStreamsMonitoring))
+      .writer(writer)
+      .timeSource(timeSource)
+      .build()
     def headers = [
       'X-Amzn-Trace-Id' : "Root=1-00000000-00000000${traceId.padLeft(16, '0')};Parent=${spanId.padLeft(16, '0')}"
     ]
@@ -101,7 +110,7 @@ class XRayHttpInjectorTest extends DDCoreSpecification {
       false,
       "fakeType",
       0,
-      tracer.pendingTraceFactory.create(DDTraceId.ONE),
+      tracer.traceCollectorFactory.create(DDTraceId.ONE),
       null,
       null,
       NoopPathwayContext.INSTANCE,
@@ -136,7 +145,11 @@ class XRayHttpInjectorTest extends DDCoreSpecification {
     setup:
     def writer = new ListWriter()
     def timeSource = Mock(TimeSource)
-    def tracer = tracerBuilder().writer(writer).timeSource(timeSource).build()
+    def tracer = tracerBuilder()
+      .dataStreamsMonitoring(Mock(DataStreamsMonitoring))
+      .writer(writer)
+      .timeSource(timeSource)
+      .build()
     final DDSpanContext mockedContext =
       new DDSpanContext(
       DDTraceId.from("1"),
@@ -152,7 +165,7 @@ class XRayHttpInjectorTest extends DDCoreSpecification {
       false,
       "fakeType",
       0,
-      tracer.pendingTraceFactory.create(DDTraceId.ONE),
+      tracer.traceCollectorFactory.create(DDTraceId.ONE),
       null,
       null,
       NoopPathwayContext.INSTANCE,

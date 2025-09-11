@@ -1,12 +1,20 @@
 package com.datadog.debugger.probe;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
+import com.datadog.debugger.util.ClassFileLines;
 import com.datadog.debugger.util.MoshiHelper;
 import com.squareup.moshi.JsonAdapter;
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.Collections;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.objectweb.asm.tree.MethodNode;
 
 public class WhereTest {
   @Test
@@ -78,21 +86,48 @@ public class WhereTest {
   }
 
   @Test
+  public void convertLineToMethod() {
+    Where wherePut = Where.of("java.util.Map", "put", "(Object, Object)", "42");
+    ClassFileLines classFileLines = mock(ClassFileLines.class);
+    MethodNode methodNode = createMethodNode("put", "(Ljava/lang/Object;Ljava/lang/Object;)V");
+    when(classFileLines.getMethodsByLine(42)).thenReturn(Collections.singletonList(methodNode));
+    Where whereMapPut = Where.convertLineToMethod(wherePut, classFileLines);
+    assertEquals("java.util.Map", whereMapPut.getTypeName());
+    assertEquals("put", whereMapPut.getMethodName());
+    assertEquals("(java.lang.Object, java.lang.Object)", whereMapPut.getSignature());
+    assertNull(whereMapPut.getLines());
+  }
+
+  @Test
   public void methodMatching() {
     Where where = new Where("String", "substring", "(int,int)", new String[0], null);
-    assertTrue(where.isMethodMatching("substring", "(II)Ljava/lang/String;"));
+    assertEquals(
+        Where.MethodMatching.MATCH,
+        where.isMethodMatching(createMethodNode("substring", "(II)Ljava/lang/String;"), null));
     where = new Where("String", "replaceAll", "(String,String)", new String[0], null);
-    assertTrue(
+    assertEquals(
+        Where.MethodMatching.MATCH,
         where.isMethodMatching(
-            "replaceAll", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"));
+            createMethodNode(
+                "replaceAll", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"),
+            null));
     where = new Where("HashMap", "<init>", "(Map)", new String[0], null);
-    assertTrue(where.isMethodMatching("<init>", "(Ljava/util/Map;)V"));
+    assertEquals(
+        Where.MethodMatching.MATCH,
+        where.isMethodMatching(createMethodNode("<init>", "(Ljava/util/Map;)V"), null));
     where = new Where("ArrayList", "removeIf", "(Predicate)", new String[0], null);
-    assertTrue(where.isMethodMatching("removeIf", "(Ljava/util/function/Predicate;)Z"));
+    assertEquals(
+        Where.MethodMatching.MATCH,
+        where.isMethodMatching(
+            createMethodNode("removeIf", "(Ljava/util/function/Predicate;)Z"), null));
     where = new Where("String", "concat", "", new String[0], null);
-    assertTrue(where.isMethodMatching("concat", "String (String)"));
+    assertEquals(
+        Where.MethodMatching.MATCH,
+        where.isMethodMatching(createMethodNode("concat", "String (String)"), null));
     where = new Where("String", "concat", " \t", new String[0], null);
-    assertTrue(where.isMethodMatching("concat", "String (String)"));
+    assertEquals(
+        Where.MethodMatching.MATCH,
+        where.isMethodMatching(createMethodNode("concat", "String (String)"), null));
     where =
         new Where(
             "Inner",
@@ -100,10 +135,26 @@ public class WhereTest {
             "(com.datadog.debugger.probe.Outer$Inner)",
             new String[0],
             null);
-    assertTrue(
-        where.isMethodMatching("innerMethod", "(Lcom/datadog/debugger/probe/Outer$Inner;)V"));
+    assertEquals(
+        Where.MethodMatching.MATCH,
+        where.isMethodMatching(
+            createMethodNode("innerMethod", "(Lcom/datadog/debugger/probe/Outer$Inner;)V"), null));
     where = new Where("Inner", "innerMethod", "(Outer$Inner)", new String[0], null);
-    assertTrue(
-        where.isMethodMatching("innerMethod", "(Lcom/datadog/debugger/probe/Outer$Inner;)V"));
+    assertEquals(
+        Where.MethodMatching.MATCH,
+        where.isMethodMatching(
+            createMethodNode("innerMethod", "(Lcom/datadog/debugger/probe/Outer$Inner;)V"), null));
+    where = new Where("MyClass", "myMethod", null, new String[] {"42"}, null);
+    ClassFileLines classFileLines = mock(ClassFileLines.class);
+    MethodNode myMethodNode = createMethodNode("myMethod", "()V");
+    when(classFileLines.getMethodsByLine(42)).thenReturn(Arrays.asList(myMethodNode));
+    assertEquals(Where.MethodMatching.MATCH, where.isMethodMatching(myMethodNode, classFileLines));
+  }
+
+  private MethodNode createMethodNode(String name, String desc) {
+    MethodNode methodNode = new MethodNode();
+    methodNode.name = name;
+    methodNode.desc = desc;
+    return methodNode;
   }
 }

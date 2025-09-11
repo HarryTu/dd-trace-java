@@ -1,16 +1,16 @@
 package datadog.trace.instrumentation.netty40.server;
 
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
+import static datadog.trace.bootstrap.instrumentation.api.Java8BytecodeBridge.spanFromContext;
 import static datadog.trace.instrumentation.netty40.AttributeKeys.ANALYZED_RESPONSE_KEY;
 import static datadog.trace.instrumentation.netty40.AttributeKeys.BLOCKED_RESPONSE_KEY;
 import static datadog.trace.instrumentation.netty40.AttributeKeys.REQUEST_HEADERS_ATTRIBUTE_KEY;
 import static datadog.trace.instrumentation.netty40.AttributeKeys.SPAN_ATTRIBUTE_KEY;
 import static datadog.trace.instrumentation.netty40.server.NettyHttpServerDecorator.DECORATE;
 
+import datadog.context.Context;
+import datadog.context.ContextScope;
 import datadog.trace.api.gateway.Flow;
-import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan.Context;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -31,8 +31,7 @@ public class HttpServerRequestTracingHandler extends ChannelInboundHandlerAdapte
       if (span == null) {
         ctx.fireChannelRead(msg); // superclass does not throw
       } else {
-        try (final AgentScope scope = activateSpan(span)) {
-          scope.setAsyncPropagation(true);
+        try (final ContextScope scope = span.attach()) {
           ctx.fireChannelRead(msg); // superclass does not throw
         }
       }
@@ -41,14 +40,13 @@ public class HttpServerRequestTracingHandler extends ChannelInboundHandlerAdapte
 
     final HttpRequest request = (HttpRequest) msg;
     final HttpHeaders headers = request.headers();
-    final Context.Extracted extractedContext = DECORATE.extract(headers);
-    final AgentSpan span = DECORATE.startSpan(headers, extractedContext);
+    final Context parentContext = DECORATE.extract(headers);
+    final Context context = DECORATE.startSpan(headers, parentContext);
 
-    try (final AgentScope scope = activateSpan(span)) {
+    try (final ContextScope ignored = context.attach()) {
+      final AgentSpan span = spanFromContext(context);
       DECORATE.afterStart(span);
-      DECORATE.onRequest(span, channel, request, extractedContext);
-
-      scope.setAsyncPropagation(true);
+      DECORATE.onRequest(span, channel, request, parentContext);
 
       channel.attr(ANALYZED_RESPONSE_KEY).set(null);
       channel.attr(BLOCKED_RESPONSE_KEY).set(null);
@@ -71,7 +69,24 @@ public class HttpServerRequestTracingHandler extends ChannelInboundHandlerAdapte
         DECORATE.onError(span, throwable);
         DECORATE.beforeFinish(span);
         span.finish(); // Finish the span manually since finishSpanOnClose was false
+        ctx.channel().attr(SPAN_ATTRIBUTE_KEY).remove();
         throw throwable;
+      }
+    }
+  }
+
+  @Override
+  public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+    try {
+      super.channelInactive(ctx);
+    } finally {
+      try {
+        final AgentSpan span = ctx.channel().attr(SPAN_ATTRIBUTE_KEY).getAndRemove();
+        if (span != null && span.phasedFinish()) {
+          // at this point we can just publish this span to avoid loosing the rest of the trace
+          span.publish();
+        }
+      } catch (final Throwable ignored) {
       }
     }
   }

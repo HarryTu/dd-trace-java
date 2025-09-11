@@ -2,11 +2,14 @@ package datadog.trace.instrumentation.jdbc;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.InstrumenterConfig;
 
-@AutoService(Instrumenter.class)
+@AutoService(InstrumenterModule.class)
 public final class PreparedStatementInstrumentation extends AbstractPreparedStatementInstrumentation
-    implements Instrumenter.ForKnownTypes, Instrumenter.ForConfiguredType {
+    implements Instrumenter.ForKnownTypes,
+        Instrumenter.ForConfiguredType,
+        Instrumenter.HasMethodAdvice {
 
   private static final String[] CONCRETE_TYPES = {
     // redshift
@@ -116,6 +119,14 @@ public final class PreparedStatementInstrumentation extends AbstractPreparedStat
     "software.aws.rds.jdbc.mysql.shading.com.mysql.cj.JdbcCallableStatement",
     // IBM Informix
     "com.informix.jdbc.IfxPreparedStatement",
+    // Intersystems IRIS
+    "com.intersystems.jdbc.IRISPreparedStatement",
+    "com.intersystems.jdbc.IRISCallableStatement",
+    // sybase
+    "com.sybase.jdbc2.jdbc.SybPreparedStatement",
+    "com.sybase.jdbc2.jdbc.SybCallableStatement",
+    "com.sybase.jdbc4.jdbc.SybPreparedStatement",
+    "com.sybase.jdbc4.jdbc.SybCallableStatement",
     // for testing purposes
     "test.TestPreparedStatement"
   };

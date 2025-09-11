@@ -18,6 +18,7 @@ import io.vertx.core.AbstractVerticle
 import io.vertx.core.Vertx
 
 class VertxHttpServerForkedTest extends HttpServerTest<Vertx> {
+
   @Override
   HttpServer server() {
     return new VertxServer(verticle(), routerBasePath())
@@ -83,7 +84,17 @@ class VertxHttpServerForkedTest extends HttpServerTest<Vertx> {
   }
 
   @Override
+  boolean testResponseBodyJson() {
+    true
+  }
+
+  @Override
   boolean testBlocking() {
+    true
+  }
+
+  @Override
+  boolean testEncodedQuery() {
     true
   }
 
@@ -125,6 +136,11 @@ class VertxHttpServerForkedTest extends HttpServerTest<Vertx> {
   }
 
   @Override
+  boolean testSessionId() {
+    true
+  }
+
+  @Override
   Serializable expectedServerSpanRoute(ServerEndpoint endpoint) {
     switch (endpoint) {
       case LOGIN:
@@ -158,5 +174,12 @@ class VertxHttpServerForkedTest extends HttpServerTest<Vertx> {
         defaultTags()
       }
     }
+  }
+}
+
+class VertxHttpServerWorkerForkedTest extends VertxHttpServerForkedTest {
+  @Override
+  HttpServer server() {
+    return new VertxServer(verticle(), routerBasePath(), true)
   }
 }

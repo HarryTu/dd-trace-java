@@ -13,13 +13,14 @@ import static net.bytebuddy.matcher.ElementMatchers.returns;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import org.apache.logging.log4j.core.ContextDataInjector;
 
-@AutoService(Instrumenter.class)
-public class ContextDataInjectorFactoryInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class ContextDataInjectorFactoryInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public ContextDataInjectorFactoryInstrumentation() {
     super("log4j", "log4j-2");
   }
@@ -35,8 +36,8 @@ public class ContextDataInjectorFactoryInstrumentation extends Instrumenter.Trac
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(isPublic())
             .and(isStatic())

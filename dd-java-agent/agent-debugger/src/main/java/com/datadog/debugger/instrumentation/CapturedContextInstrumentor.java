@@ -1,20 +1,21 @@
 package com.datadog.debugger.instrumentation;
 
-import static com.datadog.debugger.instrumentation.ASMHelper.emitReflectiveCall;
 import static com.datadog.debugger.instrumentation.ASMHelper.getStatic;
+import static com.datadog.debugger.instrumentation.ASMHelper.invokeConstructor;
 import static com.datadog.debugger.instrumentation.ASMHelper.invokeStatic;
 import static com.datadog.debugger.instrumentation.ASMHelper.invokeVirtual;
 import static com.datadog.debugger.instrumentation.ASMHelper.isFinalField;
 import static com.datadog.debugger.instrumentation.ASMHelper.isStaticField;
 import static com.datadog.debugger.instrumentation.ASMHelper.ldc;
+import static com.datadog.debugger.instrumentation.ASMHelper.newInstance;
 import static com.datadog.debugger.instrumentation.Types.CAPTURED_CONTEXT_TYPE;
 import static com.datadog.debugger.instrumentation.Types.CAPTURED_VALUE;
 import static com.datadog.debugger.instrumentation.Types.CAPTURE_THROWABLE_TYPE;
 import static com.datadog.debugger.instrumentation.Types.CLASS_TYPE;
-import static com.datadog.debugger.instrumentation.Types.CORRELATION_ACCESS_TYPE;
 import static com.datadog.debugger.instrumentation.Types.DEBUGGER_CONTEXT_TYPE;
 import static com.datadog.debugger.instrumentation.Types.METHOD_LOCATION_TYPE;
 import static com.datadog.debugger.instrumentation.Types.OBJECT_TYPE;
+import static com.datadog.debugger.instrumentation.Types.REFLECTIVE_FIELD_VALUE_RESOLVER_TYPE;
 import static com.datadog.debugger.instrumentation.Types.STRING_ARRAY_TYPE;
 import static com.datadog.debugger.instrumentation.Types.STRING_TYPE;
 import static com.datadog.debugger.instrumentation.Types.THROWABLE_TYPE;
@@ -28,14 +29,19 @@ import com.datadog.debugger.probe.ProbeDefinition;
 import com.datadog.debugger.probe.SpanDecorationProbe;
 import com.datadog.debugger.probe.Where;
 import com.datadog.debugger.sink.Snapshot;
+import com.datadog.debugger.util.ClassFileLines;
 import datadog.trace.api.Config;
-import datadog.trace.bootstrap.debugger.CorrelationAccess;
 import datadog.trace.bootstrap.debugger.Limits;
 import datadog.trace.bootstrap.debugger.MethodLocation;
-import datadog.trace.util.Strings;
+import datadog.trace.bootstrap.debugger.ProbeId;
+import datadog.trace.bootstrap.debugger.util.Redaction;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
@@ -47,41 +53,43 @@ import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.LocalVariableNode;
-import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TryCatchBlockNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class CapturedContextInstrumentor extends Instrumentor {
+  private static final Logger LOGGER = LoggerFactory.getLogger(CapturedContextInstrumentor.class);
   private final boolean captureSnapshot;
+  private final boolean captureEntry;
   private final Limits limits;
   private final LabelNode contextInitLabel = new LabelNode();
   private int entryContextVar = -1;
   private int exitContextVar = -1;
   private int timestampStartVar = -1;
   private int throwableListVar = -1;
-  private final List<FinallyBlock> finallyBlocks = new ArrayList<>();
+  private Collection<LocalVariableNode> hoistedLocalVars = Collections.emptyList();
 
   public CapturedContextInstrumentor(
       ProbeDefinition definition,
-      ClassLoader classLoader,
-      ClassNode classNode,
-      MethodNode methodNode,
+      MethodInfo methodInfo,
       List<DiagnosticMessage> diagnostics,
-      List<String> probeIds,
+      List<ProbeId> probeIds,
       boolean captureSnapshot,
+      boolean captureEntry,
       Limits limits) {
-    super(definition, classLoader, classNode, methodNode, diagnostics, probeIds);
+    super(definition, methodInfo, diagnostics, probeIds);
     this.captureSnapshot = captureSnapshot;
+    this.captureEntry = captureEntry;
     this.limits = limits;
   }
 
   @Override
   public InstrumentationResult.Status instrument() {
-    if (isLineProbe) {
-      fillLineMap();
-      if (!addLineCaptures(lineMap)) {
+    if (definition.isLineProbe()) {
+      if (!addLineCaptures(classFileLines)) {
         return InstrumentationResult.Status.ERROR;
       }
       installFinallyBlocks();
@@ -90,26 +98,18 @@ public class CapturedContextInstrumentor extends Instrumentor {
     instrumentMethodEnter();
     instrumentTryCatchHandlers();
     processInstructions();
-    addFinallyHandler(returnHandlerLabel);
+    addFinallyHandler(contextInitLabel, returnHandlerLabel);
     installFinallyBlocks();
     return InstrumentationResult.Status.INSTALLED;
   }
 
-  private void installFinallyBlocks() {
-    for (FinallyBlock finallyBlock : finallyBlocks) {
-      methodNode.tryCatchBlocks.add(
-          new TryCatchBlockNode(
-              finallyBlock.startLabel, finallyBlock.endLabel, finallyBlock.handlerLabel, null));
-    }
-  }
-
-  private boolean addLineCaptures(LineMap lineMap) {
+  private boolean addLineCaptures(ClassFileLines classFileLines) {
     Where.SourceLine[] targetLines = definition.getWhere().getSourceLines();
     if (targetLines == null) {
       reportError("Missing line(s) in probe definition.");
       return false;
     }
-    if (lineMap.isEmpty()) {
+    if (classFileLines.isEmpty()) {
       reportError("Missing line debug information.");
       return false;
     }
@@ -119,14 +119,27 @@ public class CapturedContextInstrumentor extends Instrumentor {
 
       boolean isSingleLine = from == till;
 
-      LabelNode beforeLabel = lineMap.getLineLabel(from);
+      LabelNode beforeLabel = classFileLines.getLineLabel(from);
       // single line N capture translates to line range (N, N+1)
-      LabelNode afterLabel = lineMap.getLineLabel(till + (isSingleLine ? 1 : 0));
+      LabelNode afterLabel = classFileLines.getLineLabel(till + (isSingleLine ? 1 : 0));
       if (beforeLabel == null && afterLabel == null) {
         reportError("No line info for " + (isSingleLine ? "line " : "range ") + sourceLine + ".");
       }
       if (beforeLabel != null) {
         InsnList insnList = new InsnList();
+        if (isSingleLine) {
+          TryCatchBlockNode catchHandler = findCatchHandler(beforeLabel);
+          if (catchHandler != null && !isExceptionLocalDeclared(catchHandler, methodNode)) {
+            // empty catch block does not declare exception local variable - we add it
+            int idx = addExceptionLocal(catchHandler, methodNode);
+            // store exception in the new local variable
+            // stack [exception]
+            insnList.add(new InsnNode(Opcodes.DUP));
+            // stack [exception, exception]
+            insnList.add(new VarInsnNode(Opcodes.ASTORE, idx));
+            // stack [exception]
+          }
+        }
         ldc(insnList, Type.getObjectType(classNode.name));
         // stack [class, array]
         pushProbesIds(insnList);
@@ -175,6 +188,75 @@ public class CapturedContextInstrumentor extends Instrumentor {
       }
     }
     return true;
+  }
+
+  private int addExceptionLocal(TryCatchBlockNode catchHandler, MethodNode methodNode) {
+    AbstractInsnNode current = catchHandler.handler;
+    while (current != null
+        && (current.getType() == AbstractInsnNode.LABEL
+            || current.getType() == AbstractInsnNode.LINE)) {
+      current = current.getNext();
+    }
+    if (current == null) {
+      reportWarning("Cannot add exception local variable to catch block - no instructions.");
+      return -1;
+    }
+    if (current.getOpcode() != Opcodes.ASTORE) {
+      reportWarning("Cannot add exception local variable to catch block - no store instruction.");
+      return -1;
+    }
+    int exceptionLocalIdx = ((VarInsnNode) current).var;
+    Set<String> localNames =
+        methodNode.localVariables.stream()
+            .map(localVariableNode -> localVariableNode.name)
+            .collect(Collectors.toSet());
+    // find next label assume this is the end of the handler
+    while (current != null && current.getType() != AbstractInsnNode.LABEL) {
+      current = current.getNext();
+    }
+    if (current == null) {
+      reportWarning("Cannot add exception local variable to catch block - no end of handler.");
+      return -1;
+    }
+    LabelNode end = (LabelNode) current;
+    for (int i = 0; i < 100; i++) {
+      String exceptionLocalName = "ex" + i;
+      if (!localNames.contains(exceptionLocalName)) {
+        methodNode.localVariables.add(
+            new LocalVariableNode(
+                exceptionLocalName,
+                "L" + catchHandler.type + ";",
+                null,
+                catchHandler.handler,
+                end,
+                exceptionLocalIdx));
+        return exceptionLocalIdx;
+      }
+    }
+    return -1;
+  }
+
+  private TryCatchBlockNode findCatchHandler(LabelNode targetLine) {
+    for (TryCatchBlockNode tryCatchBlockNode : methodNode.tryCatchBlocks) {
+      if (tryCatchBlockNode.handler == targetLine) {
+        return tryCatchBlockNode;
+      }
+    }
+    return null;
+  }
+
+  private boolean isExceptionLocalDeclared(TryCatchBlockNode catchHandler, MethodNode methodNode) {
+    if (methodNode.localVariables == null || methodNode.localVariables.isEmpty()) {
+      return false;
+    }
+    String catchDesc =
+        catchHandler.type != null ? "L" + catchHandler.type + ";" : "Ljava/lang/Throwable;";
+    for (LocalVariableNode local : methodNode.localVariables) {
+      if (catchDesc.equals(local.desc)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   @Override
@@ -229,7 +311,11 @@ public class CapturedContextInstrumentor extends Instrumentor {
   private InsnList commit() {
     InsnList insnList = new InsnList();
     // stack []
-    getContext(insnList, entryContextVar);
+    if (entryContextVar != -1) {
+      getContext(insnList, entryContextVar);
+    } else {
+      getStatic(insnList, CAPTURED_CONTEXT_TYPE, "EMPTY_CAPTURING_CONTEXT");
+    }
     // stack [capturedcontext]
     getContext(insnList, exitContextVar);
     // stack [capturedcontext, capturedcontext]
@@ -254,7 +340,7 @@ public class CapturedContextInstrumentor extends Instrumentor {
     return insnList;
   }
 
-  private void addFinallyHandler(LabelNode endLabel) {
+  protected void addFinallyHandler(LabelNode startLabel, LabelNode endLabel) {
     // stack: [exception]
     if (methodNode.tryCatchBlocks == null) {
       methodNode.tryCatchBlocks = new ArrayList<>();
@@ -263,18 +349,28 @@ public class CapturedContextInstrumentor extends Instrumentor {
     InsnList handler = new InsnList();
     handler.add(handlerLabel);
     // stack [exception]
-    handler.add(new VarInsnNode(Opcodes.ALOAD, entryContextVar));
-    // stack [exception, capturedcontext]
-    LabelNode targetNode = new LabelNode();
-    invokeVirtual(handler, CAPTURED_CONTEXT_TYPE, "isCapturing", BOOLEAN_TYPE);
-    // stack [exception, boolean]
-    handler.add(new JumpInsnNode(Opcodes.IFEQ, targetNode));
+    LabelNode targetNode = null;
+    if (entryContextVar != -1) {
+      handler.add(new VarInsnNode(Opcodes.ALOAD, entryContextVar));
+      // stack [exception, capturedcontext]
+      targetNode = new LabelNode();
+      invokeVirtual(handler, CAPTURED_CONTEXT_TYPE, "isCapturing", BOOLEAN_TYPE);
+      // stack [exception, boolean]
+      handler.add(new JumpInsnNode(Opcodes.IFEQ, targetNode));
+    }
+    if (exitContextVar == -1) {
+      exitContextVar = newVar(CAPTURED_CONTEXT_TYPE);
+    }
     // stack [exception]
     handler.add(collectCapturedContext(Snapshot.Kind.UNHANDLED_EXCEPTION, endLabel));
     // stack: [exception, capturedcontext]
     ldc(handler, Type.getObjectType(classNode.name));
     // stack [exception, capturedcontext, class]
-    handler.add(new VarInsnNode(Opcodes.LLOAD, timestampStartVar));
+    if (timestampStartVar != -1) {
+      handler.add(new VarInsnNode(Opcodes.LLOAD, timestampStartVar));
+    } else {
+      ldc(handler, -1L);
+    }
     // stack [exception, capturedcontext, class, long]
     getStatic(handler, METHOD_LOCATION_TYPE, "EXIT");
     // stack [exception, capturedcontext, class, long, methodlocation]
@@ -294,12 +390,14 @@ public class CapturedContextInstrumentor extends Instrumentor {
     invokeStatic(handler, DEBUGGER_CONTEXT_TYPE, "disableInProbe", VOID_TYPE);
     // stack [exception]
     handler.add(commit());
-    handler.add(targetNode);
+    if (targetNode != null) {
+      handler.add(targetNode);
+    }
     // stack [exception]
     handler.add(new InsnNode(Opcodes.ATHROW));
     // stack: []
     methodNode.instructions.add(handler);
-    finallyBlocks.add(new FinallyBlock(contextInitLabel, endLabel, handlerLabel));
+    finallyBlocks.add(new FinallyBlock(startLabel, endLabel, handlerLabel));
   }
 
   private void instrumentMethodEnter() {
@@ -310,6 +408,7 @@ public class CapturedContextInstrumentor extends Instrumentor {
     if (methodNode.tryCatchBlocks.size() > 0) {
       throwableListVar = declareThrowableList(insnList);
     }
+    hoistedLocalVars = initAndHoistLocalVars(methodNode);
     insnList.add(contextInitLabel);
     if (definition instanceof SpanDecorationProbe
         && definition.getEvaluateAt() == MethodLocation.EXIT) {
@@ -332,8 +431,7 @@ public class CapturedContextInstrumentor extends Instrumentor {
     LabelNode targetNode = new LabelNode();
     LabelNode gotoNode = new LabelNode();
     insnList.add(new JumpInsnNode(Opcodes.IFEQ, targetNode));
-    // if evaluation is at exit, skip collecting data at enter
-    if (definition.getEvaluateAt() != MethodLocation.EXIT) {
+    if (captureEntry) {
       LabelNode inProbeStartLabel = new LabelNode();
       insnList.add(inProbeStartLabel);
       // stack []
@@ -375,6 +473,22 @@ public class CapturedContextInstrumentor extends Instrumentor {
     methodNode.instructions.insert(methodEnterLabel, insnList);
   }
 
+  // Initialize and hoist local variables to the top of the method
+  // if there is name/slot conflict, do nothing for the conflicting local variable
+  private Collection<LocalVariableNode> initAndHoistLocalVars(MethodNode methodNode) {
+    int hoistingLevel = Config.get().getDynamicInstrumentationLocalVarHoistingLevel();
+    if (hoistingLevel == 0 || language != JvmLanguage.JAVA) {
+      // for now, only hoist local vars for Java
+      return Collections.emptyList();
+    }
+    if (methodNode.localVariables == null || methodNode.localVariables.isEmpty()) {
+      return Collections.emptyList();
+    }
+    LOGGER.debug(
+        "Hoisting local variables level={} for method: {}", hoistingLevel, methodNode.name);
+    return LocalVarHoisting.processMethod(methodNode, hoistingLevel);
+  }
+
   private void createInProbeFinallyHandler(LabelNode inProbeStartLabel, LabelNode inProbeEndLabel) {
     LabelNode handlerLabel = new LabelNode();
     InsnList handler = new InsnList();
@@ -397,7 +511,7 @@ public class CapturedContextInstrumentor extends Instrumentor {
       // stack [array, array]
       ldc(insnList, i); // index
       // stack [array, array, int]
-      ldc(insnList, probeIds.get(i));
+      ldc(insnList, probeIds.get(i).getEncodedId());
       // stack [array, array, int, string]
       insnList.add(new InsnNode(Opcodes.AASTORE));
       // stack [array]
@@ -476,17 +590,17 @@ public class CapturedContextInstrumentor extends Instrumentor {
     // stack: [capturedcontext]
     collectStaticFields(insnList);
     // stack: [capturedcontext]
-    collectFields(insnList);
+    /*
+     * It makes no sense collecting local variables for exceptions - the ones contributing to the exception
+     * are most likely to be outside of the scope in the exception handler block and there is no way to figure
+     * out the originating location just from bytecode.
+     *
+     * However, it is very useful, in particular for Exception Debugging (Replay) to collect local variables.
+     * Thus, we are hoisting the local variable scope by initializing them at the beginning of the method
+     * with the method initLocalVars. It allows us to collect local variables at any point.
+     */
+    collectLocalVariables(location, insnList);
     // stack: [capturedcontext]
-    if (kind != Snapshot.Kind.UNHANDLED_EXCEPTION) {
-      /*
-       * It makes no sense collecting local variables for exceptions - the ones contributing to the exception
-       * are most likely to be outside of the scope in the exception handler block and there is no way to figure
-       * out the originating location just from bytecode.
-       */
-      collectLocalVariables(location, insnList);
-      // stack: [capturedcontext]
-    }
     if (kind == Snapshot.Kind.RETURN) {
       collectReturnValue(location, insnList);
       // stack: [capturedcontext]
@@ -518,8 +632,8 @@ public class CapturedContextInstrumentor extends Instrumentor {
     int slot = isStatic ? 0 : 1;
     for (Type argType : argTypes) {
       String currentArgName = null;
-      if (slot < localVarsBySlot.length) {
-        LocalVariableNode localVarNode = localVarsBySlot[slot];
+      if (slot < localVarsBySlotArray.length) {
+        LocalVariableNode localVarNode = localVarsBySlotArray[slot];
         currentArgName = localVarNode != null ? localVarNode.name : null;
       }
       if (currentArgName == null) {
@@ -534,12 +648,16 @@ public class CapturedContextInstrumentor extends Instrumentor {
       // stack: [capturedcontext, capturedcontext, array, array, int, string]
       ldc(insnList, argType.getClassName());
       // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name]
-      insnList.add(new VarInsnNode(argType.getOpcode(Opcodes.ILOAD), slot));
-      // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name, arg]
-      tryBox(argType, insnList);
-      // stack: [capturedcontext, capturedcontext, array, array, int, type_name, object]
-      addCapturedValueOf(insnList, limits);
-      // stack: [capturedcontext, capturedcontext, array, array, int, typed_value]
+      if (Redaction.isRedactedKeyword(currentArgName)) {
+        addCapturedValueRedacted(insnList);
+      } else {
+        insnList.add(new VarInsnNode(argType.getOpcode(Opcodes.ILOAD), slot));
+        // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name, arg]
+        tryBox(argType, insnList);
+        // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name, object]
+        addCapturedValueOf(insnList, limits);
+      }
+      // stack: [capturedcontext, capturedcontext, array, array, int, captured_value]
       insnList.add(new InsnNode(Opcodes.AASTORE));
       // stack: [capturedcontext, capturedcontext, array]
       slot += argType.getSize();
@@ -564,6 +682,7 @@ public class CapturedContextInstrumentor extends Instrumentor {
     // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name]
     insnList.add(new VarInsnNode(Opcodes.ALOAD, 0));
     // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name, this]
+    // no need to test redaction, 'this' is never redacted
     addCapturedValueOf(insnList, limits);
     // stack: [capturedcontext, capturedcontext, array, array, int, field_value]
     insnList.add(new InsnNode(Opcodes.AASTORE));
@@ -586,21 +705,37 @@ public class CapturedContextInstrumentor extends Instrumentor {
     }
 
     if (methodNode.localVariables == null || methodNode.localVariables.isEmpty()) {
-      if (!Config.get().isDebuggerInstrumentTheWorld()) {
+      if (Config.get().getDynamicInstrumentationInstrumentTheWorld() == null) {
         reportWarning("Missing local variable debug info");
       }
       // no local variables info - bail out
       return;
     }
-
+    Collection<LocalVariableNode> localVarNodes;
+    if (definition.isLineProbe() || hoistedLocalVars.isEmpty()) {
+      localVarNodes = methodNode.localVariables;
+    } else {
+      localVarNodes = hoistedLocalVars;
+    }
     List<LocalVariableNode> applicableVars = new ArrayList<>();
-    for (LocalVariableNode variableNode : methodNode.localVariables) {
+    boolean isLineProbe = definition.isLineProbe();
+    for (LocalVariableNode variableNode : localVarNodes) {
       int idx = variableNode.index - localVarBaseOffset;
-      if (idx >= argOffset && isInScope(variableNode, location)) {
-        applicableVars.add(variableNode);
+      if (idx >= argOffset) {
+        // var is local not arg
+        if (isLineProbe || hoistedLocalVars.isEmpty()) {
+          if (ASMHelper.isInScope(methodNode, variableNode, location)) {
+            applicableVars.add(variableNode);
+          }
+        } else {
+          applicableVars.add(variableNode);
+        }
       }
     }
-
+    if (applicableVars.isEmpty()) {
+      // no applicable local variables - bail out
+      return;
+    }
     insnList.add(new InsnNode(Opcodes.DUP));
     // stack: [capturedcontext, capturedcontext]
     ldc(insnList, applicableVars.size());
@@ -618,12 +753,16 @@ public class CapturedContextInstrumentor extends Instrumentor {
       Type varType = Type.getType(variableNode.desc);
       ldc(insnList, Type.getType(variableNode.desc).getClassName());
       // stack: [capturedcontext, capturedcontext, array, array, int, name, type_name]
-      insnList.add(new VarInsnNode(varType.getOpcode(Opcodes.ILOAD), variableNode.index));
-      // stack: [capturedcontext, capturedcontext, array, array, int, name, type_name, value]
-      tryBox(varType, insnList);
-      // stack: [capturedcontext, capturedcontext, array, array, int, name, type_name, object]
-      addCapturedValueOf(insnList, limits);
-      // stack: [capturedcontext, capturedcontext, array, array, int, typed_value]
+      if (Redaction.isRedactedKeyword(variableNode.name)) {
+        addCapturedValueRedacted(insnList);
+      } else {
+        insnList.add(new VarInsnNode(varType.getOpcode(Opcodes.ILOAD), variableNode.index));
+        // stack: [capturedcontext, capturedcontext, array, array, int, name, type_name, value]
+        tryBox(varType, insnList);
+        // stack: [capturedcontext, capturedcontext, array, array, int, name, type_name, object]
+        addCapturedValueOf(insnList, limits);
+      }
+      // stack: [capturedcontext, capturedcontext, array, array, int, captured_value]
       insnList.add(new InsnNode(Opcodes.AASTORE));
       // stack: [capturedcontext, capturedcontext, array]
     }
@@ -674,6 +813,7 @@ public class CapturedContextInstrumentor extends Instrumentor {
     // stack: [ret_value, capturedcontext, capturedcontext, null, type_name, ret_value]
     tryBox(returnType, insnList);
     // stack: [ret_value, capturedcontext, capturedcontext, null, type_name, ret_value]
+    // no name, no redaction
     addCapturedValueOf(insnList, limits);
     // stack: [ret_value, capturedcontext, capturedcontext, capturedvalue]
     invokeVirtual(insnList, CAPTURED_CONTEXT_TYPE, "addReturn", Type.VOID_TYPE, CAPTURED_VALUE);
@@ -722,26 +862,40 @@ public class CapturedContextInstrumentor extends Instrumentor {
       // stack: [capturedcontext, capturedcontext, array, array]
       ldc(insnList, counter++);
       // stack: [capturedcontext, capturedcontext, array, array, int]
+      if (!isAccessible(fieldNode)) {
+        ldc(insnList, Type.getObjectType(classNode.name));
+        ldc(insnList, null);
+        ldc(insnList, fieldNode.name);
+        // stack: [capturedcontext, capturedcontext, array, array, int, null, string]
+        invokeStatic(
+            insnList,
+            REFLECTIVE_FIELD_VALUE_RESOLVER_TYPE,
+            "getFieldAsCapturedValue",
+            CAPTURED_VALUE,
+            CLASS_TYPE,
+            OBJECT_TYPE,
+            STRING_TYPE);
+        insnList.add(new InsnNode(Opcodes.AASTORE));
+        // stack: [capturedcontext, capturedcontext, array]
+        continue;
+      }
       ldc(insnList, fieldNode.name);
       // stack: [capturedcontext, capturedcontext, array, array, int, string]
       Type fieldType = Type.getType(fieldNode.desc);
       ldc(insnList, fieldType.getClassName());
       // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name]
-      if (isAccessible(fieldNode)) {
+      if (Redaction.isRedactedKeyword(fieldNode.name)) {
+        addCapturedValueRedacted(insnList);
+      } else {
         insnList.add(
             new FieldInsnNode(Opcodes.GETSTATIC, classNode.name, fieldNode.name, fieldNode.desc));
-      } else {
-        ldc(insnList, Type.getObjectType(classNode.name));
-        ldc(insnList, fieldNode.name);
-        // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name, string]
-        emitReflectiveCall(insnList, new ASMHelper.Type(Type.getType(fieldNode.desc)), CLASS_TYPE);
+        // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name,
+        // field_value]
+        tryBox(fieldType, insnList);
+        // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name, object]
+        addCapturedValueOf(insnList, limits);
       }
-      // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name,
-      // field_value]
-      tryBox(fieldType, insnList);
-      // stack: [capturedcontext, capturedcontext, array, array, int, type_name, object]
-      addCapturedValueOf(insnList, limits);
-      // stack: [capturedcontext, capturedcontext, array, array, int, typed_value]
+      // stack: [capturedcontext, capturedcontext, array, array, int, captured_value]
       insnList.add(new InsnNode(Opcodes.AASTORE));
       // stack: [capturedcontext, capturedcontext, array]
     }
@@ -754,162 +908,12 @@ public class CapturedContextInstrumentor extends Instrumentor {
     // stack: [capturedcontext]
   }
 
-  private void collectFields(InsnList insnList) {
-    // expected stack top: [capturedcontext]
-    /*
-     * We are cheating a bit with CorrelationAccess - utilizing the knowledge that it is a singleton loaded by the
-     * bootstrap class loader we can assume that the availability will not change during the app life time.
-     * As a side effect, we happen to initialize the access here and not from the injected code.
-     */
-    boolean correlationAvailable = CorrelationAccess.instance().isAvailable();
-    if (isStatic && !correlationAvailable) {
-      // static method and no correlation info, no need to capture fields
-      return;
-    }
-    List<FieldNode> fieldsToCapture =
-        extractInstanceField(classNode, isStatic, classLoader, limits);
-    if (fieldsToCapture.isEmpty()) {
-      // bail out if no fields
-      return;
-    }
-    insnList.add(new InsnNode(Opcodes.DUP));
-    // stack: [capturedcontext, capturedcontext]
-    ldc(insnList, fieldsToCapture.size());
-    // stack: [capturedcontext, capturedcontext, int]
-    insnList.add(new TypeInsnNode(Opcodes.ANEWARRAY, CAPTURED_VALUE.getInternalName()));
-    // stack: [capturedcontext, capturedcontext, array]
-    int counter = 0;
-    for (FieldNode fieldNode : fieldsToCapture) {
-      insnList.add(new InsnNode(Opcodes.DUP));
-      // stack: [capturedcontext, capturedcontext, array, array]
-      ldc(insnList, counter++);
-      // stack: [capturedcontext, capturedcontext, array, array, int]
-      ldc(insnList, fieldNode.name);
-      // stack: [capturedcontext, capturedcontext, array, array, int, string]
-      Type fieldType = Type.getType(fieldNode.desc);
-      ldc(insnList, fieldType.getClassName());
-      // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name]
-      switch (fieldNode.name) {
-        case "dd.trace_id":
-          {
-            invokeStatic(insnList, CORRELATION_ACCESS_TYPE, "instance", CORRELATION_ACCESS_TYPE);
-            // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name,
-            // access]
-            invokeVirtual(insnList, CORRELATION_ACCESS_TYPE, "getTraceId", STRING_TYPE);
-            break;
-          }
-        case "dd.span_id":
-          {
-            invokeStatic(insnList, CORRELATION_ACCESS_TYPE, "instance", CORRELATION_ACCESS_TYPE);
-            // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name,
-            // access]
-            invokeVirtual(insnList, CORRELATION_ACCESS_TYPE, "getSpanId", STRING_TYPE);
-            break;
-          }
-        default:
-          {
-            insnList.add(new VarInsnNode(Opcodes.ALOAD, 0));
-            // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name, this]
-            if (isAccessible(fieldNode)) {
-              insnList.add(
-                  new FieldInsnNode(
-                      Opcodes.GETFIELD, classNode.name, fieldNode.name, fieldNode.desc));
-            } else {
-              ldc(insnList, fieldNode.name);
-              // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name,
-              // this, string]
-              ASMHelper.emitReflectiveCall(
-                  insnList, new ASMHelper.Type(Type.getType(fieldNode.desc)), OBJECT_TYPE);
-              // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name,
-              // this, string]
-            }
-          }
-      }
-      // stack: [capturedcontext, capturedcontext, array, array, int, string, type_name,
-      // field_value]
-      tryBox(fieldType, insnList);
-      // stack: [capturedcontext, capturedcontext, array, array, int, type_name, object]
-      addCapturedValueOf(insnList, limits);
-      // stack: [capturedcontext, capturedcontext, array, array, int, typed_value]
-      insnList.add(new InsnNode(Opcodes.AASTORE));
-      // stack: [capturedcontext, capturedcontext, array]
-    }
-    invokeVirtual(
-        insnList,
-        CAPTURED_CONTEXT_TYPE,
-        "addFields",
-        Type.VOID_TYPE,
-        Types.asArray(CAPTURED_VALUE, 1));
-    // stack: [capturedcontext]
-  }
-
   private static boolean isAccessible(FieldNode fieldNode) {
     Object value = fieldNode.value;
     if (value instanceof Field) {
       return ((Field) value).isAccessible();
     }
     return true;
-  }
-
-  private static List<FieldNode> extractInstanceField(
-      ClassNode classNode, boolean isStatic, ClassLoader classLoader, Limits limits) {
-    List<FieldNode> results = new ArrayList<>();
-    if (CorrelationAccess.instance().isAvailable()) {
-      results.add(
-          new FieldNode(
-              Opcodes.ACC_PRIVATE, "dd.trace_id", STRING_TYPE.getDescriptor(), null, null));
-      results.add(
-          new FieldNode(
-              Opcodes.ACC_PRIVATE, "dd.span_id", STRING_TYPE.getDescriptor(), null, null));
-    }
-    if (isStatic) {
-      return results;
-    }
-    int fieldCount = 0;
-    for (FieldNode fieldNode : classNode.fields) {
-      if (isStaticField(fieldNode)) {
-        continue;
-      }
-      results.add(fieldNode);
-      fieldCount++;
-      if (fieldCount > limits.maxFieldCount) {
-        return results;
-      }
-    }
-    addInheritedFields(classNode, classLoader, limits, results, fieldCount);
-    return results;
-  }
-
-  private static void addInheritedFields(
-      ClassNode classNode,
-      ClassLoader classLoader,
-      Limits limits,
-      List<FieldNode> results,
-      int fieldCount) {
-    String superClassName = Strings.getClassName(classNode.superName);
-    while (!superClassName.equals(Object.class.getTypeName())) {
-      Class<?> clazz;
-      try {
-        clazz = Class.forName(superClassName, false, classLoader);
-      } catch (ClassNotFoundException ex) {
-        break;
-      }
-      for (Field field : clazz.getDeclaredFields()) {
-        if (isStaticField(field)) {
-          continue;
-        }
-        String desc = Type.getDescriptor(field.getType());
-        FieldNode fieldNode =
-            new FieldNode(field.getModifiers(), field.getName(), desc, null, field);
-        results.add(fieldNode);
-        fieldCount++;
-        if (fieldCount > limits.maxFieldCount) {
-          return;
-        }
-      }
-      clazz = clazz.getSuperclass();
-      superClassName = clazz.getTypeName();
-    }
   }
 
   private static List<FieldNode> extractStaticFields(
@@ -925,55 +929,11 @@ public class CapturedContextInstrumentor extends Instrumentor {
         }
       }
     }
-    addInheritedStaticFields(classNode, classLoader, limits, results, fieldCount);
+    // Collecting inherited static fields is problematic because it some cases can lead to
+    // LinkageError: attempted duplicate class definition
+    // as we force to load a class to get the static fields in a different order than the JVM
+    // for example, when a probe is located in method overridden in enum element
     return results;
-  }
-
-  private static void addInheritedStaticFields(
-      ClassNode classNode,
-      ClassLoader classLoader,
-      Limits limits,
-      List<FieldNode> results,
-      int fieldCount) {
-    String superClassName = Strings.getClassName(classNode.superName);
-    while (!superClassName.equals(Object.class.getTypeName())) {
-      Class<?> clazz;
-      try {
-        clazz = Class.forName(superClassName, false, classLoader);
-      } catch (ClassNotFoundException ex) {
-        break;
-      }
-      for (Field field : clazz.getDeclaredFields()) {
-        if (isStaticField(field) && !isFinalField(field)) {
-          String desc = Type.getDescriptor(field.getType());
-          FieldNode fieldNode =
-              new FieldNode(field.getModifiers(), field.getName(), desc, null, field);
-          results.add(fieldNode);
-          fieldCount++;
-          if (fieldCount > limits.maxFieldCount) {
-            return;
-          }
-        }
-      }
-      clazz = clazz.getSuperclass();
-      superClassName = clazz.getTypeName();
-    }
-  }
-
-  private boolean isInScope(LocalVariableNode variableNode, AbstractInsnNode location) {
-    AbstractInsnNode startScope =
-        variableNode.start != null ? variableNode.start : methodNode.instructions.getFirst();
-    AbstractInsnNode endScope =
-        variableNode.end != null ? variableNode.end : methodNode.instructions.getLast();
-
-    AbstractInsnNode insn = startScope;
-    while (insn != null && insn != endScope) {
-      if (insn == location) {
-        return true;
-      }
-      insn = insn.getNext();
-    }
-    return false;
   }
 
   private int declareContextVar(InsnList insnList) {
@@ -1028,7 +988,7 @@ public class CapturedContextInstrumentor extends Instrumentor {
       ldc(insnList, limits.getMaxLength());
       ldc(insnList, limits.getMaxFieldCount());
     }
-    // expected stack: [type_name, value, int, int, int, int]
+    // expected stack: [name, type_name, value, int, int, int, int]
     invokeStatic(
         insnList,
         CAPTURED_VALUE,
@@ -1044,31 +1004,9 @@ public class CapturedContextInstrumentor extends Instrumentor {
     // stack: [captured_value]
   }
 
-  private void invokeConstructor(InsnList insnList, Type owner, Type... argTypes) {
-    // expected stack: [instance, arg_type_1 ... arg_type_N]
-    insnList.add(
-        new MethodInsnNode(
-            Opcodes.INVOKESPECIAL,
-            owner.getInternalName(),
-            Types.CONSTRUCTOR,
-            Type.getMethodDescriptor(Type.VOID_TYPE, argTypes),
-            false));
-    // stack: []
-  }
-
-  private static void newInstance(InsnList insnList, Type type) {
-    insnList.add(new TypeInsnNode(Opcodes.NEW, type.getInternalName()));
-  }
-
-  private static class FinallyBlock {
-    final LabelNode startLabel;
-    final LabelNode endLabel;
-    final LabelNode handlerLabel;
-
-    public FinallyBlock(LabelNode startLabel, LabelNode endLabel, LabelNode handlerLabel) {
-      this.startLabel = startLabel;
-      this.endLabel = endLabel;
-      this.handlerLabel = handlerLabel;
-    }
+  private void addCapturedValueRedacted(InsnList insnList) {
+    // expected stack: [name, type_name]
+    invokeStatic(insnList, CAPTURED_VALUE, "redacted", CAPTURED_VALUE, STRING_TYPE, STRING_TYPE);
+    // stack: [captured_value]
   }
 }

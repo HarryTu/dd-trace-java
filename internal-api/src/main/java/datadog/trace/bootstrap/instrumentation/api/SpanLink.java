@@ -1,6 +1,6 @@
 package datadog.trace.bootstrap.instrumentation.api;
 
-import static datadog.trace.bootstrap.instrumentation.api.SpanLinkAttributes.EMPTY;
+import static datadog.trace.bootstrap.instrumentation.api.SpanAttributes.EMPTY;
 
 import datadog.trace.api.DDTraceId;
 
@@ -10,15 +10,19 @@ public class SpanLink implements AgentSpanLink {
   private final long spanId;
   private final byte traceFlags;
   private final String traceState;
-  private final Attributes attributes;
+  private final SpanAttributes attributes;
 
   protected SpanLink(
-      DDTraceId traceId, long spanId, byte traceFlags, String traceState, Attributes attributes) {
-    this.traceId = traceId;
+      DDTraceId traceId,
+      long spanId,
+      byte traceFlags,
+      String traceState,
+      SpanAttributes attributes) {
+    this.traceId = traceId == null ? DDTraceId.ZERO : traceId;
     this.spanId = spanId;
     this.traceFlags = traceFlags;
-    this.traceState = traceState;
-    this.attributes = attributes;
+    this.traceState = traceState == null ? "" : traceState;
+    this.attributes = attributes == null ? EMPTY : attributes;
   }
 
   /**
@@ -28,7 +32,7 @@ public class SpanLink implements AgentSpanLink {
    * @param context The context of the span to get the link to.
    * @return A span link to the given context.
    */
-  public static SpanLink from(AgentSpan.Context context) {
+  public static SpanLink from(AgentSpanContext context) {
     return from(context, DEFAULT_FLAGS, "", EMPTY);
   }
 
@@ -43,7 +47,7 @@ public class SpanLink implements AgentSpanLink {
    * @return A span link to the given context.
    */
   public static SpanLink from(
-      AgentSpan.Context context, byte traceFlags, String traceState, Attributes attributes) {
+      AgentSpanContext context, byte traceFlags, String traceState, SpanAttributes attributes) {
     if (context.getSamplingPriority() > 0) {
       traceFlags = (byte) (traceFlags | SAMPLED_FLAG);
     }
@@ -72,7 +76,7 @@ public class SpanLink implements AgentSpanLink {
   }
 
   @Override
-  public Attributes attributes() {
+  public SpanAttributes attributes() {
     return this.attributes;
   }
 

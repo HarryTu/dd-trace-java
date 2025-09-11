@@ -1,12 +1,15 @@
 package datadog.trace.instrumentation.jbossmodules;
 
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
+import static net.bytebuddy.matcher.ElementMatchers.isConstructor;
 import static net.bytebuddy.matcher.ElementMatchers.isMethod;
 import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
+import datadog.trace.api.ClassloaderConfigurationOverrides;
 import datadog.trace.bootstrap.AgentClassLoading;
 import java.io.IOException;
 import java.io.InputStream;
@@ -15,9 +18,9 @@ import net.bytebuddy.asm.Advice;
 import org.jboss.modules.Module;
 import org.jboss.modules.ModuleLinkageHelper;
 
-@AutoService(Instrumenter.class)
-public final class ModuleInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class ModuleInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public ModuleInstrumentation() {
     super("classloading", "jboss-modules");
   }
@@ -32,23 +35,24 @@ public final class ModuleInstrumentation extends Instrumenter.Tracing
     return new String[] {
       "org.jboss.modules.ModuleLinkageHelper",
       "org.jboss.modules.ModuleLinkageHelper$1",
-      "org.jboss.modules.ModuleLinkageHelper$2"
+      "org.jboss.modules.ModuleLinkageHelper$2",
+      packageName + ".ModuleNameHelper",
     };
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("getResource"))
             .and(takesArguments(1).and(takesArgument(0, String.class))),
         ModuleInstrumentation.class.getName() + "$WidenGetResourceAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(named("getResourceAsStream"))
             .and(takesArguments(1).and(takesArgument(0, String.class))),
         ModuleInstrumentation.class.getName() + "$WidenGetResourceAsStreamAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(named("loadModuleClass"))
             .and(
@@ -59,6 +63,7 @@ public final class ModuleInstrumentation extends Instrumenter.Tracing
                             .and(takesArgument(0, String.class))
                             .and(takesArgument(1, boolean.class)))),
         ModuleInstrumentation.class.getName() + "$WidenLoadClassAdvice");
+    transformer.applyAdvice(isConstructor(), getClass().getName() + "$CaptureModuleNameAdvice");
   }
 
   /**
@@ -150,6 +155,16 @@ public final class ModuleInstrumentation extends Instrumenter.Tracing
             requestType.begin();
           }
         }
+      }
+    }
+  }
+
+  public static class CaptureModuleNameAdvice {
+    @Advice.OnMethodExit(suppress = Throwable.class)
+    public static void afterConstruct(@Advice.This final Module module) {
+      final String name = ModuleNameHelper.extractDeploymentName(module.getClassLoader());
+      if (name != null && !name.isEmpty()) {
+        ClassloaderConfigurationOverrides.withPinnedServiceName(module.getClassLoader(), name);
       }
     }
   }

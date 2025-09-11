@@ -1,10 +1,8 @@
 package datadog.trace.instrumentation.play24;
 
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeScope;
 import static datadog.trace.instrumentation.play24.PlayHttpServerDecorator.DECORATE;
 import static datadog.trace.instrumentation.play24.PlayHttpServerDecorator.REPORT_HTTP_STATUS;
 
-import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,10 +28,6 @@ public class RequestCompleteCallback extends scala.runtime.AbstractFunction1<Try
         }
       }
       DECORATE.beforeFinish(span);
-      final AgentScope scope = activeScope();
-      if (scope != null) {
-        scope.setAsyncPropagation(false);
-      }
     } catch (final Throwable t) {
       log.debug("error in play instrumentation", t);
     } finally {

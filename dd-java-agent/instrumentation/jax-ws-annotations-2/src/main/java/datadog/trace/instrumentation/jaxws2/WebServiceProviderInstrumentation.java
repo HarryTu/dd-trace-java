@@ -12,6 +12,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.CallDepthThreadLocalMap;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
@@ -20,20 +21,17 @@ import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public final class WebServiceProviderInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForBootstrap, Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public final class WebServiceProviderInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForBootstrap,
+        Instrumenter.ForTypeHierarchy,
+        Instrumenter.HasMethodAdvice {
   private static final String WEB_SERVICE_PROVIDER_INTERFACE_NAME = "javax.xml.ws.Provider";
   private static final String WEB_SERVICE_PROVIDER_ANNOTATION_NAME =
       "javax.xml.ws.WebServiceProvider";
 
   public WebServiceProviderInstrumentation() {
     super("jax-ws");
-  }
-
-  @Override
-  protected boolean defaultEnabled() {
-    return false;
   }
 
   @Override
@@ -55,8 +53,8 @@ public final class WebServiceProviderInstrumentation extends Instrumenter.Tracin
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(named("invoke")).and(takesArguments(1)),
         getClass().getName() + "$InvokeAdvice");
   }

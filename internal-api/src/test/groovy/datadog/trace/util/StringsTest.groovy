@@ -12,9 +12,11 @@ class StringsTest extends DDSpecification {
     s == expected
     where:
     // spotless:off
-    className       | expected
-    "foo.bar.Class" | "foo/bar/Class.class"
-    "Class"         | "Class.class"
+    className             | expected
+    "foo.bar.Class"       | "foo/bar/Class.class"
+    "foo/bar/Class.class" | "foo/bar/Class.class"
+    "Class"               | "Class.class"
+    "Class.class"         | "Class.class"
     // spotless:on
   }
 
@@ -27,7 +29,22 @@ class StringsTest extends DDSpecification {
     // spotless:off
     resourceName          | expected
     "foo/bar/Class.class" | "foo.bar.Class"
+    "foo.bar.Class"       | "foo.bar.Class"
     "Class.class"         | "Class"
+    "Class"               | "Class"
+    // spotless:on
+  }
+
+  def "test internal name from class name"() {
+    when:
+    String s = Strings.getInternalName(resourceName)
+    then:
+    s == expected
+    where:
+    // spotless:off
+    resourceName    | expected
+    "foo.bar.Class" | "foo/bar/Class"
+    "Class"         | "Class"
     // spotless:on
   }
 
@@ -47,37 +64,6 @@ class StringsTest extends DDSpecification {
   def "test envvar from property"() {
     expect:
     "FOO_BAR_QUX" == Strings.toEnvVar("foo.bar-qux")
-  }
-
-  def "test join strings"() {
-    when:
-    String s = Strings.join(joiner, strings)
-    then:
-    s == expected
-    where:
-    // spotless:off
-    joiner | strings         | expected
-    ","    | ["a", "b", "c"] | "a,b,c"
-    ","    | ["a", "b"]      | "a,b"
-    ","    | ["a"]           | "a"
-    ","    | []              | ""
-    // spotless:on
-  }
-
-  def "test join strings varargs"() {
-    when:
-    // apparently groovy doesn't like this but it runs as if it's java
-    String s = Strings.join(joiner, strings.toArray(new CharSequence[0]))
-    then:
-    s == expected
-    where:
-    // spotless:off
-    joiner | strings         | expected
-    ","    | ["a", "b", "c"] | "a,b,c"
-    ","    | ["a", "b"]      | "a,b"
-    ","    | ["a"]           | "a"
-    ","    | []              | ""
-    // spotless:on
   }
 
   def "test replace strings"() {
@@ -100,33 +86,6 @@ class StringsTest extends DDSpecification {
     "tetetetete" | "te"      | "t"         | "ttttt"           | "ttetetete"
     "tetetetete" | "tet"     | "e"         | "eeeete"          | "eetetete"
     // spotless:on
-  }
-
-  def "test escape javascript"() {
-    when:
-    String escaped = Strings.escapeToJson(string)
-
-    then:
-    escaped == expected
-
-    where:
-    string                   | expected
-    null                     | ""
-    ""                       | ""
-    ((char) 4096).toString() | '\\u1000'
-    ((char) 256).toString()  | '\\u0100'
-    ((char) 128).toString()  | '\\u0080'
-    "\b"                     | "\\b"
-    "\t"                     | "\\t"
-    "\n"                     | "\\n"
-    "\f"                     | "\\f"
-    "\r"                     | "\\r"
-    '"'                      | '\\"'
-    '\''                     | '\\\''
-    '/'                      | '\\/'
-    '\\'                     | '\\\\'
-    "\u000b"                 | "\\u000B"
-    "a"                      | "a"
   }
 
   def "test sha256"() {
@@ -158,44 +117,14 @@ class StringsTest extends DDSpecification {
     "hélló wórld" | 5     | "hélló"
   }
 
-  def "test map toJson: #input"() {
-    when:
-    String json = Strings.toJson((Map) input)
-
-    then:
-    json == expected
-
-    where:
-    input                                   | expected
-    null                                    | "{}"
-    new HashMap<>()                         | "{}"
-    ['key1': 'value1']                      | "{\"key1\":\"value1\"}"
-    ['key1': 'value1', 'key2': 'value2']    | "{\"key1\":\"value1\",\"key2\":\"value2\"}"
-    ['key1': 'va"lu"e1', 'ke"y2': 'value2'] | "{\"key1\":\"va\\\"lu\\\"e1\",\"ke\\\"y2\":\"value2\"}"
-  }
-
-  def "test iterable toJson: #input"() {
-    when:
-    String json = Strings.toJson((Iterable) input)
-
-    then:
-    json == expected
-
-    where:
-    input                  | expected
-    null                   | "[]"
-    new ArrayList<>()      | "[]"
-    ['value1']             | "[\"value1\"]"
-    ['value1', 'value2']   | "[\"value1\",\"value2\"]"
-    ['va"lu"e1', 'value2'] | "[\"va\\\"lu\\\"e1\",\"value2\"]"
-  }
-
-  def "test isNotBlank: #input"() {
+  def "test isNotBlank and isBlank: #input"() {
     when:
     def notBlank = Strings.isNotBlank(input)
+    def isBlank = Strings.isBlank(input)
 
     then:
     notBlank == expected
+    isBlank == !notBlank
 
     where:
     input        | expected
@@ -210,5 +139,40 @@ class StringsTest extends DDSpecification {
     "\n\t123 "   | true
     " 測 試    " | true
     "   𐢀𐢀𐢀𐢀"    | true
+  }
+
+  void 'test hexadecimal encoding of #value'() {
+    when:
+    def encoded = Strings.toHexString(value?.bytes)
+
+    then:
+    if (value == null) {
+      encoded == expected
+    } else {
+      encoded.equalsIgnoreCase(expected)
+    }
+
+    where:
+    value                   | expected
+    null                    | null
+    ''                      | ''
+    'zouzou@sansgluten.com' | '7A6F757A6F754073616E73676C7574656E2E636F6D'
+  }
+
+  void 'test coalesce: #first - #second'() {
+    when:
+    def combined = Strings.coalesce(first, second)
+
+    then:
+    expected == combined
+
+    where:
+    first | second | expected
+    "a"   | "b"    | "a"
+    "a"   | null   | "a"
+    null  | "b"    | "b"
+    ""    | "b"    | "b"
+    null  | null   | null
+    ""    | ""     | null
   }
 }

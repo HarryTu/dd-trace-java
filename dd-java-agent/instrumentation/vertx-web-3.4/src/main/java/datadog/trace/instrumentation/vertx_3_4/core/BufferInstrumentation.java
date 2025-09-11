@@ -10,6 +10,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesNoArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.agent.tooling.bytebuddy.iast.TaintableVisitor;
 import datadog.trace.agent.tooling.muzzle.Reference;
 import datadog.trace.api.iast.InstrumentationBridge;
@@ -18,8 +19,11 @@ import datadog.trace.api.iast.propagation.PropagationModule;
 import net.bytebuddy.asm.Advice;
 
 /** Propagation is way easier in io.vertx.core.buffer.impl.BufferImpl than in io.netty.Buffer */
-@AutoService(Instrumenter.class)
-public class BufferInstrumentation extends Instrumenter.Iast implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class BufferInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForSingleType,
+        Instrumenter.HasTypeAdvice,
+        Instrumenter.HasMethodAdvice {
 
   private final String className = BufferInstrumentation.class.getName();
 
@@ -38,13 +42,18 @@ public class BufferInstrumentation extends Instrumenter.Iast implements Instrume
   }
 
   @Override
-  public void adviceTransformations(final AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void typeAdvice(TypeTransformer transformer) {
+    transformer.applyAdvice(new TaintableVisitor(instrumentedType()));
+  }
+
+  @Override
+  public void methodAdvice(final MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(isPublic()).and(named("toString")), className + "$ToStringAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod().and(isPublic()).and(named("getByteBuf")).and(takesNoArguments()),
         className + "$GetByteBuffAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(isPublic())
             .and(named("appendBuffer"))
@@ -52,53 +61,36 @@ public class BufferInstrumentation extends Instrumenter.Iast implements Instrume
         className + "$AppendBufferAdvice");
   }
 
-  @Override
-  public AdviceTransformer transformer() {
-    return new VisitingTransformer(new TaintableVisitor(instrumentedType()));
-  }
-
   public static class ToStringAdvice {
-    @Advice.OnMethodExit
+    @Advice.OnMethodExit(suppress = Throwable.class)
     @Propagation
     public static void get(@Advice.This final Object self, @Advice.Return final String result) {
       final PropagationModule module = InstrumentationBridge.PROPAGATION;
-      if (module != null) {
-        try {
-          module.taintIfTainted(result, self);
-        } catch (final Throwable e) {
-          module.onUnexpectedException("toString threw", e);
-        }
+      if (result != null && module != null) {
+        module.taintStringIfTainted(result, self);
       }
     }
   }
 
   public static class GetByteBuffAdvice {
-    @Advice.OnMethodExit
+    @Advice.OnMethodExit(suppress = Throwable.class)
     @Propagation
     public static void get(@Advice.This final Object self, @Advice.Return final Object result) {
       final PropagationModule module = InstrumentationBridge.PROPAGATION;
-      if (module != null) {
-        try {
-          module.taintIfTainted(result, self);
-        } catch (final Throwable e) {
-          module.onUnexpectedException("getByteBuf threw", e);
-        }
+      if (result != null && module != null) {
+        module.taintObjectIfTainted(result, self);
       }
     }
   }
 
   public static class AppendBufferAdvice {
-    @Advice.OnMethodExit
+    @Advice.OnMethodExit(suppress = Throwable.class)
     @Propagation
     public static void get(
         @Advice.Argument(0) final Object buffer, @Advice.Return final Object result) {
       final PropagationModule module = InstrumentationBridge.PROPAGATION;
-      if (module != null) {
-        try {
-          module.taintIfTainted(result, buffer);
-        } catch (final Throwable e) {
-          module.onUnexpectedException("appendBuffer threw", e);
-        }
+      if (result != null && module != null) {
+        module.taintObjectIfTainted(result, buffer);
       }
     }
   }

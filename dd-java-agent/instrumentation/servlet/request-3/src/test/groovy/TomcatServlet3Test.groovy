@@ -3,6 +3,8 @@ import datadog.trace.agent.test.asserts.TraceAssert
 import datadog.trace.agent.test.base.HttpServer
 import datadog.trace.agent.test.naming.TestingGenericHttpNamingConventions
 import datadog.trace.api.CorrelationIdentifier
+import datadog.trace.api.iast.InstrumentationBridge
+import datadog.trace.api.iast.sink.ApplicationModule
 import datadog.trace.bootstrap.instrumentation.api.Tags
 import datadog.trace.instrumentation.servlet3.AsyncDispatcherDecorator
 import datadog.trace.instrumentation.servlet3.TestServlet3
@@ -17,8 +19,6 @@ import org.apache.catalina.valves.ValveBase
 import org.apache.tomcat.JarScanFilter
 import org.apache.tomcat.JarScanType
 import spock.lang.Shared
-import spock.lang.Unroll
-
 import javax.servlet.Servlet
 import javax.servlet.ServletException
 
@@ -30,7 +30,6 @@ import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.TIMEOU
 import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.TIMEOUT_ERROR
 import static datadog.trace.instrumentation.servlet3.TestServlet3.SERVLET_TIMEOUT
 
-@Unroll
 abstract class TomcatServlet3Test extends AbstractServlet3Test<Tomcat, Context> {
 
   @Shared
@@ -38,6 +37,11 @@ abstract class TomcatServlet3Test extends AbstractServlet3Test<Tomcat, Context> 
 
   @Override
   boolean testBlockingOnResponse() {
+    true
+  }
+
+  @Override
+  boolean testSessionId() {
     true
   }
 
@@ -200,6 +204,8 @@ abstract class TomcatServlet3Test extends AbstractServlet3Test<Tomcat, Context> 
 
     and:
     assertTraces(count) {
+      Set<Tuple2<String, String>> loggedSpanIds = accessLogValue.loggedIds.toSet()
+      assert loggedSpanIds.size() == count
       (1..count).eachWithIndex { val, i ->
         trace(spanCount(SUCCESS)) {
           sortSpansByStart()
@@ -213,9 +219,8 @@ abstract class TomcatServlet3Test extends AbstractServlet3Test<Tomcat, Context> 
           }
         }
 
-        def (String traceId, String spanId) = accessLogValue.loggedIds[i]
-        assert trace(i).get(0).traceId.toString() == traceId
-        assert trace(i).get(0).spanId.toString() == spanId
+        def ids = new Tuple2(trace(i).get(0).localRootSpan.traceId.toString(), trace(i).get(0).localRootSpan.spanId.toString())
+        assert ids in loggedSpanIds
       }
     }
 
@@ -251,8 +256,8 @@ abstract class TomcatServlet3Test extends AbstractServlet3Test<Tomcat, Context> 
       }
 
       def (String traceId, String spanId) = accessLogValue.loggedIds[0]
-      assert trace(0).get(0).traceId.toString() == traceId
-      assert trace(0).get(0).spanId.toString() == spanId
+      assert trace(0).get(0).localRootSpan.traceId.toString() == traceId
+      assert trace(0).get(0).localRootSpan.spanId.toString() == spanId
     }
 
     where:
@@ -323,7 +328,7 @@ class ErrorHandlerValve extends ErrorReportValve {
 }
 
 class TestAccessLogValve extends ValveBase implements AccessLog {
-  List<Tuple2<String, String>> loggedIds = []
+  List<Tuple2<String, String>> loggedIds = Collections.<Tuple2<String, String>>synchronizedList([])
 
   TestAccessLogValve() {
     super(true)
@@ -525,4 +530,56 @@ class TomcatServlet3TestDispatchAsync extends TomcatServlet3Test {
     setupDispatchServlets(context, TestServlet3.DispatchAsync)
     addServlet(context, "/dispatch/recursive", TestServlet3.DispatchRecursive)
   }
+}
+
+class IastTomcatServlet3ForkedTest extends TomcatServlet3TestSync {
+
+  @Override
+  Class<Servlet> servlet() {
+    return TestServlet3.GetSession
+  }
+
+  @Override
+  void configurePreAgent() {
+    super.configurePreAgent()
+    injectSysConfig('dd.iast.enabled', 'true')
+  }
+
+  void 'test no calls if no modules registered'() {
+    given:
+    final appModule = Mock(ApplicationModule)
+    def request = request(SUCCESS, "GET", null).build()
+
+    when:
+    client.newCall(request).execute()
+
+    then:
+    0 * appModule.onRealPath(_)
+    0 * appModule.checkSessionTrackingModes(_)
+    0 * _
+  }
+
+  void 'test that iast module is called'() {
+    given:
+    final appModule = Mock(ApplicationModule)
+    InstrumentationBridge.registerIastModule(appModule)
+    def request = request(SUCCESS, "GET", null).build()
+
+    when:
+    client.newCall(request).execute()
+
+    then:
+    1 *  appModule.onRealPath(_)
+    1 *  appModule.checkSessionTrackingModes(_)
+    0 * _
+
+    when:
+    client.newCall(request).execute()
+
+    then: //Only call once per application context
+    0 *  appModule.onRealPath(_)
+    0 *  appModule.checkSessionTrackingModes(_)
+    0 * _
+  }
+
 }

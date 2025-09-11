@@ -14,7 +14,6 @@ import datadog.common.container.ServerlessInfo;
 import datadog.communication.ddagent.DDAgentFeaturesDiscovery;
 import datadog.communication.ddagent.SharedCommunicationObjects;
 import datadog.trace.api.Config;
-import datadog.trace.api.StatsDClient;
 import datadog.trace.api.intake.TrackType;
 import datadog.trace.common.sampling.Sampler;
 import datadog.trace.common.sampling.SingleSpanSampler;
@@ -23,8 +22,10 @@ import datadog.trace.common.writer.ddagent.Prioritization;
 import datadog.trace.common.writer.ddintake.DDEvpProxyApi;
 import datadog.trace.common.writer.ddintake.DDIntakeApi;
 import datadog.trace.common.writer.ddintake.DDIntakeTrackTypeResolver;
-import datadog.trace.core.monitor.TracerHealthMetrics;
+import datadog.trace.core.monitor.HealthMetrics;
 import datadog.trace.util.Strings;
+import de.thetaphi.forbiddenapis.SuppressForbidden;
+import java.util.concurrent.TimeUnit;
 import okhttp3.HttpUrl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,17 +39,18 @@ public class WriterFactory {
       final SharedCommunicationObjects commObjects,
       final Sampler sampler,
       final SingleSpanSampler singleSpanSampler,
-      final StatsDClient statsDClient) {
+      final HealthMetrics healthMetrics) {
     return createWriter(
-        config, commObjects, sampler, singleSpanSampler, statsDClient, config.getWriterType());
+        config, commObjects, sampler, singleSpanSampler, healthMetrics, config.getWriterType());
   }
 
+  @SuppressForbidden
   public static Writer createWriter(
       final Config config,
       final SharedCommunicationObjects commObjects,
       final Sampler sampler,
       final SingleSpanSampler singleSpanSampler,
-      final StatsDClient statsDClient,
+      final HealthMetrics healthMetrics,
       String configuredType) {
 
     if (LOGGING_WRITER_TYPE.equals(configuredType)) {
@@ -60,13 +62,14 @@ public class WriterFactory {
           Strings.replace(configuredType, TRACE_STRUCTURE_WRITER_TYPE, ""));
     } else if (configuredType.startsWith(MULTI_WRITER_TYPE)) {
       return new MultiWriter(
-          config, commObjects, sampler, singleSpanSampler, statsDClient, configuredType);
+          config, commObjects, sampler, singleSpanSampler, healthMetrics, configuredType);
     }
 
     if (!DD_AGENT_WRITER_TYPE.equals(configuredType)
         && !DD_INTAKE_WRITER_TYPE.equals(configuredType)) {
       log.warn(
-          "Writer type not configured correctly: Type {} not recognized. Ignoring", configuredType);
+          "Writer type not configured correctly: Type {} not recognized. Ignoring ",
+          configuredType);
       configuredType = datadog.trace.api.ConfigDefaults.DEFAULT_AGENT_WRITER_TYPE;
     }
 
@@ -82,12 +85,22 @@ public class WriterFactory {
 
     // The AgentWriter doesn't support the CI Visibility protocol. If CI Visibility is
     // enabled, check if we can use the IntakeWriter instead.
-    if (DD_AGENT_WRITER_TYPE.equals(configuredType) && config.isCiVisibilityEnabled()) {
+    if (DD_AGENT_WRITER_TYPE.equals(configuredType) && (config.isCiVisibilityEnabled())) {
+      featuresDiscovery.discoverIfOutdated();
       if (featuresDiscovery.supportsEvpProxy() || config.isCiVisibilityAgentlessEnabled()) {
         configuredType = DD_INTAKE_WRITER_TYPE;
       } else {
         log.info(
             "CI Visibility functionality is limited. Please upgrade to Agent v6.40+ or v7.40+ or enable Agentless mode.");
+      }
+    }
+    if (DD_AGENT_WRITER_TYPE.equals(configuredType) && (config.isLlmObsEnabled())) {
+      featuresDiscovery.discoverIfOutdated();
+      if (featuresDiscovery.supportsEvpProxy() || config.isLlmObsAgentlessEnabled()) {
+        configuredType = DD_INTAKE_WRITER_TYPE;
+      } else {
+        log.info("LLM Observability functionality is limited.");
+        // TODO: add supported agent version to this log line for llm obs
       }
     }
 
@@ -101,17 +114,25 @@ public class WriterFactory {
           DDIntakeWriter.builder()
               .addTrack(trackType, remoteApi)
               .prioritization(prioritization)
-              .healthMetrics(new TracerHealthMetrics(statsDClient))
+              .healthMetrics(healthMetrics)
               .monitoring(commObjects.monitoring)
               .singleSpanSampler(singleSpanSampler)
               .flushIntervalMilliseconds(flushIntervalMilliseconds);
+
+      if (config.isCiVisibilityEnabled()) {
+        builder.flushTimeout(5, TimeUnit.SECONDS);
+      }
 
       if (config.isCiVisibilityCodeCoverageEnabled()) {
         final RemoteApi coverageApi =
             createDDIntakeRemoteApi(config, commObjects, featuresDiscovery, TrackType.CITESTCOV);
         builder.addTrack(TrackType.CITESTCOV, coverageApi);
       }
-
+      if (config.isLlmObsEnabled()) {
+        final RemoteApi llmobsApi =
+            createDDIntakeRemoteApi(config, commObjects, featuresDiscovery, TrackType.LLMOBS);
+        builder.addTrack(TrackType.LLMOBS, llmobsApi);
+      }
       remoteWriter = builder.build();
 
     } else { // configuredType == DDAgentWriter
@@ -141,17 +162,22 @@ public class WriterFactory {
         ddAgentApi.addResponseListener((RemoteResponseListener) sampler);
       }
 
-      remoteWriter =
+      DDAgentWriter.DDAgentWriterBuilder builder =
           DDAgentWriter.builder()
               .agentApi(ddAgentApi)
               .featureDiscovery(featuresDiscovery)
               .prioritization(prioritization)
-              .healthMetrics(new TracerHealthMetrics(statsDClient))
+              .healthMetrics(healthMetrics)
               .monitoring(commObjects.monitoring)
               .alwaysFlush(alwaysFlush)
               .spanSamplingRules(singleSpanSampler)
-              .flushIntervalMilliseconds(flushIntervalMilliseconds)
-              .build();
+              .flushIntervalMilliseconds(flushIntervalMilliseconds);
+
+      if (config.isCiVisibilityEnabled()) {
+        builder.flushTimeout(5, TimeUnit.SECONDS);
+      }
+
+      remoteWriter = builder.build();
     }
 
     return remoteWriter;
@@ -162,19 +188,35 @@ public class WriterFactory {
       SharedCommunicationObjects commObjects,
       DDAgentFeaturesDiscovery featuresDiscovery,
       TrackType trackType) {
-    if (featuresDiscovery.supportsEvpProxy() && !config.isCiVisibilityAgentlessEnabled()) {
+    featuresDiscovery.discoverIfOutdated();
+    boolean evpProxySupported = featuresDiscovery.supportsEvpProxy();
+    boolean useProxyApi =
+        (evpProxySupported && TrackType.LLMOBS == trackType && !config.isLlmObsAgentlessEnabled())
+            || (evpProxySupported
+                && (TrackType.CITESTCOV == trackType || TrackType.CITESTCYCLE == trackType)
+                && !config.isCiVisibilityAgentlessEnabled());
+
+    if (useProxyApi) {
       return DDEvpProxyApi.builder()
           .httpClient(commObjects.okHttpClient)
           .agentUrl(commObjects.agentUrl)
           .evpProxyEndpoint(featuresDiscovery.getEvpProxyEndpoint())
           .trackType(trackType)
+          .compressionEnabled(featuresDiscovery.supportsContentEncodingHeadersWithEvpProxy())
           .build();
-
     } else {
       HttpUrl hostUrl = null;
+      String llmObsAgentlessUrl = config.getLlMObsAgentlessUrl();
+
       if (config.getCiVisibilityAgentlessUrl() != null) {
         hostUrl = HttpUrl.get(config.getCiVisibilityAgentlessUrl());
         log.info("Using host URL '{}' to report CI Visibility traces in Agentless mode.", hostUrl);
+      } else if (config.isLlmObsEnabled()
+          && config.isLlmObsAgentlessEnabled()
+          && llmObsAgentlessUrl != null
+          && !llmObsAgentlessUrl.isEmpty()) {
+        hostUrl = HttpUrl.get(llmObsAgentlessUrl);
+        log.info("Using host URL '{}' to report LLM Obs traces in Agentless mode.", hostUrl);
       }
       return DDIntakeApi.builder()
           .hostUrl(hostUrl)

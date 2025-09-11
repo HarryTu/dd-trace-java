@@ -15,6 +15,8 @@ import net.bytebuddy.jar.asm.Type
 import net.bytebuddy.matcher.ElementMatcher
 import net.bytebuddy.utility.JavaModule
 import net.bytebuddy.utility.nullability.MaybeNull
+
+import java.lang.reflect.Constructor
 import java.security.MessageDigest
 
 
@@ -22,18 +24,19 @@ import java.security.MessageDigest
 import java.lang.reflect.Method
 import java.security.ProtectionDomain
 
+import static datadog.trace.agent.tooling.csi.CallSiteAdvice.AdviceType.BEFORE
 import static net.bytebuddy.matcher.ElementMatchers.any
 import static net.bytebuddy.matcher.ElementMatchers.named
 
 @CompileDynamic
 class BaseCallSiteTest extends DDSpecification {
 
-  protected CallSites mockCallSites(final CallSiteAdvice advice, final Pointcut target, final String... helpers) {
-    return Mock(CallSites) {
+  protected CallSites mockCallSites(final byte type = BEFORE, final CallSiteAdvice advice, final Pointcut target, final String... helpers) {
+    return Stub(CallSites) {
       accept(_ as CallSites.Container) >> {
         final container = it[0] as CallSites.Container
         container.addHelpers(helpers)
-        container.addAdvice(target.type, target.method, target.descriptor, advice)
+        container.addAdvice(type, target.type, target.method, target.descriptor, advice)
       }
     }
   }
@@ -41,11 +44,17 @@ class BaseCallSiteTest extends DDSpecification {
   protected Advices mockAdvices(final Collection<CallSites> callSites) {
     final advices = [:] as Map<String, Map<String, Map<String, CallSiteAdvice>>>
     final helpers = [] as Set<String>
-    final container = Mock(CallSites.Container) {
-      addAdvice(_ as String, _ as String, _ as String, _ as CallSiteAdvice) >> {
-        advices.computeIfAbsent(it[0] as String, t -> [:])
-        .computeIfAbsent(it[1] as String, m -> [:])
-        .put(it[2] as String, it[3] as CallSiteAdvice)
+    final container = Stub(CallSites.Container) {
+      addAdvice(_, _ as String, _ as String, _ as String, _ as CallSiteAdvice) >> {
+        final type = it[0] as byte
+        final owner = it[1] as String
+        final method = it[2] as String
+        final descriptor = it[3] as String
+        final advice = it[4] as CallSiteAdvice
+        advices
+        .computeIfAbsent(owner, t -> [:])
+        .computeIfAbsent(method, m -> [:])
+        .put(descriptor, Advices.TypedAdvice.withType(advice, type))
       }
       addHelpers(_ as String[]) >> {
         Collections.addAll(helpers, it[0] as String[])
@@ -58,7 +67,7 @@ class BaseCallSiteTest extends DDSpecification {
       final String owner, final String name, final String desc ->
       return advices.get(owner)?.get(name)?.get(desc)
     }
-    return Mock(Advices) {
+    return Stub(Advices) {
       isEmpty() >> advices.isEmpty()
       findAdvices(_ as DynamicType.Builder, _ as TypeDescription, _ as ClassLoader) >> it
       findAdvice(_ as Handle) >> {
@@ -74,11 +83,22 @@ class BaseCallSiteTest extends DDSpecification {
       getHelpers() >> {
         helpers as String[]
       }
+      typeOf(_ as CallSiteAdvice) >> {
+        ((Advices.TypedAdvice) it[0]).type
+      }
     }
   }
 
   protected static Pointcut stringConcatPointcut() {
     return buildPointcut(String.getDeclaredMethod('concat', String))
+  }
+
+  protected static Pointcut stringBuilderSetLengthPointcut() {
+    return buildPointcut(StringBuilder.getDeclaredMethod('setLength', int))
+  }
+
+  protected static Pointcut stringReaderPointcut() {
+    return buildPointcut(StringReader.getDeclaredConstructor(String))
   }
 
   protected static Pointcut messageDigestGetInstancePointcut() {
@@ -98,6 +118,10 @@ class BaseCallSiteTest extends DDSpecification {
 
   protected static Pointcut buildPointcut(final Method executable) {
     return buildPointcut(Type.getType(executable.getDeclaringClass()).internalName, executable.name, Type.getType(executable).descriptor)
+  }
+
+  protected static Pointcut buildPointcut(final Constructor<?> executable) {
+    return buildPointcut(Type.getType(executable.getDeclaringClass()).internalName, "<init>", Type.getType(executable).descriptor)
   }
 
   protected static Pointcut buildPointcut(final String type, final String method, final String descriptor) {
@@ -157,6 +181,13 @@ class BaseCallSiteTest extends DDSpecification {
     return clazz.getConstructor().newInstance()
   }
 
+  protected static Class<?> loadClass(final Type type,
+  final byte[] data,
+  final ClassLoader loader = Thread.currentThread().contextClassLoader) {
+    final classLoader = new ByteArrayClassLoader(loader, [(type.className): data])
+    return classLoader.loadClass(type.className)
+  }
+
   protected static byte[] transformType(final Type source,
   final Type target,
   final CallSiteTransformer transformer,
@@ -184,5 +215,10 @@ class BaseCallSiteTest extends DDSpecification {
     String type
     String method
     String descriptor
+
+    @Override
+    String toString() {
+      return descriptor
+    }
   }
 }

@@ -1,11 +1,12 @@
 package datadog.trace.instrumentation.jetty12;
 
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
+import static datadog.trace.bootstrap.instrumentation.api.AgentSpan.fromContext;
 import static datadog.trace.bootstrap.instrumentation.decorator.HttpServerDecorator.DD_SPAN_ATTRIBUTE;
+import static datadog.trace.instrumentation.jetty12.JettyDecorator.DECORATE;
 
+import datadog.context.Context;
+import datadog.context.ContextScope;
 import datadog.trace.api.CorrelationIdentifier;
-import datadog.trace.api.GlobalTracer;
-import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import net.bytebuddy.asm.Advice;
 import org.eclipse.jetty.server.Request;
@@ -21,23 +22,23 @@ public class JettyServerAdvice {
       Request req = channel.getRequest();
       Object existingSpan = req.getAttribute(DD_SPAN_ATTRIBUTE);
       if (existingSpan instanceof AgentSpan) {
-        try (final AgentScope scope = activateSpan((AgentSpan) existingSpan)) {
+        try (final ContextScope scope = ((AgentSpan) existingSpan).attach()) {
           ret = JettyRunnableWrapper.wrapIfNeeded(ret);
           return;
         }
       }
 
-      final AgentSpan.Context.Extracted extractedContext = JettyDecorator.DECORATE.extract(req);
-      final AgentSpan span = JettyDecorator.DECORATE.startSpan(req, extractedContext);
-      try (final AgentScope scope = activateSpan(span)) {
-        scope.setAsyncPropagation(true);
+      final Context parentContext = DECORATE.extract(req);
+      final Context context = DECORATE.startSpan(req, parentContext);
+      try (final ContextScope ignored = context.attach()) {
+        final AgentSpan span = fromContext(context);
         span.setMeasured(true);
-        JettyDecorator.DECORATE.afterStart(span);
-        JettyDecorator.DECORATE.onRequest(span, req, req, extractedContext);
+        DECORATE.afterStart(span);
+        DECORATE.onRequest(span, req, req, parentContext);
 
         req.setAttribute(DD_SPAN_ATTRIBUTE, span);
-        req.setAttribute(CorrelationIdentifier.getTraceIdKey(), GlobalTracer.get().getTraceId());
-        req.setAttribute(CorrelationIdentifier.getSpanIdKey(), GlobalTracer.get().getSpanId());
+        req.setAttribute(CorrelationIdentifier.getTraceIdKey(), CorrelationIdentifier.getTraceId());
+        req.setAttribute(CorrelationIdentifier.getSpanIdKey(), CorrelationIdentifier.getSpanId());
         ret = JettyRunnableWrapper.wrapIfNeeded(ret);
       }
     }
@@ -54,8 +55,8 @@ public class JettyServerAdvice {
       Object spanObj = req.getAttribute(DD_SPAN_ATTRIBUTE);
       if (spanObj instanceof AgentSpan) {
         final AgentSpan span = (AgentSpan) spanObj;
-        JettyDecorator.DECORATE.onResponse(span, channel);
-        JettyDecorator.DECORATE.beforeFinish(span);
+        DECORATE.onResponse(span, channel);
+        DECORATE.beforeFinish(span);
         span.finish();
       }
     }

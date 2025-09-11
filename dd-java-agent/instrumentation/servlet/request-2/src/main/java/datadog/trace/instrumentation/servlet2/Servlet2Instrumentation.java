@@ -12,13 +12,14 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import java.util.Map;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public final class Servlet2Instrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public final class Servlet2Instrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   public Servlet2Instrumentation() {
     super("servlet", "servlet-2");
@@ -30,11 +31,11 @@ public final class Servlet2Instrumentation extends Instrumenter.Tracing
   }
 
   // Avoid matching servlet 3 which has its own instrumentation
-  static final ElementMatcher<ClassLoader> NOT_SERVLET_3 =
+  static final ElementMatcher.Junction<ClassLoader> NOT_SERVLET_3 =
       not(hasClassNamed("javax.servlet.AsyncEvent"));
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     return NOT_SERVLET_3;
   }
 
@@ -70,8 +71,8 @@ public final class Servlet2Instrumentation extends Instrumenter.Tracing
    * method.
    */
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         namedOneOf("doFilter", "service")
             .and(takesArgument(0, named("javax.servlet.ServletRequest")))
             .and(takesArgument(1, named("javax.servlet.ServletResponse")))

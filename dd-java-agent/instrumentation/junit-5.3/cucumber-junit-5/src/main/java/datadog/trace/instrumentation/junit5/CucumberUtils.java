@@ -1,7 +1,8 @@
 package datadog.trace.instrumentation.junit5;
 
 import datadog.trace.api.Pair;
-import datadog.trace.api.civisibility.config.SkippableTest;
+import datadog.trace.api.civisibility.config.TestIdentifier;
+import datadog.trace.api.civisibility.config.TestSourceData;
 import java.io.InputStream;
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -17,6 +18,13 @@ import org.junit.platform.engine.UniqueId;
 import org.junit.platform.engine.support.descriptor.ClasspathResourceSource;
 
 public abstract class CucumberUtils {
+
+  static {
+    TestDataFactory.register(
+        JUnitPlatformUtils.ENGINE_ID_CUCUMBER,
+        CucumberUtils::toTestIdentifier,
+        d -> TestSourceData.UNKNOWN);
+  }
 
   public static @Nullable String getCucumberVersion(TestEngine cucumberEngine) {
     try (InputStream cucumberPropsStream =
@@ -92,7 +100,14 @@ public abstract class CucumberUtils {
     return "feature".equals(lastSegment.getType());
   }
 
-  public static SkippableTest toSkippableTest(TestDescriptor testDescriptor) {
+  public static TestDescriptor getFeatureDescriptor(TestDescriptor testDescriptor) {
+    while (testDescriptor != null && !isFeature(testDescriptor.getUniqueId())) {
+      testDescriptor = testDescriptor.getParent().orElse(null);
+    }
+    return testDescriptor;
+  }
+
+  public static TestIdentifier toTestIdentifier(TestDescriptor testDescriptor) {
     TestSource testSource = testDescriptor.getSource().orElse(null);
     if (testSource instanceof ClasspathResourceSource) {
       ClasspathResourceSource classpathResourceSource = (ClasspathResourceSource) testSource;
@@ -102,7 +117,7 @@ public abstract class CucumberUtils {
           getFeatureAndScenarioNames(testDescriptor, classpathResourceName);
       String testSuiteName = names.getLeft();
       String testName = names.getRight();
-      return new SkippableTest(testSuiteName, testName, null, null);
+      return new TestIdentifier(testSuiteName, testName, null);
 
     } else {
       return null;

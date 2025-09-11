@@ -1,14 +1,14 @@
 package datadog.trace.instrumentation.kafka_streams;
 
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
+import static datadog.trace.api.datastreams.DataStreamsContext.create;
+import static datadog.trace.api.datastreams.DataStreamsTags.Direction.INBOUND;
+import static datadog.trace.api.datastreams.DataStreamsTags.createWithGroup;
+import static datadog.trace.bootstrap.instrumentation.api.AgentPropagation.DSM_CONCERN;
+import static datadog.trace.bootstrap.instrumentation.api.AgentPropagation.extractContextAndGetSpanContext;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.propagate;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
-import static datadog.trace.core.datastreams.TagsProcessor.DIRECTION_IN;
-import static datadog.trace.core.datastreams.TagsProcessor.DIRECTION_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.GROUP_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.TOPIC_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.TYPE_TAG;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.traceConfig;
 import static datadog.trace.instrumentation.kafka_common.StreamingContext.STREAMING_CONTEXT;
 import static datadog.trace.instrumentation.kafka_common.Utils.computePayloadSizeBytes;
 import static datadog.trace.instrumentation.kafka_streams.KafkaStreamsDecorator.BROKER_DECORATE;
@@ -29,14 +29,19 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
+import datadog.context.propagation.Propagator;
+import datadog.context.propagation.Propagators;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.Config;
+import datadog.trace.api.datastreams.DataStreamsContext;
+import datadog.trace.api.datastreams.DataStreamsTags;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import datadog.trace.instrumentation.kafka_clients.TracingIterableDelegator;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import net.bytebuddy.asm.Advice;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -47,9 +52,9 @@ import org.apache.kafka.streams.processor.internals.ProcessorRecordContext;
 import org.apache.kafka.streams.processor.internals.StampedRecord;
 import org.apache.kafka.streams.processor.internals.StreamTask;
 
-@AutoService(Instrumenter.class)
-public class KafkaStreamTaskInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class KafkaStreamTaskInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public KafkaStreamTaskInstrumentation() {
     super("kafka", "kafka-streams");
@@ -63,6 +68,7 @@ public class KafkaStreamTaskInstrumentation extends Instrumenter.Tracing
   @Override
   public String[] helperClassNames() {
     return new String[] {
+      "datadog.trace.instrumentation.kafka_clients.TextMapInjectAdapterInterface",
       "datadog.trace.instrumentation.kafka_clients.TracingIterableDelegator",
       "datadog.trace.instrumentation.kafka_common.Utils",
       "datadog.trace.instrumentation.kafka_common.StreamingContext",
@@ -84,32 +90,32 @@ public class KafkaStreamTaskInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
+  public void methodAdvice(MethodTransformer transformer) {
     // StreamsConfig was the 4th input argument to StreamTask's constructor in kafka versions 2.6 to
     // 3.1.
     // Starting from 3.2 StreamsConfig was no longer an input argument into StreamTask.
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isConstructor().and(takesArgument(4, named("org.apache.kafka.streams.StreamsConfig"))),
         KafkaStreamTaskInstrumentation.class.getName() + "$Constructor4Advice");
 
     // StreamsConfig was the 5th input argument to StreamTask's constructor in kafka versions 1.1 to
     // 2.5
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isConstructor().and(takesArgument(5, named("org.apache.kafka.streams.StreamsConfig"))),
         KafkaStreamTaskInstrumentation.class.getName() + "$Constructor5Advice");
 
     // StreamsConfig was the 6th input argument to StreamTask's constructor in kafka versions 0.11
     // to 1.0.
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isConstructor().and(takesArgument(6, named("org.apache.kafka.streams.StreamsConfig"))),
         KafkaStreamTaskInstrumentation.class.getName() + "$Constructor6Advice");
 
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod().and(named("addRecords")).and(takesArgument(1, named("java.lang.Iterable"))),
         KafkaStreamTaskInstrumentation.class.getName() + "$UnwrapIterableAdvice");
 
     // Before 2.7
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(named("updateProcessorContext"))
             .and(
@@ -120,7 +126,7 @@ public class KafkaStreamTaskInstrumentation extends Instrumenter.Tracing
                     1, named("org.apache.kafka.streams.processor.internals.ProcessorNode"))),
         KafkaStreamTaskInstrumentation.class.getName() + "$StartSpanAdvice");
     // After 2.7
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(named("updateProcessorContext"))
             .and(
@@ -132,7 +138,7 @@ public class KafkaStreamTaskInstrumentation extends Instrumenter.Tracing
                     named("org.apache.kafka.streams.processor.internals.ProcessorRecordContext"))),
         KafkaStreamTaskInstrumentation.class.getName() + "$StartSpanAdvice27");
 
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(isPublic())
             .and(named("process"))
@@ -226,7 +232,8 @@ public class KafkaStreamTaskInstrumentation extends Instrumenter.Tracing
       StreamTaskContext streamTaskContext =
           InstrumentationContext.get(StreamTask.class, StreamTaskContext.class).get(task);
       if (!Config.get().isKafkaClientPropagationDisabledForTopic(record.topic())) {
-        final AgentSpan.Context extractedContext = propagate().extract(record, SR_GETTER);
+        final AgentSpanContext extractedContext =
+            extractContextAndGetSpanContext(record, SR_GETTER);
         long timeInQueueStart = SR_GETTER.extractTimeInQueueStart(record);
         if (timeInQueueStart == 0 || !TIME_IN_QUEUE_ENABLED) {
           span = startSpan(KAFKA_CONSUME, extractedContext);
@@ -240,29 +247,24 @@ public class KafkaStreamTaskInstrumentation extends Instrumenter.Tracing
           // The queueSpan will be finished after inner span has been activated to ensure that
           // spans are written out together by TraceStructureWriter when running in strict mode
         }
-        LinkedHashMap<String, String> sortedTags = new LinkedHashMap<>();
-        sortedTags.put(DIRECTION_TAG, DIRECTION_IN);
+
+        String applicationId = null;
         if (streamTaskContext != null) {
-          String applicationId = streamTaskContext.getApplicationId();
-          if (applicationId != null) {
-            // Kafka Streams uses the application ID as the consumer group.id.
-            sortedTags.put(GROUP_TAG, applicationId);
-          }
+          applicationId = streamTaskContext.getApplicationId();
         }
-        sortedTags.put(TOPIC_TAG, record.topic());
-        sortedTags.put(TYPE_TAG, "kafka");
+        DataStreamsTags tags = createWithGroup("kafka", INBOUND, applicationId, record.topic());
 
         final long payloadSize =
-            span.traceConfig().isDataStreamsEnabled() ? computePayloadSizeBytes(record.value) : 0;
-        if (STREAMING_CONTEXT.empty()) {
+            traceConfig().isDataStreamsEnabled() ? computePayloadSizeBytes(record.value) : 0;
+        if (STREAMING_CONTEXT.isDisabledForTopic(record.topic())) {
           AgentTracer.get()
               .getDataStreamsMonitoring()
-              .setCheckpoint(span, sortedTags, record.timestamp, payloadSize);
+              .setCheckpoint(span, create(tags, record.timestamp, payloadSize));
         } else {
           if (STREAMING_CONTEXT.isSourceTopic(record.topic())) {
-            propagate()
-                .injectPathwayContext(
-                    span, record, SR_SETTER, sortedTags, record.timestamp, payloadSize);
+            Propagator dsmPropagator = Propagators.forConcern(DSM_CONCERN);
+            DataStreamsContext dsmContext = create(tags, record.timestamp, payloadSize);
+            dsmPropagator.inject(span.with(dsmContext), record, SR_SETTER);
           }
         }
       } else {
@@ -301,7 +303,8 @@ public class KafkaStreamTaskInstrumentation extends Instrumenter.Tracing
       StreamTaskContext streamTaskContext =
           InstrumentationContext.get(StreamTask.class, StreamTaskContext.class).get(task);
       if (!Config.get().isKafkaClientPropagationDisabledForTopic(record.topic())) {
-        final AgentSpan.Context extractedContext = propagate().extract(record, PR_GETTER);
+        final AgentSpanContext extractedContext =
+            extractContextAndGetSpanContext(record, PR_GETTER);
         long timeInQueueStart = PR_GETTER.extractTimeInQueueStart(record);
         if (timeInQueueStart == 0 || !TIME_IN_QUEUE_ENABLED) {
           span = startSpan(KAFKA_CONSUME, extractedContext);
@@ -316,17 +319,11 @@ public class KafkaStreamTaskInstrumentation extends Instrumenter.Tracing
           // spans are written out together by TraceStructureWriter when running in strict mode
         }
 
-        LinkedHashMap<String, String> sortedTags = new LinkedHashMap<>();
-        sortedTags.put(DIRECTION_TAG, DIRECTION_IN);
+        String applicationId = null;
         if (streamTaskContext != null) {
-          String applicationId = streamTaskContext.getApplicationId();
-          if (applicationId != null) {
-            // Kafka Streams uses the application ID as the consumer group.id.
-            sortedTags.put(GROUP_TAG, applicationId);
-          }
+          applicationId = streamTaskContext.getApplicationId();
         }
-        sortedTags.put(TOPIC_TAG, record.topic());
-        sortedTags.put(TYPE_TAG, "kafka");
+        DataStreamsTags tags = createWithGroup("kafka", INBOUND, applicationId, record.topic());
 
         long payloadSize = 0;
         // we have to go through Object to get the RecordMetadata here because the class of `record`
@@ -336,15 +333,15 @@ public class KafkaStreamTaskInstrumentation extends Instrumenter.Tracing
           payloadSize = metadata.serializedKeySize() + metadata.serializedValueSize();
         }
 
-        if (STREAMING_CONTEXT.empty()) {
+        if (STREAMING_CONTEXT.isDisabledForTopic(record.topic())) {
           AgentTracer.get()
               .getDataStreamsMonitoring()
-              .setCheckpoint(span, sortedTags, record.timestamp(), payloadSize);
+              .setCheckpoint(span, create(tags, record.timestamp(), payloadSize));
         } else {
           if (STREAMING_CONTEXT.isSourceTopic(record.topic())) {
-            propagate()
-                .injectPathwayContext(
-                    span, record, PR_SETTER, sortedTags, record.timestamp(), payloadSize);
+            Propagator dsmPropagator = Propagators.forConcern(DSM_CONCERN);
+            DataStreamsContext dsmContext = create(tags, record.timestamp(), payloadSize);
+            dsmPropagator.inject(span.with(dsmContext), record, PR_SETTER);
           }
         }
       } else {

@@ -6,12 +6,14 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import java.util.List;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
+@AutoService(InstrumenterModule.class)
 public final class AnnotationSubstitutionProcessorInstrumentation
-    extends AbstractNativeImageInstrumentation implements Instrumenter.ForSingleType {
+    extends AbstractNativeImageInstrumentation
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   @Override
   public String instrumentedType() {
@@ -19,13 +21,13 @@ public final class AnnotationSubstitutionProcessorInstrumentation
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("lookup"))
             .and(takesArgument(0, named("jdk.vm.ci.meta.ResolvedJavaField"))),
         packageName + ".DeleteFieldAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod().and(named("findTargetClasses")),
         AnnotationSubstitutionProcessorInstrumentation.class.getName()
             + "$FindTargetClassesAdvice");
@@ -34,8 +36,11 @@ public final class AnnotationSubstitutionProcessorInstrumentation
   @Override
   public String[] helperClassNames() {
     return new String[] {
-      packageName + ".Target_org_jctools_counters_FixedSizeStripedLongCounterFields",
-      packageName + ".Target_org_jctools_util_UnsafeRefArrayAccess"
+      packageName + ".Target_datadog_jctools_counters_FixedSizeStripedLongCounterFields",
+      packageName + ".Target_datadog_jctools_util_UnsafeRefArrayAccess",
+      packageName + ".Target_org_datadog_jmxfetch_App",
+      packageName + ".Target_org_datadog_jmxfetch_Status",
+      packageName + ".Target_org_datadog_jmxfetch_reporter_JsonReporter",
     };
   }
 
@@ -46,16 +51,22 @@ public final class AnnotationSubstitutionProcessorInstrumentation
       "jdk.vm.ci.meta.ResolvedJavaType",
       "jdk.vm.ci.meta.ResolvedJavaField",
       // ignore helper class names as usual
-      packageName + ".Target_org_jctools_counters_FixedSizeStripedLongCounterFields",
-      packageName + ".Target_org_jctools_util_UnsafeRefArrayAccess"
+      packageName + ".Target_datadog_jctools_counters_FixedSizeStripedLongCounterFields",
+      packageName + ".Target_datadog_jctools_util_UnsafeRefArrayAccess",
+      packageName + ".Target_org_datadog_jmxfetch_App",
+      packageName + ".Target_org_datadog_jmxfetch_Status",
+      packageName + ".Target_org_datadog_jmxfetch_reporter_JsonReporter",
     };
   }
 
   public static class FindTargetClassesAdvice {
     @Advice.OnMethodExit(suppress = Throwable.class)
     public static void onExit(@Advice.Return(readOnly = false) List<Class<?>> result) {
-      result.add(Target_org_jctools_counters_FixedSizeStripedLongCounterFields.class);
-      result.add(Target_org_jctools_util_UnsafeRefArrayAccess.class);
+      result.add(Target_datadog_jctools_counters_FixedSizeStripedLongCounterFields.class);
+      result.add(Target_datadog_jctools_util_UnsafeRefArrayAccess.class);
+      result.add(Target_org_datadog_jmxfetch_App.class);
+      result.add(Target_org_datadog_jmxfetch_Status.class);
+      result.add(Target_org_datadog_jmxfetch_reporter_JsonReporter.class);
     }
   }
 }

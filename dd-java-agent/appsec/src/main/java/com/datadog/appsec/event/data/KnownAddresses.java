@@ -93,12 +93,54 @@ public interface KnownAddresses {
   Address<CaseInsensitiveMap<List<String>>> HEADERS_NO_COOKIES =
       new Address<>("server.request.headers.no_cookies");
 
+  Address<Object> GRPC_SERVER_METHOD = new Address<>("grpc.server.method");
+
   Address<Object> GRPC_SERVER_REQUEST_MESSAGE = new Address<>("grpc.server.request.message");
 
   // XXX: Not really used yet, but it's a known address and we should not treat it as unknown.
   Address<Object> GRPC_SERVER_REQUEST_METADATA = new Address<>("grpc.server.request.metadata");
 
+  // XXX: Not really used yet, but it's a known address and we should not treat it as unknown.
+  Address<Object> GRAPHQL_SERVER_ALL_RESOLVERS = new Address<>("graphql.server.all_resolvers");
+
+  // XXX: Not really used yet, but it's a known address and we should not treat it as unknown.
+  Address<Object> GRAPHQL_SERVER_RESOLVER = new Address<>("graphql.server.resolver");
+
+  Address<Map<String, ?>> SERVER_GRAPHQL_ALL_RESOLVERS =
+      new Address<>("server.graphql.all_resolvers");
+
   Address<String> USER_ID = new Address<>("usr.id");
+
+  Address<String> USER_LOGIN = new Address<>("usr.login");
+
+  Address<String> SESSION_ID = new Address<>("usr.session_id");
+
+  /** The URL of a network resource being requested (outgoing request) */
+  Address<String> IO_NET_URL = new Address<>("server.io.net.url");
+
+  /** The representation of opened file on the filesystem */
+  Address<String> IO_FS_FILE = new Address<>("server.io.fs.file");
+
+  /** The database type (ex: mysql, postgresql, sqlite) */
+  Address<String> DB_TYPE = new Address<>("server.db.system");
+
+  /** The SQL query being executed */
+  Address<String> DB_SQL_QUERY = new Address<>("server.db.statement");
+
+  /** Login failure business event */
+  Address<String> LOGIN_FAILURE = new Address<>("server.business_logic.users.login.failure");
+
+  /** Login success business event */
+  Address<String> LOGIN_SUCCESS = new Address<>("server.business_logic.users.login.success");
+
+  /** Signup business event */
+  Address<String> SIGN_UP = new Address<>("server.business_logic.users.signup");
+
+  /** The Exec command being executed */
+  Address<String> EXEC_CMD = new Address<>("server.sys.exec.cmd");
+
+  /** The Shell command being executed */
+  Address<String> SHELL_CMD = new Address<>("server.sys.shell.cmd");
 
   Address<Map<String, Object>> WAF_CONTEXT_PROCESSOR = new Address<>("waf.context.processor");
 
@@ -144,14 +186,44 @@ public interface KnownAddresses {
         return REQUEST_QUERY;
       case "server.request.headers.no_cookies":
         return HEADERS_NO_COOKIES;
+      case "grpc.server.method":
+        return GRPC_SERVER_METHOD;
       case "grpc.server.request.message":
         return GRPC_SERVER_REQUEST_MESSAGE;
       case "grpc.server.request.metadata":
         return GRPC_SERVER_REQUEST_METADATA;
+      case "graphql.server.all_resolvers":
+        return GRAPHQL_SERVER_ALL_RESOLVERS;
+      case "graphql.server.resolver":
+        return GRAPHQL_SERVER_RESOLVER;
+      case "server.graphql.all_resolvers":
+        return SERVER_GRAPHQL_ALL_RESOLVERS;
       case "usr.id":
         return USER_ID;
+      case "usr.login":
+        return USER_LOGIN;
+      case "usr.session_id":
+        return SESSION_ID;
+      case "server.io.net.url":
+        return IO_NET_URL;
+      case "server.io.fs.file":
+        return IO_FS_FILE;
+      case "server.db.system":
+        return DB_TYPE;
+      case "server.db.statement":
+        return DB_SQL_QUERY;
       case "waf.context.processor":
         return WAF_CONTEXT_PROCESSOR;
+      case "server.business_logic.users.login.success":
+        return LOGIN_SUCCESS;
+      case "server.business_logic.users.login.failure":
+        return LOGIN_FAILURE;
+      case "server.business_logic.users.signup":
+        return SIGN_UP;
+      case "server.sys.exec.cmd":
+        return EXEC_CMD;
+      case "server.sys.shell.cmd":
+        return SHELL_CMD;
       default:
         return null;
     }

@@ -10,7 +10,7 @@ public class CompilerAidedSourcePathResolver implements SourcePathResolver {
   private final String repoRoot;
 
   public CompilerAidedSourcePathResolver(String repoRoot) {
-    this.repoRoot = repoRoot.endsWith(File.separator) ? repoRoot : (repoRoot + File.separator);
+    this.repoRoot = repoRoot.endsWith(File.separator) ? repoRoot : repoRoot + File.separator;
   }
 
   @Nullable

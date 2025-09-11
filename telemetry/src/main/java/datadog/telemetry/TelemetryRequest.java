@@ -2,21 +2,33 @@ package datadog.telemetry;
 
 import datadog.common.container.ContainerInfo;
 import datadog.communication.ddagent.TracerVersion;
+import datadog.environment.EnvironmentVariables;
 import datadog.telemetry.api.DistributionSeries;
 import datadog.telemetry.api.Integration;
 import datadog.telemetry.api.LogMessage;
 import datadog.telemetry.api.Metric;
 import datadog.telemetry.api.RequestType;
 import datadog.telemetry.dependency.Dependency;
+import datadog.trace.api.Config;
 import datadog.trace.api.ConfigSetting;
 import datadog.trace.api.DDTags;
 import datadog.trace.api.InstrumenterConfig;
 import datadog.trace.api.ProductActivation;
+import datadog.trace.api.telemetry.Endpoint;
+import datadog.trace.api.telemetry.ProductChange;
+import datadog.trace.api.telemetry.ProductChange.ProductType;
 import java.io.IOException;
+import java.util.EnumMap;
+import java.util.Map;
 import okhttp3.MediaType;
 import okhttp3.Request;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TelemetryRequest {
+
+  private static final Logger log = LoggerFactory.getLogger(TelemetryRequest.class);
+
   static final String API_VERSION = "v2";
   static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
 
@@ -27,7 +39,7 @@ public class TelemetryRequest {
   private final boolean debug;
   private final TelemetryRequestBody requestBody;
 
-  public TelemetryRequest(
+  TelemetryRequest(
       EventSource eventSource,
       EventSink eventSink,
       long messageBytesSoftLimit,
@@ -59,6 +71,10 @@ public class TelemetryRequest {
     if (containerId != null) {
       builder.addHeader("Datadog-Container-ID", containerId);
     }
+    final String entityId = ContainerInfo.getEntityId();
+    if (entityId != null) {
+      builder.addHeader("Datadog-Entity-ID", entityId);
+    }
 
     if (debug) {
       builder.addHeader("DD-Telemetry-Debug-Enabled", "true");
@@ -85,14 +101,25 @@ public class TelemetryRequest {
   }
 
   public void writeProducts() {
-    InstrumenterConfig instrumenterConfig = InstrumenterConfig.get();
     try {
-      boolean appsecEnabled =
-          instrumenterConfig.getAppSecActivation() != ProductActivation.FULLY_DISABLED;
-      boolean profilerEnabled = instrumenterConfig.isProfilingEnabled();
-      requestBody.writeProducts(appsecEnabled, profilerEnabled);
+      requestBody.writeProducts(
+          InstrumenterConfig.get().getAppSecActivation() != ProductActivation.FULLY_DISABLED,
+          InstrumenterConfig.get().isProfilingEnabled(),
+          Config.get().isDynamicInstrumentationEnabled());
     } catch (IOException e) {
       throw new TelemetryRequestBody.SerializationException("products", e);
+    }
+  }
+
+  public void writeInstallSignature() {
+    String installId = EnvironmentVariables.get("DD_INSTRUMENTATION_INSTALL_ID");
+    String installType = EnvironmentVariables.get("DD_INSTRUMENTATION_INSTALL_TYPE");
+    String installTime = EnvironmentVariables.get("DD_INSTRUMENTATION_INSTALL_TIME");
+
+    try {
+      requestBody.writeInstallSignature(installId, installType, installTime);
+    } catch (IOException e) {
+      throw new TelemetryRequestBody.SerializationException("install-signature", e);
     }
   }
 
@@ -178,6 +205,53 @@ public class TelemetryRequest {
       requestBody.endLogs();
     } catch (IOException e) {
       throw new TelemetryRequestBody.SerializationException("logs-message", e);
+    }
+  }
+
+  public void writeChangedProducts() {
+    if (!isWithinSizeLimits() || !eventSource.hasProductChangeEvent()) {
+      return;
+    }
+    try {
+      log.debug("Writing changed products");
+      requestBody.beginProducts();
+      Map<ProductType, Boolean> products = new EnumMap<>(ProductType.class);
+      while (eventSource.hasProductChangeEvent() && isWithinSizeLimits()) {
+        ProductChange event = eventSource.nextProductChangeEvent();
+        products.put(event.getProductType(), event.isEnabled());
+        eventSink.addProductChangeEvent(event);
+      }
+      requestBody.writeProducts(products);
+      requestBody.endProducts();
+    } catch (IOException e) {
+      throw new TelemetryRequestBody.SerializationException("changed-products", e);
+    }
+  }
+
+  public void writeEndpoints() {
+    if (!isWithinSizeLimits() || !eventSource.hasEndpoint()) {
+      return;
+    }
+    try {
+      log.debug("Writing endpoints");
+      requestBody.beginEndpoints();
+      boolean first = false;
+      int remaining = Config.get().getApiSecurityEndpointCollectionMessageLimit();
+      while (eventSource.hasEndpoint() && remaining > 0) {
+        final Endpoint event = eventSource.nextEndpoint();
+        remaining--;
+        if (event.isFirst()) {
+          first = true;
+        }
+        requestBody.writeEndpoint(event);
+        eventSink.addEndpointEvent(event);
+        if (!isWithinSizeLimits()) {
+          break;
+        }
+      }
+      requestBody.endEndpoints(first);
+    } catch (IOException e) {
+      throw new TelemetryRequestBody.SerializationException("asm-endpoints", e);
     }
   }
 

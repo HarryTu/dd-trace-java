@@ -4,8 +4,8 @@ import datadog.trace.api.StatsDClient
 import datadog.trace.api.sampling.PrioritySampling
 import datadog.trace.common.writer.RemoteApi
 import datadog.trace.common.writer.RemoteWriter
-import datadog.trace.test.util.DDSpecification
 import spock.lang.Ignore
+import spock.lang.Specification
 import spock.lang.Subject
 
 import java.util.concurrent.CountDownLatch
@@ -13,7 +13,7 @@ import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
 
 
-class HealthMetricsTest extends DDSpecification {
+class HealthMetricsTest extends Specification {
   def statsD = Mock(StatsDClient)
 
   @Subject
@@ -24,6 +24,7 @@ class HealthMetricsTest extends DDSpecification {
   def "test onStart"() {
     setup:
     def writer = Mock(RemoteWriter)
+    def capacity = ThreadLocalRandom.current().nextInt()
 
     when:
     healthMetrics.onStart(writer)
@@ -31,9 +32,6 @@ class HealthMetricsTest extends DDSpecification {
     then:
     1 * writer.getCapacity() >> capacity
     0 * _
-
-    where:
-    capacity = ThreadLocalRandom.current().nextInt()
   }
 
   def "test onShutdown"() {
@@ -146,15 +144,22 @@ class HealthMetricsTest extends DDSpecification {
   }
 
   def "test onSerialize"() {
+    setup:
+    def latch = new CountDownLatch(1)
+    def healthMetrics = new TracerHealthMetrics(new Latched(statsD, latch), 100, TimeUnit.MILLISECONDS)
+    def bytes = ThreadLocalRandom.current().nextInt(10000)
+    healthMetrics.start()
+
     when:
     healthMetrics.onSerialize(bytes)
+    latch.await(10, TimeUnit.SECONDS)
 
     then:
     1 * statsD.count('queue.enqueued.bytes', bytes)
     0 * _
 
-    where:
-    bytes = ThreadLocalRandom.current().nextInt(10000)
+    cleanup:
+    healthMetrics.close()
   }
 
   def "test onFailedSerialize"() {
@@ -165,21 +170,30 @@ class HealthMetricsTest extends DDSpecification {
     0 * _
   }
 
-  def "test onSend"() {
+  def "test onSend #iterationIndex"() {
+    setup:
+    def latch = new CountDownLatch(3 + (response.exception() ? 1 : 0) + (response.status() ? 1 : 0))
+    def healthMetrics = new TracerHealthMetrics(new Latched(statsD, latch), 100, TimeUnit.MILLISECONDS)
+    healthMetrics.start()
+
     when:
     healthMetrics.onSend(traceCount, sendSize, response)
+    latch.await(10, TimeUnit.SECONDS)
 
     then:
-    1 * statsD.incrementCounter('api.requests.total')
+    1 * statsD.count('api.requests.total', 1)
     1 * statsD.count('flush.traces.total', traceCount)
     1 * statsD.count('flush.bytes.total', sendSize)
     if (response.exception()) {
-      1 * statsD.incrementCounter('api.errors.total')
+      1 * statsD.count('api.errors.total', 1)
     }
     if (response.status()) {
       1 * statsD.incrementCounter('api.responses.total', ["status:${response.status()}"])
     }
     0 * _
+
+    cleanup:
+    healthMetrics.close()
 
     where:
     response << [
@@ -193,21 +207,30 @@ class HealthMetricsTest extends DDSpecification {
     sendSize = ThreadLocalRandom.current().nextInt(1, 100)
   }
 
-  def "test onFailedSend"() {
+  def "test onFailedSend #iterationIndex"() {
+    setup:
+    def latch = new CountDownLatch(3 + (response.exception() ? 1 : 0) + (response.status() ? 1 : 0))
+    def healthMetrics = new TracerHealthMetrics(new Latched(statsD, latch), 100, TimeUnit.MILLISECONDS)
+    healthMetrics.start()
+
     when:
     healthMetrics.onFailedSend(traceCount, sendSize, response)
+    latch.await(10, TimeUnit.SECONDS)
 
     then:
-    1 * statsD.incrementCounter('api.requests.total')
+    1 * statsD.count('api.requests.total', 1)
     1 * statsD.count('flush.traces.total', traceCount)
     1 * statsD.count('flush.bytes.total', sendSize)
     if (response.exception()) {
-      1 * statsD.incrementCounter('api.errors.total')
+      1 * statsD.count('api.errors.total', 1)
     }
     if (response.status()) {
       1 * statsD.incrementCounter('api.responses.total', ["status:${response.status()}"])
     }
     0 * _
+
+    cleanup:
+    healthMetrics.close()
 
     where:
     response << [
@@ -338,6 +361,24 @@ class HealthMetricsTest extends DDSpecification {
     1 * statsD.count("scope.close.count", 1, _)
     cleanup:
     healthMetrics.close()
+  }
+  def "test onScopeCloseError"() {
+    setup:
+    def latch = new CountDownLatch(1 + (manual ? 1 : 0))
+    def healthMetrics = new TracerHealthMetrics(new Latched(statsD, latch), 100, TimeUnit.MILLISECONDS)
+    healthMetrics.start()
+    when:
+    healthMetrics.onScopeCloseError(manual)
+    latch.await(5, TimeUnit.SECONDS)
+    then:
+    1 * statsD.count("scope.close.error", 1, _)
+    if (manual) {
+      1 * statsD.count("scope.user.close.error", 1, _)
+    }
+    cleanup:
+    healthMetrics.close()
+    where:
+    manual << [false, true]
   }
   def "test onScopeStackOverflow"() {
     setup:

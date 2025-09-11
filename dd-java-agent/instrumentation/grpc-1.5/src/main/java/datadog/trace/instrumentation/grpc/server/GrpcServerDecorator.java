@@ -1,21 +1,23 @@
 package datadog.trace.instrumentation.grpc.server;
 
-import static datadog.trace.core.datastreams.TagsProcessor.DIRECTION_IN;
-import static datadog.trace.core.datastreams.TagsProcessor.DIRECTION_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.TYPE_TAG;
+import static datadog.trace.api.datastreams.DataStreamsTags.Direction.INBOUND;
+import static datadog.trace.api.datastreams.DataStreamsTags.create;
 
 import datadog.trace.api.Config;
 import datadog.trace.api.cache.DDCache;
 import datadog.trace.api.cache.DDCaches;
+import datadog.trace.api.datastreams.DataStreamsTags;
 import datadog.trace.api.naming.SpanNaming;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.api.ErrorPriorities;
 import datadog.trace.bootstrap.instrumentation.api.InternalSpanTypes;
 import datadog.trace.bootstrap.instrumentation.api.UTF8BytesString;
 import datadog.trace.bootstrap.instrumentation.decorator.ServerDecorator;
 import io.grpc.ServerCall;
 import io.grpc.Status;
+import io.grpc.StatusException;
+import io.grpc.StatusRuntimeException;
 import java.util.BitSet;
-import java.util.LinkedHashMap;
 import java.util.function.Function;
 
 public class GrpcServerDecorator extends ServerDecorator {
@@ -30,15 +32,11 @@ public class GrpcServerDecorator extends ServerDecorator {
   public static final CharSequence COMPONENT_NAME = UTF8BytesString.create("grpc-server");
   public static final CharSequence GRPC_MESSAGE = UTF8BytesString.create("grpc.message");
 
-  private static final LinkedHashMap<String, String> createServerPathwaySortedTags() {
-    LinkedHashMap<String, String> result = new LinkedHashMap<>();
-    result.put(DIRECTION_TAG, DIRECTION_IN);
-    result.put(TYPE_TAG, "grpc");
-    return result;
+  private static DataStreamsTags createServerPathwaySortedTags() {
+    return create("grpc", INBOUND);
   }
 
-  public static final LinkedHashMap<String, String> SERVER_PATHWAY_EDGE_TAGS =
-      createServerPathwaySortedTags();
+  public static final DataStreamsTags SERVER_PATHWAY_EDGE_TAGS = createServerPathwaySortedTags();
   public static final GrpcServerDecorator DECORATE = new GrpcServerDecorator();
 
   private static final Function<String, String> NORMALIZE =
@@ -97,15 +95,29 @@ public class GrpcServerDecorator extends ServerDecorator {
     return span;
   }
 
-  public AgentSpan onClose(final AgentSpan span, final Status status) {
+  public AgentSpan onStatus(final AgentSpan span, final Status status) {
     span.setTag("status.code", status.getCode().name());
+    span.setTag("grpc.status.code", status.getCode().name());
     span.setTag("status.description", status.getDescription());
+    return span.setError(
+        SERVER_ERROR_STATUSES.get(status.getCode().value()), ErrorPriorities.HTTP_SERVER_DECORATOR);
+  }
 
-    if (SERVER_ERROR_STATUSES.get(status.getCode().value())) {
+  public AgentSpan onClose(final AgentSpan span, final Status status) {
+    if (status.getCause() != null) {
       onError(span, status.getCause());
-      span.setError(true);
     }
+    return onStatus(span, status);
+  }
 
+  @Override
+  public AgentSpan onError(AgentSpan span, Throwable throwable) {
+    super.onError(span, throwable, ErrorPriorities.HTTP_SERVER_DECORATOR);
+    if (throwable instanceof StatusRuntimeException) {
+      onStatus(span, ((StatusRuntimeException) throwable).getStatus());
+    } else if (throwable instanceof StatusException) {
+      onStatus(span, ((StatusException) throwable).getStatus());
+    }
     return span;
   }
 }

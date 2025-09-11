@@ -8,6 +8,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.State;
@@ -21,9 +22,9 @@ import net.bytebuddy.asm.Advice;
  * This instrumentation activates the span associated with {@code
  * io.lettuce.core.protocol.AsyncCommand} during decoding.
  */
-@AutoService(Instrumenter.class)
-public class CommandHandlerInstrumentation extends Instrumenter.Profiling
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class CommandHandlerInstrumentation extends InstrumenterModule.Profiling
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public CommandHandlerInstrumentation() {
     super("lettuce", "lettuce-5", "lettuce-5-async");
@@ -40,8 +41,8 @@ public class CommandHandlerInstrumentation extends Instrumenter.Profiling
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("decode"))
             .and(takesArgument(0, named("io.netty.channel.ChannelHandlerContext")))

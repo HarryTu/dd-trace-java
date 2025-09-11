@@ -2,8 +2,14 @@ package datadog.trace.common.writer.ddagent;
 
 import static datadog.communication.http.OkHttpUtils.msgpackRequestBodyOf;
 
+import datadog.communication.serialization.Codec;
+import datadog.communication.serialization.GrowableBuffer;
 import datadog.communication.serialization.Writable;
+import datadog.communication.serialization.msgpack.MsgPackWriter;
+import datadog.trace.api.Config;
+import datadog.trace.api.ProcessTags;
 import datadog.trace.bootstrap.instrumentation.api.InstrumentationTags;
+import datadog.trace.bootstrap.instrumentation.api.UTF8BytesString;
 import datadog.trace.common.writer.Payload;
 import datadog.trace.core.CoreSpan;
 import datadog.trace.core.Metadata;
@@ -18,6 +24,15 @@ import java.util.Map;
 import okhttp3.RequestBody;
 
 public final class TraceMapperV0_4 implements TraceMapper {
+  static final SimpleUtf8Cache TAG_CACHE =
+      Config.get().getTagNameUtf8CacheSize() > 0
+          ? new SimpleUtf8Cache(Config.get().getTagNameUtf8CacheSize())
+          : null;
+
+  static final GenerationalUtf8Cache VALUE_CACHE =
+      Config.get().getTagValueUtf8CacheSize() > 0
+          ? new GenerationalUtf8Cache(Config.get().getTagValueUtf8CacheSize())
+          : null;
 
   private final int size;
 
@@ -32,25 +47,38 @@ public final class TraceMapperV0_4 implements TraceMapper {
   private static final class MetaWriter implements MetadataConsumer {
 
     private Writable writable;
-    private boolean writeSamplingPriority;
+    private boolean firstSpanInChunk;
+    private boolean lastSpanInChunk;
 
     MetaWriter withWritable(Writable writable) {
       this.writable = writable;
       return this;
     }
 
-    MetaWriter withWriteSamplingPriority(final boolean writeSamplingPriority) {
-      this.writeSamplingPriority = writeSamplingPriority;
+    MetaWriter forFirstSpanInChunk(final boolean firstSpanInChunk) {
+      this.firstSpanInChunk = firstSpanInChunk;
+      return this;
+    }
+
+    MetaWriter forLastSpanInChunk(final boolean lastSpanInChunk) {
+      this.lastSpanInChunk = lastSpanInChunk;
       return this;
     }
 
     @Override
     public void accept(Metadata metadata) {
+      if (TAG_CACHE != null) TAG_CACHE.recalibrate();
+      if (VALUE_CACHE != null) VALUE_CACHE.recalibrate();
+
+      final boolean writeSamplingPriority = firstSpanInChunk || lastSpanInChunk;
+      final UTF8BytesString processTags =
+          firstSpanInChunk ? ProcessTags.getTagsForSerialization() : null;
       int metaSize =
           metadata.getBaggage().size()
               + metadata.getTags().size()
               + (null == metadata.getHttpStatusCode() ? 0 : 1)
               + (null == metadata.getOrigin() ? 0 : 1)
+              + (null == processTags ? 0 : 1)
               + 1;
       int metricsSize =
           (writeSamplingPriority && metadata.hasSamplingPriority() ? 1 : 0)
@@ -96,8 +124,8 @@ public final class TraceMapperV0_4 implements TraceMapper {
       writable.writeLong(metadata.getThreadId());
       for (Map.Entry<String, Object> entry : metadata.getTags().entrySet()) {
         if (entry.getValue() instanceof Number) {
-          writable.writeString(entry.getKey(), null);
-          writable.writeObject(entry.getValue(), null);
+          writable.writeString(entry.getKey(), TAG_CACHE);
+          writable.writeObject(entry.getValue(), VALUE_CACHE);
         }
       }
 
@@ -107,8 +135,8 @@ public final class TraceMapperV0_4 implements TraceMapper {
       // since they will be accumulated into maps in the same order downstream,
       // we just need to be sure that the size is the same as the number of elements
       for (Map.Entry<String, String> entry : metadata.getBaggage().entrySet()) {
-        writable.writeString(entry.getKey(), null);
-        writable.writeString(entry.getValue(), null);
+        writable.writeString(entry.getKey(), TAG_CACHE);
+        writable.writeString(entry.getValue(), VALUE_CACHE);
       }
       writable.writeUTF8(THREAD_NAME);
       writable.writeUTF8(metadata.getThreadName());
@@ -118,7 +146,11 @@ public final class TraceMapperV0_4 implements TraceMapper {
       }
       if (null != metadata.getOrigin()) {
         writable.writeUTF8(ORIGIN_KEY);
-        writable.writeString(metadata.getOrigin(), null);
+        writable.writeString(metadata.getOrigin(), VALUE_CACHE);
+      }
+      if (processTags != null) {
+        writable.writeUTF8(PROCESS_TAGS_KEY);
+        writable.writeUTF8(processTags);
       }
       for (Map.Entry<String, Object> entry : metadata.getTags().entrySet()) {
         String key = entry.getKey();
@@ -127,8 +159,8 @@ public final class TraceMapperV0_4 implements TraceMapper {
           // Write map as flat map
           writeFlatMap(key, (Map) value);
         } else if (!(value instanceof Number)) {
-          writable.writeString(entry.getKey(), null);
-          writable.writeObjectString(entry.getValue(), null);
+          writable.writeString(entry.getKey(), TAG_CACHE);
+          writable.writeObjectString(entry.getValue(), VALUE_CACHE);
         }
       }
     }
@@ -170,30 +202,80 @@ public final class TraceMapperV0_4 implements TraceMapper {
         if (newValue instanceof Map) {
           writeFlatMap(newKey, (Map) newValue);
         } else {
-          writable.writeString(newKey, null);
-          writable.writeObjectString(newValue, null);
+          writable.writeString(newKey, TAG_CACHE);
+          writable.writeObjectString(newValue, VALUE_CACHE);
         }
       }
     }
   }
 
+  /**
+   * The MetaStruct field can safely be used with v4 agents and will be discarded for other
+   * versions.
+   *
+   * <p>Any type that needs to be serialized as part of the meta_struct field has to either be a JDK
+   * known type (primitives, wrappers, collections ...) or registered with {@link
+   * datadog.communication.serialization.Codec#Codec(Map)}, in the rest of the cases the {@code
+   * toString} representation of the object will be used instead
+   */
+  public static class MetaStructWriter {
+
+    private static final UTF8BytesString META_STRUCT = UTF8BytesString.create("meta_struct");
+    private static final int BUFFER_SIZE = 1 << 10;
+
+    private Writable writable;
+
+    MetaStructWriter withWritable(final Writable writable) {
+      this.writable = writable;
+      return this;
+    }
+
+    public void write(final Map<String, Object> metaStruct) {
+      writable.writeUTF8(META_STRUCT);
+      writable.startMap(metaStruct.size());
+      final GrowableBuffer buffer = new GrowableBuffer(BUFFER_SIZE);
+      final MsgPackWriter metaStructWriter = new MsgPackWriter(Codec.INSTANCE, buffer);
+      for (Map.Entry<String, Object> entry : metaStruct.entrySet()) {
+        writeMetaStructEntry(metaStructWriter, buffer, entry.getKey(), entry.getValue());
+      }
+    }
+
+    private void writeMetaStructEntry(
+        final MsgPackWriter writer,
+        final GrowableBuffer buffer,
+        final String key,
+        final Object value) {
+      buffer.mark();
+      try {
+        writer.writeObject(value, null);
+        writer.flush();
+        writable.writeString(key, TAG_CACHE);
+        writable.writeBinary(buffer.slice());
+      } finally {
+        buffer.reset();
+      }
+    }
+  }
+
   private final MetaWriter metaWriter = new MetaWriter();
+  private final MetaStructWriter metaStructWriter = new MetaStructWriter();
 
   @Override
   public void map(List<? extends CoreSpan<?>> trace, final Writable writable) {
     writable.startArray(trace.size());
     for (int i = 0; i < trace.size(); i++) {
       final CoreSpan<?> span = trace.get(i);
-      writable.startMap(12);
+      final Map<String, Object> metaStruct = span.getMetaStruct();
+      writable.startMap(metaStruct.isEmpty() ? 12 : 13);
       /* 1  */
       writable.writeUTF8(SERVICE);
-      writable.writeString(span.getServiceName(), null);
+      writable.writeString(span.getServiceName(), VALUE_CACHE);
       /* 2  */
       writable.writeUTF8(NAME);
-      writable.writeObject(span.getOperationName(), null);
+      writable.writeObject(span.getOperationName(), VALUE_CACHE);
       /* 3  */
       writable.writeUTF8(RESOURCE);
-      writable.writeObject(span.getResourceName(), null);
+      writable.writeObject(span.getResourceName(), VALUE_CACHE);
       /* 4  */
       writable.writeUTF8(TRACE_ID);
       writable.writeUnsignedLong(span.getTraceId().toLong());
@@ -211,7 +293,7 @@ public final class TraceMapperV0_4 implements TraceMapper {
       writable.writeLong(PendingTrace.getDurationNano(span));
       /* 9  */
       writable.writeUTF8(TYPE);
-      writable.writeString(span.getType(), null);
+      writable.writeString(span.getType(), VALUE_CACHE);
       /* 10 */
       writable.writeUTF8(ERROR);
       writable.writeInt(span.getError());
@@ -219,7 +301,12 @@ public final class TraceMapperV0_4 implements TraceMapper {
       span.processTagsAndBaggage(
           metaWriter
               .withWritable(writable)
-              .withWriteSamplingPriority(i == 0 || i == trace.size() - 1));
+              .forFirstSpanInChunk(i == 0)
+              .forLastSpanInChunk(i == trace.size() - 1));
+      if (!metaStruct.isEmpty()) {
+        /* 13 */
+        metaStructWriter.withWritable(writable).write(metaStruct);
+      }
     }
   }
 

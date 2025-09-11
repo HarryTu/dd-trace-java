@@ -1,17 +1,25 @@
 package datadog.communication.ddagent;
 
+import static datadog.communication.http.OkHttpUtils.DATADOG_CONTAINER_ID;
+import static datadog.communication.http.OkHttpUtils.DATADOG_CONTAINER_TAGS_HASH;
+import static datadog.communication.serialization.msgpack.MsgPackWriter.FIXARRAY;
+import static java.util.Collections.emptySet;
+import static java.util.Collections.singletonList;
+import static java.util.Collections.unmodifiableSet;
+
 import com.squareup.moshi.JsonAdapter;
 import com.squareup.moshi.Moshi;
 import com.squareup.moshi.Types;
+import datadog.common.container.ContainerInfo;
 import datadog.communication.http.OkHttpUtils;
 import datadog.communication.monitor.DDAgentStatsDClientManager;
 import datadog.communication.monitor.Monitoring;
 import datadog.communication.monitor.Recording;
+import datadog.trace.api.BaseHash;
+import datadog.trace.api.telemetry.LogCollector;
 import datadog.trace.util.Strings;
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.NoSuchAlgorithmException;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +40,12 @@ public class DDAgentFeaturesDiscovery implements DroppingPolicy {
           .build()
           .adapter(Types.newParameterizedType(Map.class, String.class, Object.class));
 
+  // Currently all the endpoints that we probe expect a msgpack body of an array of arrays, v3/v4
+  // arbitrary size and v5 two elements, so let's give them a two element array of empty arrays
+  private static final byte[] PROBE_MESSAGE = {
+    (byte) FIXARRAY | 2, (byte) FIXARRAY, (byte) FIXARRAY
+  };
+
   public static final String V3_ENDPOINT = "v0.3/traces";
   public static final String V4_ENDPOINT = "v0.4/traces";
   public static final String V5_ENDPOINT = "v0.5/traces";
@@ -42,10 +56,13 @@ public class DDAgentFeaturesDiscovery implements DroppingPolicy {
   public static final String V01_DATASTREAMS_ENDPOINT = "v0.1/pipeline_stats";
 
   public static final String V2_EVP_PROXY_ENDPOINT = "evp_proxy/v2/";
+  public static final String V4_EVP_PROXY_ENDPOINT = "evp_proxy/v4/";
 
   public static final String DATADOG_AGENT_STATE = "Datadog-Agent-State";
 
-  public static final String DEBUGGER_ENDPOINT = "debugger/v1/input";
+  public static final String DEBUGGER_ENDPOINT_V1 = "debugger/v1/input";
+  public static final String DEBUGGER_ENDPOINT_V2 = "debugger/v2/input";
+  public static final String DEBUGGER_DIAGNOSTICS_ENDPOINT = "debugger/v1/diagnostics";
 
   public static final String TELEMETRY_PROXY_ENDPOINT = "telemetry/proxy/";
 
@@ -59,22 +76,29 @@ public class DDAgentFeaturesDiscovery implements DroppingPolicy {
   private final String[] configEndpoints = {V7_CONFIG_ENDPOINT};
   private final boolean metricsEnabled;
   private final String[] dataStreamsEndpoints = {V01_DATASTREAMS_ENDPOINT};
-  private final String[] evpProxyEndpoints = {V2_EVP_PROXY_ENDPOINT};
+  // ordered from most recent to least recent, as the logic will stick with the first one that is
+  // available
+  private final String[] evpProxyEndpoints = {V4_EVP_PROXY_ENDPOINT, V2_EVP_PROXY_ENDPOINT};
   private final String[] telemetryProxyEndpoints = {TELEMETRY_PROXY_ENDPOINT};
 
-  private volatile String traceEndpoint;
-  private volatile String metricsEndpoint;
-  private volatile String dataStreamsEndpoint;
-  private volatile boolean supportsLongRunning;
-  private volatile boolean supportsDropping;
-  private volatile String state;
-  private volatile String configEndpoint;
-  private volatile String debuggerEndpoint;
-  private volatile String evpProxyEndpoint;
-  private volatile String version;
-  private volatile String telemetryProxyEndpoint;
+  private static class State {
+    String traceEndpoint;
+    String metricsEndpoint;
+    String dataStreamsEndpoint;
+    boolean supportsLongRunning;
+    boolean supportsDropping;
+    String state;
+    String configEndpoint;
+    String debuggerEndpoint;
+    String debuggerDiagnosticsEndpoint;
+    String evpProxyEndpoint;
+    String version;
+    String telemetryProxyEndpoint;
+    Set<String> peerTags = emptySet();
+    long lastTimeDiscovered;
+  }
 
-  private long lastTimeDiscovered;
+  private volatile State discoveryState;
 
   public DDAgentFeaturesDiscovery(
       OkHttpClient client,
@@ -90,21 +114,7 @@ public class DDAgentFeaturesDiscovery implements DroppingPolicy {
             ? new String[] {V5_ENDPOINT, V4_ENDPOINT, V3_ENDPOINT}
             : new String[] {V4_ENDPOINT, V3_ENDPOINT};
     this.discoveryTimer = monitoring.newTimer("trace.agent.discovery.time");
-  }
-
-  private void reset() {
-    traceEndpoint = null;
-    metricsEndpoint = null;
-    supportsDropping = false;
-    supportsLongRunning = false;
-    state = null;
-    configEndpoint = null;
-    debuggerEndpoint = null;
-    dataStreamsEndpoint = null;
-    evpProxyEndpoint = null;
-    version = null;
-    lastTimeDiscovered = 0;
-    telemetryProxyEndpoint = null;
+    this.discoveryState = new State();
   }
 
   /** Run feature discovery, unconditionally. */
@@ -123,95 +133,116 @@ public class DDAgentFeaturesDiscovery implements DroppingPolicy {
 
   private synchronized void discoverIfOutdated(final long maxElapsedMs) {
     final long now = System.currentTimeMillis();
-    final long elapsed = now - lastTimeDiscovered;
+    final long elapsed = now - discoveryState.lastTimeDiscovered;
     if (elapsed > maxElapsedMs) {
-      doDiscovery();
-      lastTimeDiscovered = now;
+      final State newState = new State();
+      doDiscovery(newState);
+      newState.lastTimeDiscovered = now;
+      // swap atomically states
+      discoveryState = newState;
     }
   }
 
-  private void doDiscovery() {
-    reset();
+  private void doDiscovery(State newState) {
     // 1. try to fetch info about the agent, if the endpoint is there
     // 2. try to parse the response, if it can be parsed, finish
     // 3. fallback if the endpoint couldn't be found or the response couldn't be parsed
     try (Recording recording = discoveryTimer.start()) {
       boolean fallback = true;
-      try (Response response =
-          client
-              .newCall(new Request.Builder().url(agentBaseUrl.resolve("info").url()).build())
-              .execute()) {
+      final Request.Builder requestBuilder =
+          new Request.Builder().url(agentBaseUrl.resolve("info").url());
+      final String containerId = ContainerInfo.get().getContainerId();
+      if (containerId != null) {
+        requestBuilder.header(DATADOG_CONTAINER_ID, containerId);
+      }
+      try (Response response = client.newCall(requestBuilder.build()).execute()) {
         if (response.isSuccessful()) {
-          fallback = !processInfoResponse(response.body().string());
+          processInfoResponseHeaders(response);
+          fallback = !processInfoResponse(newState, response.body().string());
         }
       } catch (Throwable error) {
         errorQueryingEndpoint("info", error);
       }
       if (fallback) {
-        supportsDropping = false;
-        supportsLongRunning = false;
+        newState.supportsDropping = false;
+        newState.supportsLongRunning = false;
         log.debug("Falling back to probing, client dropping will be disabled");
         // disable metrics unless the info endpoint is present, which prevents
         // sending metrics to 7.26.0, which has a bug in reporting metric origin
-        metricsEndpoint = null;
+        newState.metricsEndpoint = null;
       }
 
       // don't want to rewire the traces pipeline
-      if (null == traceEndpoint) {
-        traceEndpoint = probeTracesEndpoint(traceEndpoints);
-      } else if (state == null || state.isEmpty()) {
+      if (null == newState.traceEndpoint) {
+        newState.traceEndpoint = probeTracesEndpoint(newState, traceEndpoints);
+      } else if (newState.state == null || newState.state.isEmpty()) {
         // Still need to probe so that state is correctly assigned
-        probeTracesEndpoint(new String[] {traceEndpoint});
+        probeTracesEndpoint(newState, new String[] {newState.traceEndpoint});
       }
     }
 
     if (log.isDebugEnabled()) {
       log.debug(
           "discovered traceEndpoint={}, metricsEndpoint={}, supportsDropping={}, supportsLongRunning={}, dataStreamsEndpoint={}, configEndpoint={}, evpProxyEndpoint={}, telemetryProxyEndpoint={}",
-          traceEndpoint,
-          metricsEndpoint,
-          supportsDropping,
-          supportsLongRunning,
-          dataStreamsEndpoint,
-          configEndpoint,
-          evpProxyEndpoint,
-          telemetryProxyEndpoint);
+          newState.traceEndpoint,
+          newState.metricsEndpoint,
+          newState.supportsDropping,
+          newState.supportsLongRunning,
+          newState.dataStreamsEndpoint,
+          newState.configEndpoint,
+          newState.evpProxyEndpoint,
+          newState.telemetryProxyEndpoint);
     }
   }
 
-  private String probeTracesEndpoint(String[] endpoints) {
+  private String probeTracesEndpoint(State newState, String[] endpoints) {
     for (String candidate : endpoints) {
       try (Response response =
           client
               .newCall(
                   new Request.Builder()
-                      .put(OkHttpUtils.msgpackRequestBodyOf(Collections.<ByteBuffer>emptyList()))
+                      .put(
+                          OkHttpUtils.msgpackRequestBodyOf(
+                              singletonList(ByteBuffer.wrap(PROBE_MESSAGE))))
                       .url(agentBaseUrl.resolve(candidate))
                       .build())
               .execute()) {
         if (response.code() != 404) {
-          state = response.header(DATADOG_AGENT_STATE);
+          newState.state = response.header(DATADOG_AGENT_STATE);
           return candidate;
         }
-      } catch (IOException e) {
+      } catch (Throwable e) {
         errorQueryingEndpoint(candidate, e);
       }
     }
     return V3_ENDPOINT;
   }
 
+  private void processInfoResponseHeaders(Response response) {
+    String newContainerTagsHash = response.header(DATADOG_CONTAINER_TAGS_HASH);
+    if (newContainerTagsHash != null) {
+      ContainerInfo containerInfo = ContainerInfo.get();
+      synchronized (containerInfo) {
+        if (!newContainerTagsHash.equals(containerInfo.getContainerTagsHash())) {
+          containerInfo.setContainerTagsHash(newContainerTagsHash);
+          BaseHash.recalcBaseHash(newContainerTagsHash);
+        }
+      }
+    }
+  }
+
   @SuppressWarnings("unchecked")
-  private boolean processInfoResponse(String response) {
+  private boolean processInfoResponse(State newState, String response) {
     try {
       Map<String, Object> map = RESPONSE_ADAPTER.fromJson(response);
       discoverStatsDPort(map);
-      version = (String) map.get("version");
+      newState.version = (String) map.get("version");
       Set<String> endpoints = new HashSet<>((List<String>) map.get("endpoints"));
 
       String foundMetricsEndpoint = null;
       if (metricsEnabled) {
         for (String endpoint : metricsEndpoints) {
-          if (endpoints.contains(endpoint) || endpoints.contains("/" + endpoint)) {
+          if (containsEndpoint(endpoints, endpoint)) {
             foundMetricsEndpoint = endpoint;
             break;
           }
@@ -219,66 +250,88 @@ public class DDAgentFeaturesDiscovery implements DroppingPolicy {
       }
 
       // This is done outside of the loop to set metricsEndpoint to null if not found
-      metricsEndpoint = foundMetricsEndpoint;
+      newState.metricsEndpoint = foundMetricsEndpoint;
 
       for (String endpoint : traceEndpoints) {
-        if (endpoints.contains(endpoint) || endpoints.contains("/" + endpoint)) {
-          traceEndpoint = endpoint;
+        if (containsEndpoint(endpoints, endpoint)) {
+          newState.traceEndpoint = endpoint;
           break;
         }
       }
 
       for (String endpoint : configEndpoints) {
-        if (endpoints.contains(endpoint) || endpoints.contains("/" + endpoint)) {
-          configEndpoint = endpoint;
+        if (containsEndpoint(endpoints, endpoint)) {
+          newState.configEndpoint = endpoint;
           break;
         }
       }
 
-      if (endpoints.contains(DEBUGGER_ENDPOINT) || endpoints.contains("/" + DEBUGGER_ENDPOINT)) {
-        debuggerEndpoint = DEBUGGER_ENDPOINT;
+      // both debugger endpoint v2 and diagnostics endpoint are forwarding events to the DEBUGGER
+      // intake
+      // because older agents support diagnostics, we fallback to it before falling back to v1
+      if (containsEndpoint(endpoints, DEBUGGER_ENDPOINT_V2)) {
+        newState.debuggerEndpoint = DEBUGGER_ENDPOINT_V2;
+      } else if (containsEndpoint(endpoints, DEBUGGER_DIAGNOSTICS_ENDPOINT)) {
+        newState.debuggerEndpoint = DEBUGGER_DIAGNOSTICS_ENDPOINT;
+      } else if (containsEndpoint(endpoints, DEBUGGER_ENDPOINT_V1)) {
+        newState.debuggerEndpoint = DEBUGGER_ENDPOINT_V1;
+      }
+      if (containsEndpoint(endpoints, DEBUGGER_DIAGNOSTICS_ENDPOINT)) {
+        newState.debuggerDiagnosticsEndpoint = DEBUGGER_DIAGNOSTICS_ENDPOINT;
       }
 
       for (String endpoint : dataStreamsEndpoints) {
-        if (endpoints.contains(endpoint) || endpoints.contains("/" + endpoint)) {
-          dataStreamsEndpoint = endpoint;
+        if (containsEndpoint(endpoints, endpoint)) {
+          newState.dataStreamsEndpoint = endpoint;
           break;
         }
       }
 
       for (String endpoint : evpProxyEndpoints) {
-        if (endpoints.contains(endpoint) || endpoints.contains("/" + endpoint)) {
-          evpProxyEndpoint = endpoint;
+        if (containsEndpoint(endpoints, endpoint)) {
+          newState.evpProxyEndpoint = endpoint;
           break;
         }
       }
 
       for (String endpoint : telemetryProxyEndpoints) {
-        if (endpoints.contains(endpoint) || endpoints.contains("/" + endpoint)) {
-          telemetryProxyEndpoint = endpoint;
+        if (containsEndpoint(endpoints, endpoint)) {
+          newState.telemetryProxyEndpoint = endpoint;
           break;
         }
       }
 
-      supportsLongRunning = Boolean.TRUE.equals(map.getOrDefault("long_running_spans", false));
+      newState.supportsLongRunning =
+          Boolean.TRUE.equals(map.getOrDefault("long_running_spans", false));
 
       if (metricsEnabled) {
         Object canDrop = map.get("client_drop_p0s");
-        supportsDropping =
+        newState.supportsDropping =
             null != canDrop
                 && ("true".equalsIgnoreCase(String.valueOf(canDrop))
                     || Boolean.TRUE.equals(canDrop));
+
+        Object peer_tags = map.get("peer_tags");
+        newState.peerTags =
+            peer_tags instanceof List
+                ? unmodifiableSet(new HashSet<>((List<String>) peer_tags))
+                : emptySet();
       }
       try {
-        state = Strings.sha256(response);
+        newState.state = Strings.sha256(response);
       } catch (NoSuchAlgorithmException ex) {
-        log.debug("Failed to hash trace agent /info response. Will probe {}", traceEndpoint, ex);
+        log.debug(
+            "Failed to hash trace agent /info response. Will probe {}", newState.traceEndpoint, ex);
       }
       return true;
     } catch (Throwable error) {
       log.debug("Error parsing trace agent /info response", error);
     }
     return false;
+  }
+
+  private static boolean containsEndpoint(Set<String> endpoints, String endpoint) {
+    return endpoints.contains(endpoint) || endpoints.contains("/" + endpoint);
   }
 
   @SuppressWarnings("unchecked")
@@ -296,41 +349,53 @@ public class DDAgentFeaturesDiscovery implements DroppingPolicy {
       }
       int statsdPort = ((Number) statsdPortObj).intValue();
       DDAgentStatsDClientManager.setDefaultStatsDPort(statsdPort);
-    } catch (Exception ex) {
+    } catch (Throwable ex) {
       log.debug("statsd_port missing from trace agent /info response", ex);
     }
   }
 
   public boolean supportsMetrics() {
-    return metricsEnabled && null != metricsEndpoint;
+    return metricsEnabled && null != discoveryState.metricsEndpoint;
   }
 
   public boolean supportsDebugger() {
-    return debuggerEndpoint != null;
+    return discoveryState.debuggerEndpoint != null;
   }
 
-  boolean supportsDropping() {
-    return supportsDropping;
+  public String getDebuggerEndpoint() {
+    return discoveryState.debuggerEndpoint;
+  }
+
+  public boolean supportsDebuggerDiagnostics() {
+    return discoveryState.debuggerDiagnosticsEndpoint != null;
+  }
+
+  public boolean supportsDropping() {
+    return discoveryState.supportsDropping;
   }
 
   public boolean supportsLongRunning() {
-    return supportsLongRunning;
+    return discoveryState.supportsLongRunning;
+  }
+
+  public Set<String> peerTags() {
+    return discoveryState.peerTags;
   }
 
   public String getMetricsEndpoint() {
-    return metricsEndpoint;
+    return discoveryState.metricsEndpoint;
   }
 
   public String getTraceEndpoint() {
-    return traceEndpoint;
+    return discoveryState.traceEndpoint;
   }
 
   public String getDataStreamsEndpoint() {
-    return dataStreamsEndpoint;
+    return discoveryState.dataStreamsEndpoint;
   }
 
   public String getEvpProxyEndpoint() {
-    return evpProxyEndpoint;
+    return discoveryState.evpProxyEndpoint;
   }
 
   public HttpUrl buildUrl(String endpoint) {
@@ -338,35 +403,41 @@ public class DDAgentFeaturesDiscovery implements DroppingPolicy {
   }
 
   public boolean supportsDataStreams() {
-    return dataStreamsEndpoint != null;
+    return discoveryState.dataStreamsEndpoint != null;
   }
 
   public boolean supportsEvpProxy() {
-    return evpProxyEndpoint != null;
+    return discoveryState.evpProxyEndpoint != null;
+  }
+
+  public boolean supportsContentEncodingHeadersWithEvpProxy() {
+    // content encoding headers are supported in /v4 and above
+    final String evpProxyEndpoint = discoveryState.evpProxyEndpoint;
+    return evpProxyEndpoint != null && V4_EVP_PROXY_ENDPOINT.compareTo(evpProxyEndpoint) <= 0;
   }
 
   public String getConfigEndpoint() {
-    return configEndpoint;
+    return discoveryState.configEndpoint;
   }
 
   public String getVersion() {
-    return version;
+    return discoveryState.version;
   }
 
   private void errorQueryingEndpoint(String endpoint, Throwable t) {
-    log.debug("Error querying {} at {}", endpoint, agentBaseUrl, t);
+    log.debug(LogCollector.EXCLUDE_TELEMETRY, "Error querying {} at {}", endpoint, agentBaseUrl, t);
   }
 
   public String state() {
-    return state;
+    return discoveryState.state;
   }
 
   @Override
   public boolean active() {
-    return supportsMetrics() && supportsDropping;
+    return supportsMetrics() && discoveryState.supportsDropping;
   }
 
   public boolean supportsTelemetryProxy() {
-    return telemetryProxyEndpoint != null;
+    return discoveryState.telemetryProxyEndpoint != null;
   }
 }

@@ -1,5 +1,7 @@
 package datadog.trace.bootstrap;
 
+import datadog.trace.bootstrap.environment.SystemProperties;
+import de.thetaphi.forbiddenapis.SuppressForbidden;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -12,6 +14,7 @@ public final class AgentJar {
 
   private static Class<?> agentClass;
 
+  @SuppressForbidden
   public static void main(final String[] args) {
     if (args.length == 0) {
       printAgentVersion();
@@ -27,8 +30,14 @@ public final class AgentJar {
           case "uploadCrash":
             uploadCrash(args);
             break;
+          case "sendOomeEvent":
+            sendOomeEvent(args);
+            break;
           case "scanDependencies":
             scanDependencies(args);
+            break;
+          case "checkProfilerEnv":
+            checkProfilerEnv(args);
             break;
           case "--list-integrations":
           case "-li":
@@ -55,11 +64,13 @@ public final class AgentJar {
     }
   }
 
+  @SuppressForbidden
   private static void printUsage() {
     System.out.println("usage:");
     System.out.println("  sampleTrace [-c count] [-i interval]");
     System.out.println("  uploadCrash file ...");
     System.out.println("  scanDependencies <path> ...");
+    System.out.println("  checkProfilerEnv [temp]");
     System.out.println("  [-li | --list-integrations]");
     System.out.println("  [-h  | --help]");
     System.out.println("  [-v  | --version]");
@@ -101,6 +112,13 @@ public final class AgentJar {
         .invoke(null, new Object[] {Arrays.copyOfRange(args, 1, args.length)});
   }
 
+  private static void sendOomeEvent(final String[] args) throws Exception {
+    if (args.length < 1) {
+      throw new IllegalArgumentException("unexpected arguments");
+    }
+    installAgentCLI().getMethod("sendOomeEvent", String.class).invoke(null, args[1]);
+  }
+
   private static void scanDependencies(final String[] args) throws Exception {
     if (args.length < 2) {
       throw new IllegalArgumentException("missing path");
@@ -119,12 +137,25 @@ public final class AgentJar {
     return (Class<?>) agentClass.getMethod("installAgentCLI").invoke(null);
   }
 
+  @SuppressForbidden
   private static void printAgentVersion() {
     try {
       System.out.println(getAgentVersion());
     } catch (final Exception e) {
       System.out.println("Failed to parse agent version");
       e.printStackTrace();
+    }
+  }
+
+  public static String tryGetAgentVersion() {
+    return getAgentVersionOrDefault(null);
+  }
+
+  public static String getAgentVersionOrDefault(String defaultValue) {
+    try {
+      return AgentJar.getAgentVersion();
+    } catch (IOException e) {
+      return defaultValue;
     }
   }
 
@@ -141,5 +172,11 @@ public final class AgentJar {
     }
 
     return sb.toString().trim();
+  }
+
+  private static void checkProfilerEnv(final String[] args) throws Exception {
+    String tmpDir = args.length == 2 ? args[1] : SystemProperties.get("java.io.tmpdir");
+
+    installAgentCLI().getMethod("checkProfilerEnv", String.class).invoke(null, tmpDir);
   }
 }

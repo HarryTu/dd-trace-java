@@ -9,14 +9,14 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.agent.tooling.log.UnionMap;
 import datadog.trace.api.Config;
 import datadog.trace.api.CorrelationIdentifier;
 import datadog.trace.api.DDSpanId;
 import datadog.trace.api.DDTraceId;
-import datadog.trace.api.InstrumenterConfig;
 import datadog.trace.bootstrap.InstrumentationContext;
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import datadog.trace.bootstrap.instrumentation.api.Tags;
 import java.util.HashMap;
@@ -27,9 +27,9 @@ import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import net.bytebuddy.matcher.ElementMatcher;
 import org.jboss.logmanager.ExtLogRecord;
 
-@AutoService(Instrumenter.class)
-public class ExtLogRecordInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class ExtLogRecordInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
   public ExtLogRecordInstrumentation() {
     super("jboss-logmanager");
   }
@@ -46,16 +46,16 @@ public class ExtLogRecordInstrumentation extends Instrumenter.Tracing
 
   @Override
   public Map<String, String> contextStore() {
-    return singletonMap("org.jboss.logmanager.ExtLogRecord", AgentSpan.Context.class.getName());
+    return singletonMap("org.jboss.logmanager.ExtLogRecord", AgentSpanContext.class.getName());
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(named("getMdc")).and(takesArgument(0, String.class)),
         ExtLogRecordInstrumentation.class.getName() + "$GetMdcAdvice");
 
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod().and(named("getMdcCopy")).and(takesArguments(0)),
         ExtLogRecordInstrumentation.class.getName() + "$GetMdcCopyAdvice");
   }
@@ -82,8 +82,8 @@ public class ExtLogRecordInstrumentation extends Instrumenter.Tracing
         return;
       }
 
-      AgentSpan.Context context =
-          InstrumentationContext.get(ExtLogRecord.class, AgentSpan.Context.class).get(record);
+      AgentSpanContext context =
+          InstrumentationContext.get(ExtLogRecord.class, AgentSpanContext.class).get(record);
 
       // Nothing to add so return early
       if (context == null && !AgentTracer.traceConfig().isLogsInjectionEnabled()) {
@@ -112,8 +112,7 @@ public class ExtLogRecordInstrumentation extends Instrumenter.Tracing
         case "dd.trace_id":
           if (context != null) {
             DDTraceId traceId = context.getTraceId();
-            if (traceId.toHighOrderLong() != 0
-                && InstrumenterConfig.get().isLogs128bTraceIdEnabled()) {
+            if (traceId.toHighOrderLong() != 0 && Config.get().isLogs128bitTraceIdEnabled()) {
               value = traceId.toHexString();
             } else {
               value = traceId.toString();
@@ -141,8 +140,8 @@ public class ExtLogRecordInstrumentation extends Instrumenter.Tracing
         return;
       }
 
-      AgentSpan.Context context =
-          InstrumentationContext.get(ExtLogRecord.class, AgentSpan.Context.class).get(record);
+      AgentSpanContext context =
+          InstrumentationContext.get(ExtLogRecord.class, AgentSpanContext.class).get(record);
 
       // Nothing to add so return early
       if (context == null && !AgentTracer.traceConfig().isLogsInjectionEnabled()) {
@@ -154,7 +153,7 @@ public class ExtLogRecordInstrumentation extends Instrumenter.Tracing
       if (context != null) {
         DDTraceId traceId = context.getTraceId();
         String traceIdValue =
-            InstrumenterConfig.get().isLogs128bTraceIdEnabled() && traceId.toHighOrderLong() != 0
+            Config.get().isLogs128bitTraceIdEnabled() && traceId.toHighOrderLong() != 0
                 ? traceId.toHexString()
                 : traceId.toString();
         correlationValues.put(CorrelationIdentifier.getTraceIdKey(), traceIdValue);

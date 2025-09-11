@@ -1,8 +1,9 @@
 package datadog.trace.civisibility.git
 
 import datadog.trace.api.Config
-import datadog.trace.civisibility.git.tree.GitClient
-import datadog.trace.civisibility.utils.IOUtils
+import datadog.trace.civisibility.telemetry.CiVisibilityMetricCollectorImpl
+import datadog.trace.civisibility.git.tree.ShellGitClient
+import datadog.communication.util.IOUtils
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -23,11 +24,12 @@ class GitClientGitInfoBuilderTest extends Specification {
     given:
     givenGitRepo()
 
+    def metricCollector = Stub(CiVisibilityMetricCollectorImpl)
     def config = Stub(Config)
     config.getCiVisibilityGitRemoteName() >> "origin"
     config.getCiVisibilityGitCommandTimeoutMillis() >> GIT_COMMAND_TIMEOUT_MILLIS
 
-    def gitClientFactory = new GitClient.Factory(config)
+    def gitClientFactory = new ShellGitClient.Factory(config, metricCollector)
     def infoBuilder = new GitClientGitInfoBuilder(config, gitClientFactory)
 
     when:

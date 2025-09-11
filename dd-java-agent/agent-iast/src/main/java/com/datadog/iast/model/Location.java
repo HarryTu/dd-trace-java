@@ -15,6 +15,8 @@ public final class Location {
 
   @Nullable private transient String serviceName;
 
+  private @Nullable String stackId;
+
   private Location(
       @Nullable final Long spanId,
       @Nullable final String path,
@@ -39,17 +41,21 @@ public final class Location {
   }
 
   public static Location forSpanAndClassAndMethod(
-      final AgentSpan span, final String clazz, final String method) {
+      @Nullable final AgentSpan span, final String clazz, final String method) {
     return new Location(spanId(span), clazz, -1, method, serviceName(span));
   }
 
   public static Location forSpanAndFileAndLine(
-      final AgentSpan span, final String file, final int line) {
+      @Nullable final AgentSpan span, final String file, final int line) {
     return new Location(spanId(span), file, line, null, serviceName(span));
   }
 
-  public static Location forSpan(final AgentSpan span) {
+  public static Location forSpan(@Nullable final AgentSpan span) {
     return new Location(spanId(span), null, -1, null, serviceName(span));
+  }
+
+  public static Location forClassAndMethodAndLine(String clazz, String method, int currentLine) {
+    return new Location(null, clazz, currentLine, method, null);
   }
 
   public long getSpanId() {
@@ -80,6 +86,15 @@ public final class Location {
       this.spanId = span.getSpanId();
       this.serviceName = span.getServiceName();
     }
+  }
+
+  @Nullable
+  public String getStackId() {
+    return stackId;
+  }
+
+  public void setStackId(@Nullable String stackId) {
+    this.stackId = stackId;
   }
 
   @Nullable

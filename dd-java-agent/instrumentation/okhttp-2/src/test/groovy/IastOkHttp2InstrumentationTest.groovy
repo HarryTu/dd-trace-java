@@ -1,7 +1,8 @@
 import com.squareup.okhttp.OkHttpClient
 import com.squareup.okhttp.Request
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.iast.InstrumentationBridge
+import datadog.trace.api.iast.propagation.CodecModule
 import datadog.trace.api.iast.propagation.PropagationModule
 import datadog.trace.api.iast.sink.SsrfModule
 import datadog.trace.instrumentation.okhttp2.IastHttpUrlInstrumentation
@@ -10,12 +11,12 @@ import spock.lang.Shared
 
 import static datadog.trace.agent.test.server.http.TestHttpServer.httpServer
 
-class IastOkHttp2InstrumentationTest extends AgentTestRunner {
+class IastOkHttp2InstrumentationTest extends InstrumentationSpecification {
 
   @Override
   protected void configurePreAgent() {
     // HttpUrl gets loaded early so we have to disable the advice transformer
-    IastHttpUrlInstrumentation.DISABLE_ADVICE_TRANSFORMER = true
+    IastHttpUrlInstrumentation.ENABLE_ADVICE_TRANSFORMER = false
     injectSysConfig('dd.iast.enabled', 'true')
   }
 
@@ -61,18 +62,21 @@ class IastOkHttp2InstrumentationTest extends AgentTestRunner {
   }
 
   private void mockPropagation() {
-    final propagation = Mock(PropagationModule) {
-      taintIfAnyTainted(_, _) >> {
-        if ((it[1] as List).any { input -> tainteds.containsKey(input) }) {
-          tainteds.put(it[0], null)
-        }
-      }
-      taintIfTainted(_, _) >> {
-        if (tainteds.containsKey(it[1])) {
-          tainteds.put(it[0], null)
-        }
+    final Closure taint = { target, inputs ->
+      if (inputs.any { input -> tainteds.containsKey(input) }) {
+        tainteds.put(target, null)
       }
     }
+
+    final propagation = Mock(PropagationModule) {
+      taintStringIfTainted(*_) >> { taint(it[0], [it[1]]) }
+      taintObjectIfTainted(*_) >> { taint(it[0], [it[1]]) }
+    }
     InstrumentationBridge.registerIastModule(propagation)
+
+    final codec = Mock(CodecModule) {
+      onUrlCreate(*_) >> { taint(it[0], it[1] as List) }
+    }
+    InstrumentationBridge.registerIastModule(codec)
   }
 }

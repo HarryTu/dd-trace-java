@@ -1,3 +1,14 @@
+import datadog.trace.api.ProcessTags
+import spock.lang.IgnoreIf
+
+import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.CUSTOM_EXCEPTION
+import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.ERROR
+import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.EXCEPTION
+import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.NOT_FOUND
+import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.REDIRECT
+import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.TIMEOUT_ERROR
+import static datadog.trace.api.config.GeneralConfig.EXPERIMENTAL_PROPAGATE_PROCESS_TAGS_ENABLED
+
 import com.google.common.io.Files
 import datadog.trace.agent.test.asserts.TraceAssert
 import datadog.trace.agent.test.base.HttpServer
@@ -14,20 +25,10 @@ import org.apache.catalina.core.StandardHost
 import org.apache.catalina.startup.Embedded
 import org.apache.catalina.valves.ErrorReportValve
 import org.apache.coyote.http11.Http11BaseProtocol
-import spock.lang.Unroll
 
 import javax.servlet.Servlet
 import javax.servlet.ServletException
 
-import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.CUSTOM_EXCEPTION
-import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.ERROR
-import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.EXCEPTION
-import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.NOT_FOUND
-import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.REDIRECT
-import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.TIMEOUT_ERROR
-import static org.junit.Assume.assumeTrue
-
-@Unroll
 abstract class TomcatServletTest extends AbstractServletTest<Embedded, Context> {
 
   class TomcatServer implements HttpServer {
@@ -87,6 +88,11 @@ abstract class TomcatServletTest extends AbstractServletTest<Embedded, Context> 
       server.start()
       port = ((server.connectors[0] as Connector).protocolHandler as Http11BaseProtocol).ep.serverSocket.localPort
       assert port > 0
+      if (testProcessTags()) {
+        assert ProcessTags.getTagsAsStringList().containsAll(["server.type:tomcat", "server.name:test"])
+      } else {
+        assert ProcessTags.getTagsAsStringList() == null
+      }
     }
 
     @Override
@@ -169,6 +175,27 @@ abstract class TomcatServletTest extends AbstractServletTest<Embedded, Context> 
     true
   }
 
+  @Override
+  boolean testSessionId() {
+    true
+  }
+
+
+  boolean testProcessTags() {
+    false
+  }
+
+  @Override
+  protected void configurePreAgent() {
+    super.configurePreAgent()
+    injectSysConfig(EXPERIMENTAL_PROPAGATE_PROCESS_TAGS_ENABLED, "${testProcessTags()}")
+  }
+
+  def cleanupSpec() {
+    injectSysConfig(EXPERIMENTAL_PROPAGATE_PROCESS_TAGS_ENABLED, "false")
+    ProcessTags.reset()
+  }
+
   boolean hasResponseSpan(ServerEndpoint endpoint) {
     def responseSpans = [REDIRECT, NOT_FOUND, ERROR, EXCEPTION, CUSTOM_EXCEPTION]
     return responseSpans.contains(endpoint)
@@ -184,7 +211,7 @@ abstract class TomcatServletTest extends AbstractServletTest<Embedded, Context> 
           childOfPrevious()
           tags {
             "component" "java-web-servlet-response"
-            if ({isDataStreamsEnabled()}) {
+            if ({ isDataStreamsEnabled() }) {
               "$DDTags.PATHWAY_HASH" { String }
             }
             defaultTags()
@@ -224,8 +251,8 @@ abstract class TomcatServletTest extends AbstractServletTest<Embedded, Context> 
     if (endpoint.throwsException) {
       // Exception classes get wrapped in ServletException
       ["error.message": { endpoint == EXCEPTION ? "Servlet execution threw an exception" : it == endpoint.body },
-        "error.type": { it == ServletException.name || it == InputMismatchException.name },
-        "error.stack": String]
+        "error.type"   : { it == ServletException.name || it == InputMismatchException.name },
+        "error.stack"  : String]
     } else {
       Collections.emptyMap()
     }
@@ -250,9 +277,9 @@ abstract class TomcatServletTest extends AbstractServletTest<Embedded, Context> 
     return { !bubblesResponse() || it == endpoint.status }
   }
 
+  @IgnoreIf({ !instance.testException() })
   def "test exception with custom status"() {
     setup:
-    assumeTrue(testException())
     def request = request(CUSTOM_EXCEPTION, method, body).build()
     def response = client.newCall(request).execute()
 
@@ -307,10 +334,14 @@ abstract class TomcatServletTest extends AbstractServletTest<Embedded, Context> 
   }
 }
 
-class TomcatServletV0ForkedTest extends TomcatServletTest implements TestingGenericHttpNamingConventions.ServerV0 {
+class TomcatServletV0Test extends TomcatServletTest implements TestingGenericHttpNamingConventions.ServerV0 {
 
 }
 
 class TomcatServletV1ForkedTest extends TomcatServletTest implements TestingGenericHttpNamingConventions.ServerV1 {
 
+  @Override
+  boolean testProcessTags() {
+    true
+  }
 }

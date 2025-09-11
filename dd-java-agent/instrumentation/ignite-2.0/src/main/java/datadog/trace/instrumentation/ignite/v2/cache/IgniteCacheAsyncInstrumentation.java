@@ -8,7 +8,7 @@ import static net.bytebuddy.matcher.ElementMatchers.isMethod;
 import static net.bytebuddy.matcher.ElementMatchers.isPublic;
 
 import com.google.auto.service.AutoService;
-import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.CallDepthThreadLocalMap;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
@@ -18,7 +18,7 @@ import org.apache.ignite.Ignite;
 import org.apache.ignite.IgniteCache;
 import org.apache.ignite.lang.IgniteFuture;
 
-@AutoService(Instrumenter.class)
+@AutoService(InstrumenterModule.class)
 public class IgniteCacheAsyncInstrumentation extends AbstractIgniteCacheInstrumentation {
 
   public IgniteCacheAsyncInstrumentation() {
@@ -36,8 +36,8 @@ public class IgniteCacheAsyncInstrumentation extends AbstractIgniteCacheInstrume
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(isPublic())
             .and(
@@ -53,7 +53,7 @@ public class IgniteCacheAsyncInstrumentation extends AbstractIgniteCacheInstrume
                     "putAllAsync",
                     "removeAllAsync")),
         IgniteCacheAsyncInstrumentation.class.getName() + "$IgniteAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(isPublic())
             .and(
@@ -91,11 +91,9 @@ public class IgniteCacheAsyncInstrumentation extends AbstractIgniteCacheInstrume
           span, InstrumentationContext.get(IgniteCache.class, Ignite.class).get(that));
       DECORATE.onOperation(span, that.getName(), methodName);
 
-      final AgentScope scope = activateSpan(span);
       // Enable async propagation, so the newly spawned task will be associated back with this
       // original trace.
-      scope.setAsyncPropagation(true);
-      return scope;
+      return activateSpan(span);
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
@@ -149,11 +147,9 @@ public class IgniteCacheAsyncInstrumentation extends AbstractIgniteCacheInstrume
           span, InstrumentationContext.get(IgniteCache.class, Ignite.class).get(that));
       DECORATE.onOperation(span, that.getName(), methodName, key);
 
-      final AgentScope scope = activateSpan(span);
       // Enable async propagation, so the newly spawned task will be associated back with this
       // original trace.
-      scope.setAsyncPropagation(true);
-      return scope;
+      return activateSpan(span);
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)

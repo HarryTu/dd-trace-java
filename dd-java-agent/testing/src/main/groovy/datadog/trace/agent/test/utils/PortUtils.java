@@ -105,7 +105,8 @@ public class PortUtils {
 
   public static void waitForPortToOpen(
       final int port, final long timeout, final TimeUnit unit, final Process process) {
-    final long waitUntil = System.currentTimeMillis() + unit.toMillis(timeout);
+    final long startedAt = System.currentTimeMillis();
+    final long waitUntil = startedAt + unit.toMillis(timeout);
 
     while (System.currentTimeMillis() < waitUntil) {
       try {
@@ -115,7 +116,17 @@ public class PortUtils {
       }
 
       if (!process.isAlive()) {
-        throw new RuntimeException("Process died before port " + port + " was opened");
+        int exitCode = process.exitValue();
+        if (exitCode != 0) {
+          throw new RuntimeException(
+              "Process exited abnormally exitCode="
+                  + exitCode
+                  + " before port="
+                  + port
+                  + " was opened");
+        } else {
+          throw new RuntimeException("Process finished before port=" + port + " was opened");
+        }
       }
 
       if (isPortOpen(port)) {
@@ -123,7 +134,13 @@ public class PortUtils {
       }
     }
 
-    throw new RuntimeException("Timed out waiting for port " + port + " to be opened");
+    throw new RuntimeException(
+        "Timed out waiting for port "
+            + port
+            + " to be opened, started to wait at: "
+            + startedAt
+            + ", timed out at: "
+            + System.currentTimeMillis());
   }
 
   public static void waitForPortToOpen(String host, int port, long timeout, TimeUnit unit) {

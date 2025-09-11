@@ -1,8 +1,8 @@
 package datadog.smoketest;
 
 import static datadog.smoketest.ProcessBuilderHelper.buildDirectory;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import com.datadog.debugger.agent.Configuration;
 import com.datadog.debugger.agent.JsonSnapshotSerializer;
@@ -14,7 +14,9 @@ import com.datadog.debugger.probe.SpanProbe;
 import com.datadog.debugger.sink.Snapshot;
 import com.datadog.debugger.util.MoshiHelper;
 import com.datadog.debugger.util.MoshiSnapshotTestHelper;
+import com.squareup.moshi.Json;
 import com.squareup.moshi.JsonAdapter;
+import com.squareup.moshi.Moshi;
 import com.squareup.moshi.Types;
 import datadog.trace.bootstrap.debugger.CapturedContext;
 import datadog.trace.bootstrap.debugger.ProbeRateLimiter;
@@ -38,6 +40,9 @@ import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import okhttp3.HttpUrl;
@@ -77,7 +82,10 @@ public abstract class BaseIntegrationTest {
   protected static final MockResponse EMPTY_200_RESPONSE = new MockResponse().setResponseCode(200);
 
   private static final ByteString DIAGNOSTICS_STR = ByteString.encodeUtf8("diagnostics");
-  private static final String CONFIG_ID = UUID.randomUUID().toString();
+  private static final String LD_CONFIG_ID = UUID.randomUUID().toString();
+  private static final String APM_CONFIG_ID = UUID.randomUUID().toString();
+  public static final String LIVE_DEBUGGING_PRODUCT = "LIVE_DEBUGGING";
+  public static final String APM_TRACING_PRODUCT = "APM_TRACING";
 
   protected MockWebServer datadogAgentServer;
   private MockDispatcher probeMockDispatcher;
@@ -87,11 +95,14 @@ public abstract class BaseIntegrationTest {
   protected Path logFilePath;
   protected Process targetProcess;
   private Configuration currentConfiguration;
+  private ConfigOverrides configOverrides;
   private boolean configProvided;
   protected final Object configLock = new Object();
-  protected final List<Predicate<Snapshot>> snapshotListeners = new ArrayList<>();
-  protected final List<Predicate<DecodedTrace>> traceListeners = new ArrayList<>();
-  protected final List<Predicate<ProbeStatus>> probeStatusListeners = new ArrayList<>();
+  protected final List<Consumer<JsonSnapshotSerializer.IntakeRequest>> intakeRequestListeners =
+      new ArrayList<>();
+  protected final List<Consumer<Snapshot>> snapshotListeners = new ArrayList<>();
+  protected final List<Consumer<DecodedTrace>> traceListeners = new ArrayList<>();
+  protected final List<Consumer<ProbeStatus>> probeStatusListeners = new ArrayList<>();
   protected int batchSize = 1; // to verify each snapshot upload one by one
 
   @BeforeAll
@@ -140,8 +151,9 @@ public abstract class BaseIntegrationTest {
         Arrays.asList(
             "-Ddd.service.name=" + getAppId(),
             "-Ddd.profiling.enabled=false",
-            "-Ddatadog.slf4j.simpleLogger.defaultLogLevel=debug",
-            "-Dorg.slf4j.simpleLogger.defaultLogLevel=info",
+            "-Ddatadog.slf4j.simpleLogger.defaultLogLevel=info",
+            "-Ddatadog.slf4j.simpleLogger.log.com.datadog.debugger=debug",
+            "-Ddatadog.slf4j.simpleLogger.log.datadog.remoteconfig=debug",
             "-Ddd.jmxfetch.start-delay=0",
             "-Ddd.jmxfetch.enabled=false",
             "-Ddd.dynamic.instrumentation.enabled=true",
@@ -208,13 +220,13 @@ public abstract class BaseIntegrationTest {
   protected enum RequestType {
     SNAPSHOT {
       @Override
-      public boolean process(BaseIntegrationTest baseIntegrationTest, RecordedRequest request) {
+      public void process(BaseIntegrationTest baseIntegrationTest, RecordedRequest request) {
         if (!request.getPath().startsWith(SNAPSHOT_URL_PATH)) {
-          return false;
+          return;
         }
         try {
           if (request.getBody().indexOf(DIAGNOSTICS_STR) > -1) {
-            return false;
+            return;
           }
         } catch (IOException ex) {
           ex.printStackTrace();
@@ -226,46 +238,44 @@ public abstract class BaseIntegrationTest {
         try {
           List<JsonSnapshotSerializer.IntakeRequest> intakeRequests = adapter.fromJson(bodyStr);
           for (JsonSnapshotSerializer.IntakeRequest intakeRequest : intakeRequests) {
+            for (Consumer<JsonSnapshotSerializer.IntakeRequest> listener :
+                baseIntegrationTest.intakeRequestListeners) {
+              listener.accept(intakeRequest);
+            }
             Snapshot snapshot = intakeRequest.getDebugger().getSnapshot();
-            for (Predicate<Snapshot> listener : baseIntegrationTest.snapshotListeners) {
-              if (listener.test(snapshot)) {
-                return true;
-              }
+            for (Consumer<Snapshot> listener : baseIntegrationTest.snapshotListeners) {
+              listener.accept(snapshot);
             }
           }
         } catch (IOException ex) {
           ex.printStackTrace();
         }
-        return false;
       }
     },
     SPAN {
       @Override
-      public boolean process(BaseIntegrationTest baseIntegrationTest, RecordedRequest request) {
+      public void process(BaseIntegrationTest baseIntegrationTest, RecordedRequest request) {
         if (!request.getPath().equals(TRACE_URL_PATH)) {
-          return false;
+          return;
         }
         DecodedMessage decodedMessage = Decoder.decodeV04(request.getBody().readByteArray());
         LOG.info("got traces: {}", decodedMessage.getTraces().size());
-        for (Predicate<DecodedTrace> listener : baseIntegrationTest.traceListeners) {
+        for (Consumer<DecodedTrace> listener : baseIntegrationTest.traceListeners) {
           for (DecodedTrace trace : decodedMessage.getTraces()) {
-            if (listener.test(trace)) {
-              return true;
-            }
+            listener.accept(trace);
           }
         }
-        return false;
       }
     },
     PROBE_STATUS {
       @Override
-      public boolean process(BaseIntegrationTest baseIntegrationTest, RecordedRequest request) {
+      public void process(BaseIntegrationTest baseIntegrationTest, RecordedRequest request) {
         if (!request.getPath().startsWith(SNAPSHOT_URL_PATH)) {
-          return false;
+          return;
         }
         try {
           if (request.getBody().indexOf(DIAGNOSTICS_STR) == -1) {
-            return false;
+            return;
           }
         } catch (IOException ex) {
           ex.printStackTrace();
@@ -277,56 +287,83 @@ public abstract class BaseIntegrationTest {
         LOG.info("got probe status: {}", bodyStr);
         try {
           List<ProbeStatus> probeStatuses = adapter.fromJson(bodyStr);
-          for (Predicate<ProbeStatus> listener : baseIntegrationTest.probeStatusListeners) {
+          for (Consumer<ProbeStatus> listener : baseIntegrationTest.probeStatusListeners) {
             for (ProbeStatus probeStatus : probeStatuses) {
-              if (listener.test(probeStatus)) {
-                return true;
-              }
+              listener.accept(probeStatus);
             }
           }
         } catch (IOException ex) {
           ex.printStackTrace();
         }
-        return false;
       }
     };
 
-    public abstract boolean process(
-        BaseIntegrationTest baseIntegrationTest, RecordedRequest request);
+    public abstract void process(BaseIntegrationTest baseIntegrationTest, RecordedRequest request);
   }
 
-  protected void registerSnapshotListener(Predicate<Snapshot> listener) {
+  protected void registerIntakeRequestListener(
+      Consumer<JsonSnapshotSerializer.IntakeRequest> listener) {
+    intakeRequestListeners.add(listener);
+  }
+
+  protected void registerSnapshotListener(Consumer<Snapshot> listener) {
     snapshotListeners.add(listener);
   }
 
-  protected void registerTraceListener(Predicate<DecodedTrace> listener) {
+  protected void registerTraceListener(Consumer<DecodedTrace> listener) {
     traceListeners.add(listener);
   }
 
-  protected void registerProbeStatusListener(Predicate<ProbeStatus> listener) {
+  protected void resetTraceListener() {
+    traceListeners.clear();
+  }
+
+  protected void registerProbeStatusListener(Consumer<ProbeStatus> listener) {
     probeStatusListeners.add(listener);
   }
 
-  protected void clearProbeStatusListener() {
-    probeStatusListeners.clear();
+  protected AtomicBoolean registerCheckReceivedInstalledEmitting() {
+    AtomicBoolean received = new AtomicBoolean();
+    AtomicBoolean installed = new AtomicBoolean();
+    AtomicBoolean emitting = new AtomicBoolean();
+    AtomicBoolean result = new AtomicBoolean();
+    registerProbeStatusListener(
+        probeStatus -> {
+          if (probeStatus.getDiagnostics().getStatus() == ProbeStatus.Status.RECEIVED) {
+            received.set(true);
+          }
+          if (probeStatus.getDiagnostics().getStatus() == ProbeStatus.Status.INSTALLED) {
+            installed.set(true);
+          }
+          if (probeStatus.getDiagnostics().getStatus() == ProbeStatus.Status.EMITTING) {
+            emitting.set(true);
+          }
+          result.set(received.get() && installed.get() && emitting.get());
+        });
+    return result;
   }
 
-  protected void processRequests() throws InterruptedException {
+  protected void processRequests(BooleanSupplier conditionOfDone) throws InterruptedException {
     long start = System.currentTimeMillis();
-    RecordedRequest request;
-    do {
-      request = datadogAgentServer.takeRequest(REQUEST_WAIT_TIMEOUT, TimeUnit.SECONDS);
-      if (request == null) {
-        throw new RuntimeException("timeout!");
-      }
-      LOG.info("processRequests path={}", request.getPath());
-      for (RequestType requestType : RequestType.values()) {
-        if (requestType.process(this, request)) {
-          return;
+    try {
+      RecordedRequest request;
+      do {
+        request = datadogAgentServer.takeRequest(REQUEST_WAIT_TIMEOUT, TimeUnit.SECONDS);
+        if (request == null) {
+          throw new RuntimeException("timeout!");
         }
-      }
-    } while (request != null && (System.currentTimeMillis() - start < 30_000));
-    throw new RuntimeException("timeout!");
+        LOG.info("processRequests path={}", request.getPath());
+        for (RequestType requestType : RequestType.values()) {
+          requestType.process(this, request);
+          if (conditionOfDone.getAsBoolean()) {
+            return;
+          }
+        }
+      } while (request != null && (System.currentTimeMillis() - start < 30_000));
+      throw new RuntimeException("timeout!");
+    } finally {
+      probeStatusListeners.clear();
+    }
   }
 
   protected void processRemainingRequests() throws InterruptedException {
@@ -383,10 +420,12 @@ public abstract class BaseIntegrationTest {
     return EMPTY_200_RESPONSE;
   }
 
-  private MockResponse handleConfigRequests() {
+  protected MockResponse handleConfigRequests() {
     Configuration configuration;
+    ConfigOverrides configOverrides;
     synchronized (configLock) {
       configuration = getCurrentConfiguration();
+      configOverrides = getConfigOverrides();
       configProvided = true;
       configLock.notifyAll();
     }
@@ -396,9 +435,22 @@ public abstract class BaseIntegrationTest {
     try {
       JsonAdapter<Configuration> adapter =
           MoshiConfigTestHelper.createMoshiConfig().adapter(Configuration.class);
-      String json = adapter.toJson(configuration);
-      LOG.info("Sending json config: {}", json);
-      String remoteConfigJson = RemoteConfigHelper.encode(json, CONFIG_ID);
+      String liveDebuggingJson = adapter.toJson(configuration);
+      LOG.info("Sending Live Debugging json: {}", liveDebuggingJson);
+      List<RemoteConfigHelper.RemoteConfig> remoteConfigs = new ArrayList<>();
+      remoteConfigs.add(
+          new RemoteConfigHelper.RemoteConfig(
+              LIVE_DEBUGGING_PRODUCT, liveDebuggingJson, LD_CONFIG_ID));
+      if (configOverrides != null) {
+        JsonAdapter<ConfigOverrides> configAdapter =
+            new Moshi.Builder().build().adapter(ConfigOverrides.class);
+        String configOverridesJson = configAdapter.toJson(configOverrides);
+        LOG.info("Sending configOverrides json: {}", configOverridesJson);
+        remoteConfigs.add(
+            new RemoteConfigHelper.RemoteConfig(
+                APM_TRACING_PRODUCT, configOverridesJson, APM_CONFIG_ID));
+      }
+      String remoteConfigJson = RemoteConfigHelper.encode(remoteConfigs);
       return new MockResponse().setResponseCode(200).setBody(remoteConfigJson);
     } catch (Exception e) {
       throw new RuntimeException(e);
@@ -408,6 +460,12 @@ public abstract class BaseIntegrationTest {
   private Configuration getCurrentConfiguration() {
     synchronized (configLock) {
       return currentConfiguration;
+    }
+  }
+
+  private ConfigOverrides getConfigOverrides() {
+    synchronized (configLock) {
+      return configOverrides;
     }
   }
 
@@ -431,32 +489,29 @@ public abstract class BaseIntegrationTest {
     }
   }
 
+  protected void setConfigOverrides(ConfigOverrides configOverrides) {
+    synchronized (configLock) {
+      this.configOverrides = configOverrides;
+    }
+  }
+
   protected Configuration createConfig(LogProbe logProbe) {
     return createConfig(Arrays.asList(logProbe));
   }
 
   protected Configuration createMetricConfig(MetricProbe metricProbe) {
-    return Configuration.builder()
-        .setService(getAppId())
-        .addMetricProbes(Collections.singletonList(metricProbe))
-        .build();
+    return Configuration.builder().setService(getAppId()).add(metricProbe).build();
   }
 
   protected Configuration createSpanDecoConfig(SpanDecorationProbe spanDecorationProbe) {
-    return Configuration.builder()
-        .setService(getAppId())
-        .addSpanDecorationProbes(Collections.singletonList(spanDecorationProbe))
-        .build();
+    return Configuration.builder().setService(getAppId()).add(spanDecorationProbe).build();
   }
 
   protected Configuration createSpanConfig(SpanProbe spanProbe) {
-    return Configuration.builder()
-        .setService(getAppId())
-        .addSpanProbes(Collections.singletonList(spanProbe))
-        .build();
+    return Configuration.builder().setService(getAppId()).add(spanProbe).build();
   }
 
-  protected Configuration createConfig(Collection<LogProbe> logProbes) {
+  protected Configuration createConfig(List<LogProbe> logProbes) {
     return new Configuration(getAppId(), logProbes);
   }
 
@@ -466,7 +521,7 @@ public abstract class BaseIntegrationTest {
       Configuration.FilterList denyList) {
     return Configuration.builder()
         .setService(getAppId())
-        .addLogProbes(logProbes)
+        .add(logProbes)
         .addAllowList(allowList)
         .addDenyList(denyList)
         .build();
@@ -477,6 +532,8 @@ public abstract class BaseIntegrationTest {
     CapturedContext.CapturedValue capturedValue = context.getArguments().get(name);
     assertEquals(typeName, capturedValue.getType());
     Object objValue = capturedValue.getValue();
+    assertNotNull(
+        objValue, "objValue null for argName=" + name + " capturedValue=" + capturedValue);
     if (objValue.getClass().isArray()) {
       assertEquals(value, Arrays.toString((Object[]) objValue));
     } else {
@@ -590,5 +647,24 @@ public abstract class BaseIntegrationTest {
     int getPort() {
       return socket.getLocalPort();
     }
+  }
+
+  static final class ConfigOverrides {
+    @Json(name = "lib_config")
+    public LibConfig libConfig;
+  }
+
+  static final class LibConfig {
+    @Json(name = "dynamic_instrumentation_enabled")
+    public Boolean dynamicInstrumentationEnabled;
+
+    @Json(name = "exception_replay_enabled")
+    public Boolean exceptionReplayEnabled;
+
+    @Json(name = "code_origin_enabled")
+    public Boolean codeOriginEnabled;
+
+    @Json(name = "live_debugging_enabled")
+    public Boolean liveDebuggingEnabled;
   }
 }

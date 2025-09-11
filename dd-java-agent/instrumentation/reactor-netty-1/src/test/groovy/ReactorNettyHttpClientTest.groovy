@@ -1,3 +1,4 @@
+import datadog.environment.JavaVirtualMachine
 import datadog.trace.agent.test.base.HttpClientTest
 import datadog.trace.agent.test.naming.TestingNettyHttpNamingConventions
 import datadog.trace.instrumentation.netty41.client.NettyHttpClientDecorator
@@ -8,6 +9,7 @@ import reactor.netty.ByteBufFlux
 import reactor.netty.ByteBufMono
 import reactor.netty.http.client.HttpClient
 import reactor.netty.http.client.HttpClientResponse
+import spock.lang.IgnoreIf
 import spock.lang.Shared
 
 import java.time.Duration
@@ -16,6 +18,9 @@ import java.util.function.BiFunction
 import static datadog.trace.agent.test.utils.TraceUtils.basicSpan
 import static datadog.trace.agent.test.utils.TraceUtils.runUnderTrace
 
+@IgnoreIf(reason = "TLS issues with OpenJ9", value = {
+  JavaVirtualMachine.isJ9()
+})
 class ReactorNettyHttpClientTest extends HttpClientTest implements TestingNettyHttpNamingConventions.ClientV0 {
 
   @Shared

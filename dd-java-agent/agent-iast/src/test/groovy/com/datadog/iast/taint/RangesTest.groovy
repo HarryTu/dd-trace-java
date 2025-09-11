@@ -8,9 +8,14 @@ import datadog.trace.api.iast.SourceTypes
 import datadog.trace.api.iast.VulnerabilityMarks
 import datadog.trace.test.util.DDSpecification
 
+import static com.datadog.iast.util.HttpHeader.LOCATION
+import static com.datadog.iast.util.HttpHeader.REFERER
+import static datadog.trace.api.iast.SourceTypes.GRPC_BODY
+import static datadog.trace.api.iast.SourceTypes.REQUEST_HEADER_VALUE
+import static datadog.trace.api.iast.SourceTypes.REQUEST_QUERY
+import static datadog.trace.api.iast.SourceTypes.SQL_TABLE
 import static datadog.trace.api.iast.VulnerabilityMarks.NOT_MARKED
 import static com.datadog.iast.taint.Ranges.mergeRanges
-import static com.datadog.iast.taint.Ranges.rangesProviderFor
 import static datadog.trace.api.iast.SourceTypes.REQUEST_HEADER_NAME
 
 class RangesTest extends DDSpecification {
@@ -69,102 +74,6 @@ class RangesTest extends DDSpecification {
     1      | 2      | 0     | [[1, 1]] | [null, [1, 1]]
     1      | 2      | 1     | [[1, 1]] | [null, [2, 1]]
     1      | 2      | -1    | [[1, 1]] | [null, [0, 1]]
-  }
-
-  void 'test range provider'(final Object values, final List<TaintedObject> tainted, final int size, final int rangeCount) {
-    setup:
-    final to = Mock(TaintedObjects)
-    values.eachWithIndex { Object entry, int i ->
-      to.get(entry) >> tainted.get(i)
-    }
-
-    when:
-    final provider = rangesProviderFor(to, values)
-
-    then:
-    provider.size() == size
-    provider.rangeCount() == rangeCount
-    values.eachWithIndex { Object entry, int i ->
-      final value = provider.value(i)
-      assert value == entry
-      assert provider.ranges(value) == tainted.get(i)?.getRanges()
-    } == values
-
-    where:
-    values                                | tainted                                                 | size | rangeCount
-    null                                  | []                                                      | 0    | 0
-    []                                    | []                                                      | 0    | 0
-    ['a', 'b', 'c', 'd']                  | [null, ranged(2), null, ranged(6), null]                | 4    | 8
-    ['a', 'b', 'c', 'd', 'e'] as String[] | [ranged(1), ranged(1), ranged(1), ranged(1), ranged(1)] | 5    | 5
-  }
-
-  void 'test empty range provider'() {
-    setup:
-    final to = Mock(TaintedObjects)
-    final provider = rangesProviderFor(to, items)
-
-    when:
-    final rangeCount = provider.rangeCount()
-    final size = provider.size()
-
-    then:
-    rangeCount == 0
-    size == 0
-
-    when:
-    provider.value(0)
-
-    then:
-    thrown(UnsupportedOperationException)
-
-    when:
-    provider.ranges('abc')
-
-    then:
-    thrown(UnsupportedOperationException)
-
-    where:
-    items | _
-    null  | _
-    []    | _
-  }
-
-  void 'getIncludedRangesInterval'() {
-    given:
-    def src = rangesFromSpec(srcSpec)
-
-    when:
-    def result = Ranges.getIncludedRangesInterval(offset, length, src)
-
-    then:
-    result == expected
-
-    where:
-    offset | length | srcSpec                   | expected
-    1      | 7      | [[4, 3]]                  | [0, -1]
-    0      | 4      | [[4, 3]]                  | [-1, -1]
-    7      | 2      | [[4, 3]]                  | [-1, -1]
-    1      | 4      | [[4, 3]]                  | [0, -1]
-    1      | 5      | [[4, 3]]                  | [0, -1]
-    4      | 3      | [[4, 3]]                  | [0, -1]
-    6      | 2      | [[4, 3]]                  | [0, -1]
-    5      | 3      | [[4, 3]]                  | [0, -1]
-    4      | 2      | [[4, 3]]                  | [0, -1]
-    1      | 9      | [[2, 3], [6, 3], [15, 1]] | [0, 2]
-    1      | 1      | [[2, 3], [6, 3], [15, 1]] | [-1, -1]
-    5      | 1      | [[2, 3], [6, 3], [15, 1]] | [-1, -1]
-    9      | 1      | [[2, 3], [6, 3], [15, 1]] | [-1, -1]
-    1      | 3      | [[2, 3], [6, 3], [15, 1]] | [0, 1]
-    2      | 2      | [[2, 3], [6, 3], [15, 1]] | [0, 1]
-    2      | 3      | [[2, 3], [6, 3], [15, 1]] | [0, 1]
-    1      | 7      | [[2, 3], [6, 3], [15, 1]] | [0, 2]
-    2      | 6      | [[2, 3], [6, 3], [15, 1]] | [0, 2]
-    2      | 7      | [[2, 3], [6, 3], [15, 1]] | [0, 2]
-    5      | 3      | [[2, 3], [6, 3], [15, 1]] | [1, 2]
-    6      | 2      | [[2, 3], [6, 3], [15, 1]] | [1, 2]
-    6      | 3      | [[2, 3], [6, 3], [15, 1]] | [1, 2]
-    4      | 5      | [[2, 3], [6, 3], [15, 1]] | [0, 2]
-    4      | 4      | [[2, 3], [6, 3], [15, 1]] | [0, 2]
   }
 
   void 'forObject'() {
@@ -307,6 +216,187 @@ class RangesTest extends DDSpecification {
     10     | MAX_RANGE_COUNT | MAX_RANGE_COUNT | MAX_RANGE_COUNT
   }
 
+  void 'test all ranges coming from header'() {
+    when:
+    final allRangesFrom = Ranges.allRangesFromHeader(header, ranges as Range[])
+
+    then:
+    allRangesFrom == expected
+
+    where:
+    header  | ranges                                                                           | expected
+    REFERER | []                                                                               | true
+    REFERER | [rangeWithSource(REQUEST_HEADER_VALUE, header.name)]                             | true
+    REFERER | [rangeWithSource(REQUEST_HEADER_VALUE, LOCATION.name)]                           | false
+    REFERER | [rangeWithSource(GRPC_BODY)]                                                     | false
+    REFERER | [rangeWithSource(REQUEST_HEADER_VALUE, header.name), rangeWithSource(GRPC_BODY)] | false
+    REFERER | [
+      rangeWithSource(REQUEST_HEADER_VALUE, header.name),
+      rangeWithSource(REQUEST_HEADER_VALUE, LOCATION.name)
+    ]                                                                                          | false
+  }
+
+  void 'test all ranges coming from any header'() {
+    when:
+    final allRangesFrom = Ranges.allRangesFromAnyHeader(ranges as Range[])
+
+    then:
+    allRangesFrom == expected
+
+    where:
+    headers   | ranges                                                                            | expected
+    [REFERER] | []                                                                                | true
+    [REFERER] | [rangeWithSource(REQUEST_HEADER_VALUE, REFERER.name)]                             | true
+    [REFERER] | [rangeWithSource(REQUEST_HEADER_VALUE, LOCATION.name)]                            | true
+    [REFERER] | [rangeWithSource(GRPC_BODY)]                                                      | false
+    [REFERER] | [rangeWithSource(REQUEST_HEADER_VALUE, REFERER.name), rangeWithSource(GRPC_BODY)] | false
+    [REFERER] | [
+      rangeWithSource(REQUEST_HEADER_VALUE, REFERER.name),
+      rangeWithSource(REQUEST_HEADER_VALUE, LOCATION.name)
+    ]                                                                                             | true
+  }
+
+  void 'test intersection of ranges'() {
+    when:
+    final intersection = Ranges.intersection(target, ranges as Range[])
+
+    then:
+    final list = intersection == null ? [] : intersection.toList()
+    list.size() == expected.size()
+    list.containsAll(expected)
+
+    where:
+    target      | ranges        | expected
+    range(2, 4) | [range(0, 2)] | [] // [2, 3, 4, 5] | [0, 1] -> []
+    range(2, 4) | [range(0, 4)] | [range(2, 2)] // [2, 3, 4, 5] | [0, 1, 2, 3] -> [2, 3]
+    range(2, 4) | [range(2, 4)] | [range(2, 4)] // [2, 3, 4, 5] | [2, 3, 4, 5] -> [2, 3, 4, 5]
+    range(2, 4) | [range(3, 1)] | [range(3, 1)] // [2, 3, 4, 5] | [3] -> [3]
+    range(2, 4) | [range(4, 4)] | [range(4, 2)] // [2, 3, 4, 5] | [4, 5, 6, 7] -> [4, 5]
+    range(2, 4) | [range(6, 4)] | [] // [2, 3, 4, 5] | [6, 7, 8, 9] -> []
+  }
+
+  void 'test forSubstring'() {
+    when:
+    def result = Ranges.forSubstring(offset, length, srcSpec as Range[])
+
+    then:
+    final list = result == null ? [] : result.toList()
+    list.size() == expected.size()
+    list.containsAll(expected)
+
+    where:
+    offset | length | srcSpec                                  | expected
+    1      | 7      | [range(4, 3)]                            | [range(3, 3)]
+    0      | 4      | [range(4, 3)]                            | []
+    7      | 2      | [range(4, 3)]                            | []
+    1      | 4      | [range(4, 3)]                            | [range(3, 1)]
+    1      | 5      | [range(4, 3)]                            | [range(3, 2)]
+    4      | 3      | [range(4, 3)]                            | [range(0, 3)]
+    6      | 2      | [range(4, 3)]                            | [range(0, 1)]
+    5      | 3      | [range(4, 3)]                            | [range(0, 2)]
+    4      | 2      | [range(4, 3)]                            | [range(0, 2)]
+    1      | 9      | [range(2, 3), range(6, 3), range(15, 1)] | [range(1, 3), range(5, 3)]
+    1      | 1      | [range(2, 3), range(6, 3), range(15, 1)] | []
+    5      | 1      | [range(2, 3), range(6, 3), range(15, 1)] | []
+    9      | 1      | [range(2, 3), range(6, 3), range(15, 1)] | []
+    1      | 3      | [range(2, 3), range(6, 3), range(15, 1)] | [range(1, 2)]
+    2      | 2      | [range(2, 3), range(6, 3), range(15, 1)] | [range(0, 2)]
+    2      | 3      | [range(2, 3), range(6, 3), range(15, 1)] | [range(0, 3)]
+    1      | 7      | [range(2, 3), range(6, 3), range(15, 1)] | [range(1, 3), range(5, 2)]
+    2      | 6      | [range(2, 3), range(6, 3), range(15, 1)] | [range(0, 3), range(4, 2)]
+    2      | 7      | [range(2, 3), range(6, 3), range(15, 1)] | [range(0, 3), range(4, 3)]
+    5      | 3      | [range(2, 3), range(6, 3), range(15, 1)] | [range(1, 2)]
+    6      | 2      | [range(2, 3), range(6, 3), range(15, 1)] | [range(0, 2)]
+    6      | 3      | [range(2, 3), range(6, 3), range(15, 1)] | [range(0, 3)]
+    4      | 5      | [range(2, 3), range(6, 3), range(15, 1)] | [range(0, 1), range(2, 3)]
+    4      | 4      | [range(2, 3), range(6, 3), range(15, 1)] | [range(0, 1), range(2, 2)]
+  }
+
+  void 'merge ranges keeping order'() {
+    when:
+    final result = Ranges.mergeRangesSorted(left as Range[], right as Range[])
+
+    then:
+    final expectedArray = expected as Range[]
+    result == expectedArray
+
+    where:
+    left                       | right                      | expected
+    []                         | []                         | []
+    []                         | [range(2, 2)]              | [range(2, 2)]
+    [range(2, 2)]              | []                         | [range(2, 2)]
+    [range(2, 2)]              | [range(2, 2)]              | [range(2, 2), range(2, 2)]
+    [range(0, 2)]              | [range(2, 2)]              | [range(0, 2), range(2, 2)]
+    [range(4, 2)]              | [range(2, 2)]              | [range(2, 2), range(4, 2)]
+    [range(0, 6)]              | [range(2, 2)]              | [range(0, 6), range(2, 2)]
+    [range(0, 2), range(4, 2)] | [range(2, 2)]              | [range(0, 2), range(2, 2), range(4, 2)]
+    [range(2, 2), range(6, 2)] | [range(0, 2), range(4, 2)] | [range(0, 2), range(2, 2), range(4, 2), range(6, 2)]
+  }
+
+  void 'test forIndentation method'() {
+    when:
+    final result = Ranges.forIndentation(input, indentation, ranges as Range[])
+
+    then:
+    final expectedArray = expected as Range[]
+    result == expectedArray
+
+    where:
+    input                | indentation | ranges                                                                                            | expected
+    "123\n123"           | 4           | [rangeWithSource(0, 3, (byte) 1, null, "123"), rangeWithSource(6, 1, (byte) 2, null, "3")]        | [rangeWithSource(4, 3, (byte) 1, null, "123"), rangeWithSource(14, 1, (byte) 2, null, "3")]
+    "123\r\n123"         | 4           | [rangeWithSource(0, 3, (byte) 1, null, "123"), rangeWithSource(7, 1, (byte) 2, null, "3")]        | [rangeWithSource(4, 3, (byte) 1, null, "123"), rangeWithSource(14, 1, (byte) 2, null, "3")]
+    "123\n123"           | 4           | [rangeWithSource(0, 5, (byte) 1, null, "123\n1"), rangeWithSource(6, 1, (byte) 2, null, "3")]     | [rangeWithSource(4, 9, (byte) 1, null, "123\n1"), rangeWithSource(14, 1, (byte) 2, null, "3")]
+    "123\r\n123"         | 4           | [rangeWithSource(0, 6, (byte) 1, null, "123\r\n1"), rangeWithSource(7, 1, (byte) 2, null, "3")]   | [rangeWithSource(4, 9, (byte) 1, null, "123\r\n1"), rangeWithSource(14, 1, (byte) 2, null, "3")]
+    "123\n123"           | 0           | [rangeWithSource(0, 3, (byte) 1, null, "123"), rangeWithSource(6, 1, (byte) 2, null, "3")]        | [rangeWithSource(0, 3, (byte) 1, null, "123"), rangeWithSource(6, 1, (byte) 2, null, "3")]
+    "123\r\n123"         | 0           | [rangeWithSource(0, 3, (byte) 1, null, "123"), rangeWithSource(7, 1, (byte) 2, null, "3")]        | [rangeWithSource(0, 3, (byte) 1, null, "123"), rangeWithSource(6, 1, (byte) 2, null, "3")]
+    "123\n123"           | 0           | [rangeWithSource(0, 5, (byte) 1, null, "123\n1"), rangeWithSource(6, 1, (byte) 2, null, "3")]     | [rangeWithSource(0, 5, (byte) 1, null, "123\n1"), rangeWithSource(6, 1, (byte) 2, null, "3")]
+    "123\r\n123"         | 0           | [rangeWithSource(0, 6, (byte) 1, null, "123\r\n1"), rangeWithSource(7, 1, (byte) 2, null, "3")]   | [rangeWithSource(0, 5, (byte) 1, null, "123\r\n1"), rangeWithSource(6, 1, (byte) 2, null, "3")]
+    "    123\n    123"   | -4          | [rangeWithSource(4, 3, (byte) 1, null, "123"), rangeWithSource(14, 1, (byte) 2, null, "3")]       | [rangeWithSource(0, 3, (byte) 1, null, "123"), rangeWithSource(6, 1, (byte) 2, null, "3")]
+    "    123\r\n    123" | -4          | [rangeWithSource(4, 3, (byte) 1, null, "123"), rangeWithSource(15, 1, (byte) 2, null, "3")]       | [rangeWithSource(0, 3, (byte) 1, null, "123"), rangeWithSource(6, 1, (byte) 2, null, "3")]
+    "    123\n    123"   | -4          | [rangeWithSource(4, 9, (byte) 1, null, "123\n1"), rangeWithSource(14, 1, (byte) 2, null, "3")]    | [rangeWithSource(0, 5, (byte) 1, null, "123\n1"), rangeWithSource(6, 1, (byte) 2, null, "3")]
+    "    123\r\n    123" | -4          | [rangeWithSource(4, 10, (byte) 1, null, "123\r\n1"), rangeWithSource(15, 1, (byte) 2, null, "3")] | [rangeWithSource(0, 5, (byte) 1, null, "123\r\n1"), rangeWithSource(6, 1, (byte) 2, null, "3")]
+  }
+
+  void 'test splitRanges method'() {
+    when:
+    final result = Ranges.splitRanges(start, end, newLength, range as Range, offset, diffLength)
+
+    then:
+    final expectedArray = expected as Range[]
+    result == expectedArray
+
+    where:
+    start | end | newLength | range       | offset | diffLength | expected
+    1     | 3   | 2         | range(0, 8) | 0      | 0          | [range(0, 1), range(3, 5)]
+    1     | 3   | 2         | range(0, 8) | 2      | 0          | [range(2, 1), range(5, 5)]
+    2     | 4   | 2         | range(1, 8) | -1     | 0          | [range(0, 1), range(3, 5)]
+    1     | 3   | 3         | range(0, 8) | 0      | -1         | [range(0, 1), range(4, 3)]
+    1     | 3   | 3         | range(0, 8) | 2      | -1         | [range(2, 1), range(6, 3)]
+    2     | 3   | 2         | range(1, 8) | -1     | -1         | [range(0, 1), range(3, 4)]
+    1     | 3   | 3         | range(0, 8) | 0      | 1          | [range(0, 1), range(4, 5)]
+    1     | 3   | 3         | range(0, 8) | 2      | 1          | [range(2, 1), range(6, 5)]
+    2     | 3   | 2         | range(1, 8) | -1     | 1          | [range(0, 1), range(3, 6)]
+    8     | 10  | 2         | range(0, 8) | 0      | 0          | [range(0, 8)]
+    1     | 3   | 2         | range(8, 8) | 0      | 0          | []
+  }
+
+  void 'test excludeRangesBySource method'() {
+    when:
+    final result = Ranges.excludeRangesBySource(ranges as Range[], source as BitSet)
+
+    then:
+    final expectedArray = expected as Range[]
+    result == expectedArray
+
+    where:
+    ranges                                          | source                                       | expected
+    [rangeWithSource(0, 5, SQL_TABLE), range(5, 3)] | bitSetOf(SQL_TABLE)                          | [range(5, 3)]
+    [rangeWithSource(0, 5, SQL_TABLE), range(5, 3)] | bitSetOf(SQL_TABLE, REQUEST_QUERY)           | [range(5, 3)]
+    [rangeWithSource(0, 5, SQL_TABLE), range(5, 3)] | bitSetOf(REQUEST_HEADER_NAME)                | [rangeWithSource(0, 5, SQL_TABLE)]
+    [rangeWithSource(0, 5, SQL_TABLE), range(5, 3)] | bitSetOf(REQUEST_QUERY)                      | [rangeWithSource(0, 5, SQL_TABLE), range(5, 3)]
+    [rangeWithSource(0, 5, SQL_TABLE), range(5, 3)] | bitSetOf(REQUEST_QUERY, REQUEST_HEADER_NAME) | [rangeWithSource(0, 5, SQL_TABLE)]
+    []                                              | bitSetOf(SQL_TABLE)                          | []
+  }
 
   Range[] rangesFromSpec(List<List<Object>> spec) {
     def ranges = new Range[spec.size()]
@@ -334,5 +424,25 @@ class RangesTest extends DDSpecification {
 
   Range rangeFor(final int index) {
     return new Range(index, 1, new Source(REQUEST_HEADER_NAME, 'a', 'b'), NOT_MARKED)
+  }
+
+  Range rangeWithSource(final byte source, final String name = 'name', final String value = 'value') {
+    return new Range(0, 10, new Source(source, name, value), NOT_MARKED)
+  }
+
+  Range range(final int start, final int length) {
+    return new Range(start, length, new Source(REQUEST_HEADER_NAME, 'a', 'b'), NOT_MARKED)
+  }
+
+  Range rangeWithSource(final int start, final int length, final byte source, final String name = 'name', final String value = 'value') {
+    return new Range(start, length, new Source(source, name, value), NOT_MARKED)
+  }
+
+  BitSet bitSetOf(byte... values) {
+    BitSet bitSet = new BitSet()
+    for (byte value : values) {
+      bitSet.set(value)
+    }
+    return bitSet
   }
 }

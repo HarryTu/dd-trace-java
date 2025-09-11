@@ -1,6 +1,10 @@
-import datadog.trace.agent.test.AgentTestRunner
+import static datadog.trace.agent.test.utils.TraceUtils.runUnderTrace
+
+import datadog.trace.agent.test.InstrumentationSpecification
+import datadog.trace.api.config.TraceInstrumentationConfig
 import datadog.trace.bootstrap.instrumentation.api.Tags
 import datadog.trace.instrumentation.jaxrs1.JaxRsAnnotationsDecorator
+import io.dropwizard.jersey.PATCH
 
 import javax.ws.rs.DELETE
 import javax.ws.rs.GET
@@ -10,9 +14,7 @@ import javax.ws.rs.POST
 import javax.ws.rs.PUT
 import javax.ws.rs.Path
 
-import static datadog.trace.agent.test.utils.TraceUtils.runUnderTrace
-
-class JaxRsAnnotations1InstrumentationTest extends AgentTestRunner {
+class JaxRsAnnotations1InstrumentationTest extends InstrumentationSpecification {
 
   def "instrumentation can be used as root span and resource is set to METHOD PATH"() {
     setup:
@@ -42,6 +44,7 @@ class JaxRsAnnotations1InstrumentationTest extends AgentTestRunner {
 
   def "span named '#name' from annotations on class when is not root span"() {
     setup:
+    injectSysConfig(TraceInstrumentationConfig.JAX_RS_ADDITIONAL_ANNOTATIONS, "CustomMethod")
     runUnderTrace("test") {
       obj.call()
     }
@@ -56,6 +59,7 @@ class JaxRsAnnotations1InstrumentationTest extends AgentTestRunner {
           tags {
             "$Tags.COMPONENT" "jax-rs"
             "$Tags.HTTP_ROUTE" name.split(" ").last()
+            withCustomIntegrationName(null)
             defaultTags()
           }
         }
@@ -96,6 +100,16 @@ class JaxRsAnnotations1InstrumentationTest extends AgentTestRunner {
         void call() {
         }
       }
+    "PATCH /interface"    | new InterfaceWithPath() {
+        @PATCH
+        void call() {
+        }
+      }
+    "CUSTOM /interface"    | new InterfaceWithPath() {
+        @CustomMethod
+        void call() {
+        }
+      }
     "POST /abstract/d"   | new AbstractClassWithPath() {
         @POST
         @Path("/d")
@@ -128,6 +142,10 @@ class JaxRsAnnotations1InstrumentationTest extends AgentTestRunner {
 
   def "no annotations has no effect"() {
     setup:
+    def obj = new Jax() {
+        void call() {
+        }
+      }
     runUnderTrace("test") {
       obj.call()
     }
@@ -144,13 +162,6 @@ class JaxRsAnnotations1InstrumentationTest extends AgentTestRunner {
         }
       }
     }
-
-    where:
-    obj | _
-    new Jax() {
-        void call() {
-        }
-      }   | _
   }
 
   interface Jax {

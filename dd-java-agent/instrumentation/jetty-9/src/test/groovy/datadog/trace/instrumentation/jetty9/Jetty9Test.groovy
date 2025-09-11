@@ -5,12 +5,14 @@ import datadog.trace.agent.test.base.HttpServerTest
 import datadog.trace.agent.test.naming.TestingGenericHttpNamingConventions
 import org.eclipse.jetty.server.Server
 import org.eclipse.jetty.server.handler.AbstractHandler
+import test.JettyServer
+import test.TestHandler
 
 abstract class Jetty9Test extends HttpServerTest<Server> {
 
   @Override
   HttpServer server() {
-    new JettyServer(handler())
+    new JettyServer(handler(), useWebsocketPojoEndpoint())
   }
 
   AbstractHandler handler() {
@@ -25,6 +27,11 @@ abstract class Jetty9Test extends HttpServerTest<Server> {
   @Override
   String expectedOperationName() {
     operation()
+  }
+
+  protected boolean useWebsocketPojoEndpoint() {
+    // only supported in jetty 10+
+    isLatestDepTest
   }
 
 
@@ -77,10 +84,24 @@ abstract class Jetty9Test extends HttpServerTest<Server> {
   boolean testBodyMultipart() {
     true
   }
+
+  @Override
+  boolean testSessionId() {
+    true
+  }
+
+  @Override
+  boolean testWebsockets() {
+    return super.testWebsockets() && (getServer() as JettyServer).websocketAvailable
+  }
 }
 
 class Jetty9V0ForkedTest extends Jetty9Test implements TestingGenericHttpNamingConventions.ServerV0 {
 }
 
 class Jetty9V1ForkedTest extends Jetty9Test implements TestingGenericHttpNamingConventions.ServerV1 {
+  @Override
+  protected boolean useWebsocketPojoEndpoint() {
+    false
+  }
 }

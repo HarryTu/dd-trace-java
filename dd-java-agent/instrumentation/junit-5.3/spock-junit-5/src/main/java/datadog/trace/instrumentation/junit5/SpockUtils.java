@@ -1,8 +1,9 @@
 package datadog.trace.instrumentation.junit5;
 
-import datadog.trace.api.civisibility.config.SkippableTest;
+import datadog.trace.api.civisibility.CIConstants;
+import datadog.trace.api.civisibility.config.TestIdentifier;
+import datadog.trace.api.civisibility.config.TestSourceData;
 import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -14,43 +15,31 @@ import org.junit.platform.engine.TestSource;
 import org.junit.platform.engine.TestTag;
 import org.junit.platform.engine.UniqueId;
 import org.junit.platform.engine.support.descriptor.MethodSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.spockframework.runtime.SpockNode;
+import org.spockframework.runtime.model.FeatureInfo;
 import org.spockframework.runtime.model.FeatureMetadata;
 import org.spockframework.runtime.model.SpecElementInfo;
 
 public class SpockUtils {
 
-  private static final MethodHandle GET_TEST_TAGS;
-  private static final MethodHandle GET_TEST_TAG_VALUE;
+  private static final Logger LOGGER = LoggerFactory.getLogger(SpockUtils.class);
+
+  private static final datadog.trace.util.MethodHandles METHOD_HANDLES =
+      new datadog.trace.util.MethodHandles(ClassLoaderUtils.getDefaultClassLoader());
+
+  private static final MethodHandle GET_TEST_TAGS =
+      METHOD_HANDLES.method("org.spockframework.runtime.model.ITestTaggable", "getTestTags");
+
+  private static final MethodHandle GET_TEST_TAG_VALUE =
+      METHOD_HANDLES.method("org.spockframework.runtime.model.TestTag", "getValue");
 
   static {
-    MethodHandles.Lookup lookup = MethodHandles.publicLookup();
-    ClassLoader defaultClassLoader = ClassLoaderUtils.getDefaultClassLoader();
-    GET_TEST_TAGS = accessGetTestTags(lookup, defaultClassLoader);
-    GET_TEST_TAG_VALUE = accessGetTestTagValue(lookup, defaultClassLoader);
-  }
-
-  private static MethodHandle accessGetTestTags(
-      MethodHandles.Lookup lookup, ClassLoader classLoader) {
-    try {
-      Class<?> testTaggable =
-          classLoader.loadClass("org.spockframework.runtime.model.ITestTaggable");
-      Method method = testTaggable.getDeclaredMethod("getTestTags");
-      return lookup.unreflect(method);
-    } catch (Throwable throwable) {
-      return null;
-    }
-  }
-
-  private static MethodHandle accessGetTestTagValue(
-      MethodHandles.Lookup lookup, ClassLoader classLoader) {
-    try {
-      Class<?> testTaggable = classLoader.loadClass("org.spockframework.runtime.model.TestTag");
-      Method method = testTaggable.getDeclaredMethod("getValue");
-      return lookup.unreflect(method);
-    } catch (Throwable throwable) {
-      return null;
-    }
+    TestDataFactory.register(
+        JUnitPlatformUtils.ENGINE_ID_SPOCK,
+        SpockUtils::toTestIdentifier,
+        SpockUtils::toTestSourceData);
   }
 
   /*
@@ -62,6 +51,10 @@ public class SpockUtils {
     try {
       Collection<TestTag> junitPlatformTestTags = new ArrayList<>();
       SpecElementInfo<?, ?> nodeInfo = spockNode.getNodeInfo();
+      if (!(nodeInfo instanceof FeatureInfo)) {
+        return Collections.emptyList();
+      }
+
       Collection<?> testTags = (Collection<?>) GET_TEST_TAGS.invoke(nodeInfo);
       for (Object testTag : testTags) {
         String tagValue = (String) GET_TEST_TAG_VALUE.invoke(testTag);
@@ -71,12 +64,50 @@ public class SpockUtils {
       return junitPlatformTestTags;
 
     } catch (Throwable throwable) {
-      // ignore
+      LOGGER.warn("Could not get tags from a spock node", throwable);
       return Collections.emptyList();
     }
   }
 
-  public static Method getTestMethod(MethodSource methodSource) {
+  public static boolean isItrUnskippable(SpockNode<?> spockNode) {
+    Collection<TestTag> tags = getTags(spockNode);
+    for (TestTag tag : tags) {
+      if (CIConstants.Tags.ITR_UNSKIPPABLE_TAG.equals(tag.getName())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public static TestIdentifier toTestIdentifier(TestDescriptor testDescriptor) {
+    TestSource testSource = testDescriptor.getSource().orElse(null);
+    if (testSource instanceof MethodSource && testDescriptor instanceof SpockNode) {
+      SpockNode spockNode = (SpockNode) testDescriptor;
+      MethodSource methodSource = (MethodSource) testSource;
+      String testSuiteName = methodSource.getClassName();
+      String displayName = spockNode.getDisplayName();
+      String testParameters = JUnitPlatformUtils.getParameters(methodSource, displayName);
+      return new TestIdentifier(testSuiteName, displayName, testParameters);
+
+    } else {
+      return null;
+    }
+  }
+
+  public static TestSourceData toTestSourceData(TestDescriptor testDescriptor) {
+    TestSource testSource = testDescriptor.getSource().orElse(null);
+    if (testSource instanceof MethodSource) {
+      MethodSource methodSource = (MethodSource) testSource;
+      Class<?> testClass = methodSource.getJavaClass();
+      Method testMethod = getTestMethod(methodSource);
+      String testMethodName = methodSource.getMethodName();
+      return new TestSourceData(testClass, testMethod, testMethodName);
+    } else {
+      return TestSourceData.UNKNOWN;
+    }
+  }
+
+  private static Method getTestMethod(MethodSource methodSource) {
     String methodName = methodSource.getMethodName();
     if (methodName == null) {
       return null;
@@ -100,23 +131,9 @@ public class SpockUtils {
       }
 
     } catch (Throwable e) {
-      // ignore
+      LOGGER.warn("Could not get test method from method source", e);
     }
     return null;
-  }
-
-  public static SkippableTest toSkippableTest(SpockNode spockNode) {
-    TestSource testSource = spockNode.getSource().orElse(null);
-    if (testSource instanceof MethodSource) {
-      MethodSource methodSource = (MethodSource) testSource;
-      String testSuiteName = methodSource.getClassName();
-      String displayName = spockNode.getDisplayName();
-      String testParameters = JUnitPlatformUtils.getParameters(methodSource, displayName);
-      return new SkippableTest(testSuiteName, displayName, testParameters, null);
-
-    } else {
-      return null;
-    }
   }
 
   public static boolean isSpec(TestDescriptor testDescriptor) {
@@ -124,5 +141,12 @@ public class SpockUtils {
     List<UniqueId.Segment> segments = uniqueId.getSegments();
     UniqueId.Segment lastSegment = segments.get(segments.size() - 1);
     return "spec".equals(lastSegment.getType());
+  }
+
+  public static TestDescriptor getSpecDescriptor(TestDescriptor testDescriptor) {
+    while (testDescriptor != null && !isSpec(testDescriptor)) {
+      testDescriptor = testDescriptor.getParent().orElse(null);
+    }
+    return testDescriptor;
   }
 }

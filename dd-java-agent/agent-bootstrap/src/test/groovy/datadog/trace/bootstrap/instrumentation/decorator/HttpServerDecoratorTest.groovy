@@ -1,6 +1,8 @@
 package datadog.trace.bootstrap.instrumentation.decorator
 
+
 import datadog.trace.api.DDTags
+import datadog.trace.api.TraceConfig
 import datadog.trace.api.function.TriConsumer
 import datadog.trace.api.gateway.CallbackProvider
 import datadog.trace.api.gateway.Flow
@@ -10,6 +12,7 @@ import datadog.trace.api.gateway.RequestContextSlot
 import datadog.trace.bootstrap.ActiveSubsystems
 import datadog.trace.bootstrap.instrumentation.api.AgentPropagation
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer.TracerAPI
 import datadog.trace.bootstrap.instrumentation.api.ContextVisitors
@@ -23,6 +26,7 @@ import datadog.trace.core.datastreams.DataStreamsMonitoring
 import java.util.function.Function
 import java.util.function.Supplier
 
+import static datadog.context.Context.root
 import static datadog.trace.api.config.TraceInstrumentationConfig.HTTP_SERVER_DECODED_RESOURCE_PRESERVE_SPACES
 import static datadog.trace.api.config.TraceInstrumentationConfig.HTTP_SERVER_RAW_QUERY_STRING
 import static datadog.trace.api.config.TraceInstrumentationConfig.HTTP_SERVER_RAW_RESOURCE
@@ -32,6 +36,17 @@ import static datadog.trace.api.gateway.Events.EVENTS
 class HttpServerDecoratorTest extends ServerDecoratorTest {
 
   def span = Mock(AgentSpan)
+
+  static class MapCarrierVisitor
+  implements AgentPropagation.ContextVisitor<Map> {
+    @Override
+    void forEachKey(Map carrier, AgentPropagation.KeyClassifier classifier) {
+      Map<String, String> headers = carrier.headers
+      headers?.each {
+        classifier.accept(it.key, it.value)
+      }
+    }
+  }
 
   boolean origAppSecActive
 
@@ -50,7 +65,7 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
     def decorator = newDecorator()
 
     when:
-    decorator.onRequest(this.span, null, req, null)
+    decorator.onRequest(this.span, null, req, root())
 
     then:
     if (req) {
@@ -83,7 +98,7 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
     def decorator = newDecorator()
 
     when:
-    decorator.onRequest(this.span, null, req, null)
+    decorator.onRequest(this.span, null, req, root())
 
     then:
     if (expectedUrl) {
@@ -134,7 +149,7 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
     def decorator = newDecorator()
 
     when:
-    decorator.onRequest(this.span, null, req, null)
+    decorator.onRequest(this.span, null, req, root())
 
     then:
     1 * this.span.setTag(Tags.HTTP_URL, {it.toString() == expectedUrl})
@@ -164,7 +179,7 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
     def decorator = newDecorator()
 
     when:
-    decorator.onRequest(this.span, null, [url: new URI('http://host/p%20ath')], null)
+    decorator.onRequest(this.span, null, [url: new URI('http://host/p%20ath')], root())
 
     then:
     1 * this.span.setResourceName({ it as String == '/path' }, ResourceNamePriorities.HTTP_PATH_NORMALIZER)
@@ -174,29 +189,30 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
 
   def "test onConnection"() {
     setup:
-    def ctx = Mock(AgentSpan.Context.Extracted)
+    def extracted = Mock(AgentSpanContext.Extracted)
+    def context = AgentSpan.fromSpanContext(extracted)
     def decorator = newDecorator()
 
     when:
-    decorator.onRequest(this.span, conn, null, ctx)
+    decorator.onRequest(this.span, conn, null, context)
 
     then:
-    _ * ctx.getForwarded() >> "by=<identifier>;for=<identifier>;host=<host>;proto=<http|https>"
-    _ * ctx.getForwardedFor() >> null
-    _ * ctx.getXForwardedProto() >> "https"
-    _ * ctx.getXForwardedHost() >> "somehost"
-    _ * ctx.getXForwardedFor() >> conn?.ip
-    _ * ctx.getXForwardedPort() >> "123"
-    _ * ctx.getXForwarded()
-    _ * ctx.getXClusterClientIp() >> null
-    _ * ctx.getXRealIp() >> null
-    _ * ctx.getXClientIp() >> null
-    _ * ctx.getUserAgent() >> "some-user-agent"
-    _ * ctx.getCustomIpHeader() >> null
-    _ * ctx.getTrueClientIp() >> null
-    _ * ctx.getFastlyClientIp() >> null
-    _ * ctx.getCfConnectingIp() >> null
-    _ * ctx.getCfConnectingIpv6() >> null
+    _ * extracted.getForwarded() >> "by=<identifier>;for=<identifier>;host=<host>;proto=<http|https>"
+    _ * extracted.getForwardedFor() >> null
+    _ * extracted.getXForwardedProto() >> "https"
+    _ * extracted.getXForwardedHost() >> "somehost"
+    _ * extracted.getXForwardedFor() >> conn?.ip
+    _ * extracted.getXForwardedPort() >> "123"
+    _ * extracted.getXForwarded()
+    _ * extracted.getXClusterClientIp() >> null
+    _ * extracted.getXRealIp() >> null
+    _ * extracted.getXClientIp() >> null
+    _ * extracted.getUserAgent() >> "some-user-agent"
+    _ * extracted.getCustomIpHeader() >> null
+    _ * extracted.getTrueClientIp() >> null
+    _ * extracted.getFastlyClientIp() >> null
+    _ * extracted.getCfConnectingIp() >> null
+    _ * extracted.getCfConnectingIpv6() >> null
     1 * this.span.setTag(Tags.HTTP_FORWARDED, "by=<identifier>;for=<identifier>;host=<host>;proto=<http|https>")
     1 * this.span.setTag(Tags.HTTP_FORWARDED_PROTO, "https")
     1 * this.span.setTag(Tags.HTTP_FORWARDED_HOST, "somehost")
@@ -227,12 +243,13 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
 
   void 'preference for header derived vs peer ip address'() {
     setup:
-    def ctx = Mock(AgentSpan.Context.Extracted)
+    def extracted = Mock(AgentSpanContext.Extracted)
+    def context = AgentSpan.fromSpanContext(extracted)
     def decorator = newDecorator()
 
     when:
-    1 * ctx.getXClientIp() >> headerIpAddr
-    decorator.onRequest(this.span, [peerIp: peerIpAddr], null, ctx)
+    1 * extracted.getXClientIp() >> headerIpAddr
+    decorator.onRequest(this.span, [peerIp: peerIpAddr], null, context)
 
     then:
     1 * this.span.setTag(Tags.HTTP_CLIENT_IP, result)
@@ -249,14 +266,15 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
     setup:
     injectSysConfig('dd.trace.client-ip.resolver.enabled', 'false')
 
-    def ctx = Mock(AgentSpan.Context.Extracted)
+    def extracted = Mock(AgentSpanContext.Extracted)
+    def context = AgentSpan.fromSpanContext(extracted)
     def decorator = newDecorator()
 
     when:
-    decorator.onRequest(this.span, [peerIp: '4.4.4.4'], null, ctx)
+    decorator.onRequest(this.span, [peerIp: '4.4.4.4'], null, context)
 
     then:
-    0 * ctx.getForwarded()
+    0 * extracted.getForwarded()
     0 * span.setTag(Tags.HTTP_FORWARDED, _)
     0 * this.span.setTag(Tags.HTTP_CLIENT_IP, _)
   }
@@ -265,14 +283,15 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
     setup:
     ActiveSubsystems.APPSEC_ACTIVE = false
 
-    def ctx = Mock(AgentSpan.Context.Extracted)
+    def extracted = Mock(AgentSpanContext.Extracted)
+    def context = AgentSpan.fromSpanContext(extracted)
     def decorator = newDecorator()
 
     when:
-    decorator.onRequest(this.span, [peerIp: '4.4.4.4'], null, ctx)
+    decorator.onRequest(this.span, [peerIp: '4.4.4.4'], null, context)
 
     then:
-    0 * ctx.getForwarded()
+    0 * extracted.getForwarded()
     0 * span.setTag(Tags.HTTP_FORWARDED, _)
     0 * this.span.setTag(Tags.HTTP_CLIENT_IP, _)
   }
@@ -282,20 +301,21 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
     injectSysConfig('dd.trace.client-ip.enabled', 'true')
     ActiveSubsystems.APPSEC_ACTIVE = false
 
-    def ctx = Mock(AgentSpan.Context.Extracted)
+    def extracted = Mock(AgentSpanContext.Extracted)
+    def context = AgentSpan.fromSpanContext(extracted)
     def decorator = newDecorator()
 
     when:
-    decorator.onRequest(this.span, [peerIp: '4.4.4.4'], null, ctx)
+    decorator.onRequest(this.span, [peerIp: '4.4.4.4'], null, context)
 
     _ * this.span.getLocalRootSpan() >> this.span
     then:
-    2 * ctx.getXForwardedFor() >> '2.3.4.5'
+    2 * extracted.getXForwardedFor() >> '2.3.4.5'
     1 * this.span.setTag(Tags.HTTP_CLIENT_IP, '2.3.4.5')
     1 * this.span.setTag(Tags.HTTP_FORWARDED_IP, '2.3.4.5')
 
     // Forwarded doesn't participate in client ip resolution anymore
-    1 * ctx.getForwarded() >> 'for=9.9.9.9'
+    1 * extracted.getForwarded() >> 'for=9.9.9.9'
     1 * this.span.setTag(Tags.HTTP_FORWARDED, 'for=9.9.9.9')
   }
 
@@ -303,14 +323,15 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
     setup:
     injectSysConfig('dd.trace.client-ip-header', 'my-header')
 
-    def ctx = Mock(AgentSpan.Context.Extracted)
+    def extracted = Mock(AgentSpanContext.Extracted)
+    def context = AgentSpan.fromSpanContext(extracted)
     def decorator = newDecorator()
 
     when:
-    decorator.onRequest(this.span, [peerIp: '4.4.4.4'], null, ctx)
+    decorator.onRequest(this.span, [peerIp: '4.4.4.4'], null, context)
 
     then:
-    1 * ctx.getCustomIpHeader() >> '5.5.5.5'
+    1 * extracted.getCustomIpHeader() >> '5.5.5.5'
     1 * this.span.setTag(Tags.HTTP_CLIENT_IP, '5.5.5.5')
   }
 
@@ -349,12 +370,45 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
     null   | null           | false
   }
 
-  @Override
-  def newDecorator() {
-    return newDecorator(null)
+  def "test response headers with trace.header.tags"() {
+    setup:
+    def traceConfig = Mock(TraceConfig)
+    traceConfig.getResponseHeaderTags() >> headerTags
+
+    def tags = [:]
+
+    def responseSpan = Mock(AgentSpan)
+    responseSpan.traceConfig() >> traceConfig
+    responseSpan.setTag(_, _) >> { String k, String v ->
+      tags[k] = v
+      return responseSpan
+    }
+
+    def decorator = newDecorator(null, new MapCarrierVisitor())
+
+    when:
+    decorator.onResponse(responseSpan, resp)
+
+    then:
+    if (expectedTag){
+      expectedTag.each {
+        assert tags[it.key] == it.value
+      }
+    }
+
+    where:
+    headerTags                         | resp                                                                                             | expectedTag
+    [:]                                | [status: 200, headers: ['X-Custom-Header': 'custom-value', 'Content-Type': 'application/json']]  | [:]
+    ["x-custom-header": "abc"]         | [status: 200, headers: ['X-Custom-Header': 'custom-value', 'Content-Type': 'application/json']]  | [abc:"custom-value"]
+    ["*": "datadog.response.headers."] | [status: 200, headers: ['X-Custom-Header': 'custom-value', 'Content-Type': 'application/json']]  | ["datadog.response.headers.x-custom-header":"custom-value", "datadog.response.headers.content-type":"application/json"]
   }
 
-  def newDecorator(TracerAPI tracer) {
+  @Override
+  def newDecorator() {
+    return newDecorator(null, null)
+  }
+
+  def newDecorator(TracerAPI tracer, AgentPropagation.ContextVisitor<Map> contextVisitor) {
     if (!tracer) {
       tracer = AgentTracer.NOOP_TRACER
     }
@@ -382,7 +436,7 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
 
         @Override
         protected AgentPropagation.ContextVisitor<Map> responseGetter() {
-          return null
+          return contextVisitor
         }
 
         @Override
@@ -422,7 +476,8 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
     def ig = new InstrumentationGateway()
     def ss = ig.getSubscriptionService(RequestContextSlot.APPSEC)
     def cbpAppSec = ig.getCallbackProvider(RequestContextSlot.APPSEC)
-    def callbacks = new IGCallBacks(reqData)
+    def data = reqData ? new Object() : null
+    def callbacks = new IGCallBacks(data)
     if (reqStarted) {
       ss.registerCallback(EVENTS.requestStarted(), callbacks)
     }
@@ -434,7 +489,7 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
     }
     Map<String, String> headers = ["foo": "bar", "some": "thing", "another": "value"]
     def reqCtxt = Mock(RequestContext) {
-      getData(RequestContextSlot.APPSEC) >> reqData
+      getData(RequestContextSlot.APPSEC) >> data
     }
     def mSpan = Mock(AgentSpan) {
       getRequestContext() >> reqCtxt
@@ -447,10 +502,10 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
       getUniversalCallbackProvider() >> cbpAppSec // no iast callbacks, so this is equivalent
       getDataStreamsMonitoring() >> Mock(DataStreamsMonitoring)
     }
-    def decorator = newDecorator(mTracer)
+    def decorator = newDecorator(mTracer, null)
 
     when:
-    decorator.startSpan("test", headers, null)
+    decorator.startSpan(headers, root())
 
     then:
     1 * mSpan.setMeasured(true) >> mSpan
@@ -461,13 +516,13 @@ class HttpServerDecoratorTest extends ServerDecoratorTest {
 
     where:
     // spotless:off
-    reqStarted | reqData      | reqHeader | reqHeaderDone | reqStartedCount | reqHeaderCount | reqHeaderDoneCount
-    false      | null         | false     | false         | 0               | 0              | 0
-    false      | new Object() | false     | false         | 0               | 0              | 0
-    true       | null         | false     | false         | 1               | 0              | 0
-    true       | new Object() | false     | false         | 1               | 0              | 0
-    true       | new Object() | true      | false         | 1               | 3              | 0
-    true       | new Object() | true      | true          | 1               | 3              | 1
+    reqStarted | reqData | reqHeader | reqHeaderDone | reqStartedCount | reqHeaderCount | reqHeaderDoneCount
+    false      | false   | false     | false         | 0               | 0              | 0
+    false      | true    | false     | false         | 0               | 0              | 0
+    true       | false   | false     | false         | 1               | 0              | 0
+    true       | true    | false     | false         | 1               | 0              | 0
+    true       | true    | true      | false         | 1               | 3              | 0
+    true       | true    | true      | true          | 1               | 3              | 1
     // spotless:on
   }
 

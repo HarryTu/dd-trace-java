@@ -1,8 +1,6 @@
 package com.datadog.debugger.symbol;
 
-import com.datadog.debugger.agent.AllowListHelper;
-import com.datadog.debugger.sink.SymbolSink;
-import datadog.trace.api.Config;
+import datadog.trace.bootstrap.debugger.DebuggerContext.ClassNameFilter;
 import datadog.trace.util.Strings;
 import java.lang.instrument.ClassFileTransformer;
 import java.security.ProtectionDomain;
@@ -13,20 +11,13 @@ public class SymbolExtractionTransformer implements ClassFileTransformer {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(SymbolExtractionTransformer.class);
 
-  private final AllowListHelper allowListHelper;
   private final SymbolAggregator symbolAggregator;
-
-  public SymbolExtractionTransformer() {
-    this(
-        new AllowListHelper(null),
-        new SymbolAggregator(
-            new SymbolSink(Config.get()), Config.get().getDebuggerSymbolFlushThreshold()));
-  }
+  private final ClassNameFilter classNameFiltering;
 
   public SymbolExtractionTransformer(
-      AllowListHelper allowListHelper, SymbolAggregator symbolAggregator) {
-    this.allowListHelper = allowListHelper;
+      SymbolAggregator symbolAggregator, ClassNameFilter classNameFiltering) {
     this.symbolAggregator = symbolAggregator;
+    this.classNameFiltering = classNameFiltering;
   }
 
   @Override
@@ -40,17 +31,11 @@ public class SymbolExtractionTransformer implements ClassFileTransformer {
       return null;
     }
     try {
-      if (allowListHelper.isAllowAll()) {
-        if (className.startsWith("java/")
-            || className.startsWith("javax/")
-            || className.startsWith("jdk/")
-            || className.startsWith("sun/")
-            || className.startsWith("com/sun/")
-            || className.startsWith("datadog/")
-            || className.startsWith("com/datadog/")) {
-          return null;
-        }
-      } else if (!allowListHelper.isAllowed(Strings.getClassName(className))) {
+      if (className.startsWith("com/datadog/debugger/symbol/")) {
+        // Don't parse our own classes to avoid duplicate class definition
+        return null;
+      }
+      if (classNameFiltering.isExcluded(Strings.getClassName(className))) {
         return null;
       }
       symbolAggregator.parseClass(className, classfileBuffer, protectionDomain);
@@ -61,7 +46,7 @@ public class SymbolExtractionTransformer implements ClassFileTransformer {
     }
   }
 
-  AllowListHelper getAllowListHelper() {
-    return allowListHelper;
+  ClassNameFilter getClassNameFiltering() {
+    return classNameFiltering;
   }
 }

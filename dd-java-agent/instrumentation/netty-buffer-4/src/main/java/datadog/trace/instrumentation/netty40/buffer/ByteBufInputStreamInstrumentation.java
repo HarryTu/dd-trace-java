@@ -8,15 +8,18 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.agent.tooling.bytebuddy.iast.TaintableVisitor;
 import datadog.trace.api.iast.InstrumentationBridge;
 import datadog.trace.api.iast.Propagation;
 import datadog.trace.api.iast.propagation.PropagationModule;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public class ByteBufInputStreamInstrumentation extends Instrumenter.Iast
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class ByteBufInputStreamInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForSingleType,
+        Instrumenter.HasTypeAdvice,
+        Instrumenter.HasMethodAdvice {
 
   public ByteBufInputStreamInstrumentation() {
     super("netty", "netty-4.0");
@@ -28,8 +31,13 @@ public class ByteBufInputStreamInstrumentation extends Instrumenter.Iast
   }
 
   @Override
-  public void adviceTransformations(final AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void typeAdvice(TypeTransformer transformer) {
+    transformer.applyAdvice(new TaintableVisitor(instrumentedType()));
+  }
+
+  @Override
+  public void methodAdvice(final MethodTransformer transformer) {
+    transformer.applyAdvice(
         isConstructor()
             .and(isPublic())
             .and(takesArguments(3))
@@ -37,11 +45,6 @@ public class ByteBufInputStreamInstrumentation extends Instrumenter.Iast
             .and(takesArgument(1, int.class))
             .and(takesArgument(2, boolean.class)),
         ByteBufInputStreamInstrumentation.class.getName() + "$ConstructorAdvice");
-  }
-
-  @Override
-  public AdviceTransformer transformer() {
-    return new VisitingTransformer(new TaintableVisitor(instrumentedType()));
   }
 
   public static class ConstructorAdvice {
@@ -53,7 +56,7 @@ public class ByteBufInputStreamInstrumentation extends Instrumenter.Iast
       final PropagationModule module = InstrumentationBridge.PROPAGATION;
       try {
         if (module != null) {
-          module.taintIfTainted(self, buffer);
+          module.taintObjectIfTainted(self, buffer);
         }
       } catch (final Throwable e) {
         module.onUnexpectedException("ByteBufInputStream ctor threw", e);

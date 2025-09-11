@@ -5,10 +5,12 @@ import static datadog.trace.api.iast.VulnerabilityMarks.NOT_MARKED;
 
 import com.datadog.iast.model.Range;
 import com.datadog.iast.model.Source;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import com.datadog.iast.util.HttpHeader;
+import com.datadog.iast.util.RangeBuilder;
+import com.datadog.iast.util.Ranged;
+import com.datadog.iast.util.StringUtils;
+import datadog.trace.api.iast.SourceTypes;
+import java.util.BitSet;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
@@ -16,28 +18,6 @@ import javax.annotation.Nullable;
 public final class Ranges {
 
   public static final Range[] EMPTY = new Range[0];
-  public static final RangesProvider<?> EMPTY_PROVIDER =
-      new RangesProvider<Object>() {
-        @Override
-        public int rangeCount() {
-          return 0;
-        }
-
-        @Override
-        public int size() {
-          return 0;
-        }
-
-        @Override
-        public Object value(final int index) {
-          throw new UnsupportedOperationException("empty provider");
-        }
-
-        @Override
-        public Range[] ranges(final Object value) {
-          throw new UnsupportedOperationException("empty provider");
-        }
-      };
 
   private Ranges() {}
 
@@ -57,6 +37,45 @@ public final class Ranges {
 
   public static Range[] forObject(final @Nonnull Source source, final int mark) {
     return new Range[] {new Range(0, Integer.MAX_VALUE, source, mark)};
+  }
+
+  @Nullable
+  public static Range[] intersection(
+      final @Nonnull Ranged targetRange, @Nonnull final Range[] ranges, final int offset) {
+    final Range last = ranges[ranges.length - 1];
+    final int lastIndex = last.getStart() + last.getLength();
+
+    final RangeBuilder targetRanges = new RangeBuilder(ranges.length);
+    for (final Range range : ranges) {
+      if (range.getStart() >= lastIndex) {
+        break;
+      }
+      final Ranged intersection = targetRange.intersection(range);
+      if (intersection != null) {
+        targetRanges.add(
+            new Range(
+                intersection.getStart() + offset,
+                intersection.getLength(),
+                range.getSource(),
+                range.getMarks()));
+      }
+    }
+    return targetRanges.isEmpty() ? null : targetRanges.toArray();
+  }
+
+  @Nullable
+  public static Range[] intersection(
+      final @Nonnull Ranged targetRange, @Nonnull final Range[] ranges) {
+    return intersection(targetRange, ranges, 0);
+  }
+
+  @Nullable
+  public static Range findUnbound(@Nonnull final Range[] ranges) {
+    if (ranges.length != 1) {
+      return null;
+    }
+    final Range range = ranges[0];
+    return range.getStart() == 0 && range.getLength() == Integer.MAX_VALUE ? range : null;
   }
 
   public static void copyShift(
@@ -99,90 +118,10 @@ public final class Ranges {
     return ranges;
   }
 
-  public static <E> RangesProvider<E> rangesProviderFor(
-      @Nonnull final TaintedObjects to, @Nullable final E[] items) {
-    if (items == null || items.length == 0) {
-      return (RangesProvider<E>) EMPTY_PROVIDER;
-    }
-    return new ArrayProvider<>(items, to);
-  }
-
-  public static <E> RangesProvider<E> rangesProviderFor(
-      @Nonnull final TaintedObjects to, @Nullable final E item) {
-    if (item == null) {
-      return (RangesProvider<E>) EMPTY_PROVIDER;
-    }
-    return new SingleProvider<>(item, to);
-  }
-
-  public static <E> RangesProvider<E> rangesProviderFor(
-      @Nonnull final TaintedObjects to, @Nullable final List<E> items) {
-    if (items == null || items.isEmpty()) {
-      return (RangesProvider<E>) EMPTY_PROVIDER;
-    }
-    return new ListProvider<>(items, to);
-  }
-
   @Nullable
   public static Range[] forSubstring(int offset, int length, final @Nonnull Range[] ranges) {
-
-    int[] includedRangesInterval = getIncludedRangesInterval(offset, length, ranges);
-
-    // No ranges in the interval
-    if (includedRangesInterval[0] == -1) {
-      return null;
-    }
-    final int firstRangeIncludedIndex = includedRangesInterval[0];
-    final int lastRangeIncludedIndex =
-        includedRangesInterval[1] != -1 ? includedRangesInterval[1] : ranges.length;
-    final int newRagesSize = lastRangeIncludedIndex - firstRangeIncludedIndex;
-    Range[] newRanges = new Range[newRagesSize];
-    for (int rangeIndex = firstRangeIncludedIndex, newRangeIndex = 0;
-        newRangeIndex < newRagesSize;
-        rangeIndex++, newRangeIndex++) {
-      Range range = ranges[rangeIndex];
-      if (offset == 0 && range.getStart() + range.getLength() <= length) {
-        newRanges[newRangeIndex] = range;
-      } else {
-        int newStart = range.getStart() - offset;
-        int newLength = range.getLength();
-        final int newEnd = newStart + newLength;
-        if (newStart < 0) {
-          newLength = newLength + newStart;
-          newStart = 0;
-        }
-        if (newEnd > length) {
-          newLength = length - newStart;
-        }
-        if (newLength > 0) {
-          newRanges[newRangeIndex] =
-              new Range(newStart, newLength, range.getSource(), range.getMarks());
-        }
-      }
-    }
-
-    return newRanges;
-  }
-
-  public static int[] getIncludedRangesInterval(
-      int offset, int length, final @Nonnull Range[] ranges) {
-    // index of the first included range
-    int start = -1;
-    // index of the first not included range
-    int end = -1;
-    for (int rangeIndex = 0; rangeIndex < ranges.length; rangeIndex++) {
-      final Range rangeSelf = ranges[rangeIndex];
-      if (rangeSelf.getStart() < offset + length
-          && rangeSelf.getStart() + rangeSelf.getLength() > offset) {
-        if (start == -1) {
-          start = rangeIndex;
-        }
-      } else if (start != -1) {
-        end = rangeIndex;
-        break;
-      }
-    }
-    return new int[] {start, end};
+    final Ranged substring = Ranged.build(offset, length);
+    return intersection(substring, ranges, -offset);
   }
 
   @Nonnull
@@ -206,144 +145,98 @@ public final class Ranges {
     return ranges[0];
   }
 
+  /**
+   * Checks if all ranges are coming from any header, in case no ranges are provided it will return
+   * {@code true}
+   */
+  public static boolean allRangesFromAnyHeader(@Nonnull final Range[] ranges) {
+    for (Range range : ranges) {
+      final Source source = range.getSource();
+      if (source.getOrigin() != SourceTypes.REQUEST_HEADER_VALUE) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** Checks if a range is coming from the header */
+  public static boolean rangeFromHeader(@Nonnull final String header, @Nonnull final Range range) {
+    final Source source = range.getSource();
+    if (source.getOrigin() != SourceTypes.REQUEST_HEADER_VALUE) {
+      return false;
+    }
+    if (!header.equalsIgnoreCase(source.getName())) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Checks if all ranges are coming from a specify source type, in case no ranges are provided it
+   * will return {@code true}
+   */
+  public static boolean allRangesFromSource(final byte origin, @Nonnull final Range[] ranges) {
+    for (Range range : ranges) {
+      final Source current = range.getSource();
+      if (current.getOrigin() != origin) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Checks if all ranges are coming from the header, in case no ranges are provided it will return
+   * {@code true}
+   */
+  public static boolean allRangesFromHeader(
+      @Nonnull final String header, @Nonnull final Range[] ranges) {
+    for (Range range : ranges) {
+      if (!rangeFromHeader(header, range)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** @see #allRangesFromHeader(String, Range[]) */
+  public static boolean allRangesFromHeader(
+      @Nonnull final HttpHeader header, @Nonnull final Range[] ranges) {
+    return allRangesFromHeader(header.name, ranges);
+  }
+
   public static Range[] newArray(final long size) {
     return new Range[size > MAX_RANGE_COUNT ? MAX_RANGE_COUNT : (int) size];
   }
 
-  public interface RangesProvider<E> {
-    int rangeCount();
-
-    int size();
-
-    @Nullable
-    E value(final int index);
-
-    @Nullable
-    Range[] ranges(final E value);
-  }
-
-  private abstract static class IterableProvider<E, LIST> implements RangesProvider<E> {
-    private final LIST items;
-    @Nullable private final Map<E, Range[]> ranges;
-    private final int rangeCount;
-
-    private IterableProvider(@Nonnull final LIST items, @Nonnull final TaintedObjects to) {
-      this.items = items;
-      final int length = size(items);
-      Map<E, Range[]> ranges = null;
-      int rangeCount = 0;
-      for (int i = 0; i < length; i++) {
-        final E item = item(items, i);
-        if (item != null) {
-          final TaintedObject tainted = to.get(item);
-          if (tainted != null) {
-            final Range[] taintedRanges = tainted.getRanges();
-            rangeCount += taintedRanges.length;
-            if (ranges == null) {
-              ranges = new HashMap<>(length);
-            }
-            ranges.put(item, taintedRanges);
-          }
+  /** Merge the new ranges maintaining order (it assumes that both arrays are already sorted) */
+  public static Range[] mergeRangesSorted(final Range[] leftRanges, final Range[] rightRanges) {
+    if (leftRanges.length == 0) {
+      return rightRanges;
+    }
+    if (rightRanges.length == 0) {
+      return leftRanges;
+    }
+    int rightIndex = 0;
+    Range rightRange = rightRanges[0];
+    final Range[] result = new Range[rightRanges.length + leftRanges.length];
+    for (int leftIndex = 0; leftIndex < leftRanges.length; leftIndex++) {
+      final Range leftRange = leftRanges[leftIndex];
+      if (rightRange == null) {
+        result[leftIndex + rightRanges.length] = leftRange;
+      } else {
+        if (rightRange.getStart() < leftRange.getStart()) {
+          result[leftIndex + rightIndex] = rightRange;
+          rightIndex++;
+          rightRange = rightIndex >= rightRanges.length ? null : rightRanges[rightIndex];
         }
+        result[leftIndex + rightIndex] = leftRange;
       }
-      this.ranges = ranges;
-      this.rangeCount = rangeCount;
     }
-
-    @Override
-    public int rangeCount() {
-      return rangeCount;
+    for (; rightIndex < rightRanges.length; rightIndex++) {
+      result[leftRanges.length + rightIndex] = rightRanges[rightIndex];
     }
-
-    @Nullable
-    @Override
-    public E value(final int index) {
-      return item(items, index);
-    }
-
-    @Nullable
-    @Override
-    public Range[] ranges(final E value) {
-      return ranges == null ? null : ranges.get(value);
-    }
-
-    @Override
-    public int size() {
-      return size(items);
-    }
-
-    protected abstract int size(@Nonnull final LIST items);
-
-    @Nullable
-    protected abstract E item(@Nonnull final LIST items, final int index);
-  }
-
-  private static class SingleProvider<E> implements RangesProvider<E> {
-    private final E value;
-    @Nullable private final TaintedObject tainted;
-
-    private SingleProvider(@Nonnull final E value, @Nonnull final TaintedObjects to) {
-      this.value = value;
-      tainted = to.get(value);
-    }
-
-    @Override
-    public int rangeCount() {
-      return tainted == null ? 0 : tainted.getRanges().length;
-    }
-
-    @Override
-    public int size() {
-      return 1;
-    }
-
-    @Nullable
-    @Override
-    public E value(int index) {
-      return index == 0 ? value : null;
-    }
-
-    @Nullable
-    @Override
-    public Range[] ranges(E value) {
-      return value == this.value && tainted != null ? tainted.getRanges() : null;
-    }
-  }
-
-  private static class ArrayProvider<E> extends IterableProvider<E, E[]> {
-
-    private ArrayProvider(@Nonnull final E[] items, @Nonnull final TaintedObjects to) {
-      super(items, to);
-    }
-
-    @Override
-    protected int size(@Nonnull final E[] items) {
-      return items.length;
-    }
-
-    @Nullable
-    @Override
-    protected E item(@Nonnull final E[] items, final int index) {
-      return items[index];
-    }
-  }
-
-  private static class ListProvider<E> extends IterableProvider<E, List<E>> {
-
-    private ListProvider(@Nonnull final List<E> items, @Nonnull final TaintedObjects to) {
-      super(items, to);
-    }
-
-    @Override
-    protected int size(@Nonnull final List<E> items) {
-      return items.size();
-    }
-
-    @Nullable
-    @Override
-    protected E item(@Nonnull final List<E> items, final int index) {
-      return items.get(index);
-    }
+    return result;
   }
 
   @Nullable
@@ -378,36 +271,179 @@ public final class Ranges {
     return new Range(offset, length, range.getSource(), range.getMarks());
   }
 
-  public static class RangeList {
-    private final ArrayList<Range> delegate = new ArrayList<>();
-    private int remaining;
-
-    public RangeList() {
-      this(MAX_RANGE_COUNT);
-    }
-
-    public RangeList(final int maxSize) {
-      this.remaining = maxSize;
-    }
-
-    public boolean add(final Range item) {
-      if (remaining > 0 && delegate.add(item)) {
-        remaining--;
-        return true;
+  /** Returns a new array of ranges with the indentation applied to each line */
+  public static Range[] forIndentation(
+      String input, int indentation, final @Nonnull Range[] ranges) {
+    final Range[] newRanges = new Range[ranges.length];
+    int delimitersCount = 0;
+    int offset = 0;
+    int rangeStart = 0;
+    int currentIndex = 0;
+    int totalWhiteSpaces = 0;
+    while (rangeStart < ranges.length || currentIndex < input.length() - 1) {
+      final int[] delimiterIndex = getNextDelimiterIndex(input, currentIndex, currentIndex + 1);
+      final int lineOffset = delimiterIndex[1] == 2 ? 1 : 0;
+      int currentIndentation;
+      // In case indentation is negative we need to check if it will take more than the first
+      // non-white space character
+      if (indentation < 0) {
+        final int whiteSpaces =
+            StringUtils.leadingWhitespaces(input, currentIndex, delimiterIndex[0]);
+        currentIndentation = Math.max(indentation, -whiteSpaces) - totalWhiteSpaces;
+        totalWhiteSpaces += whiteSpaces;
+      } else {
+        currentIndentation = indentation * ++delimitersCount;
       }
-      return false;
+      currentIndentation -= offset;
+      rangeStart =
+          updateRangesWithIndentation(
+              currentIndex,
+              delimiterIndex[0] - 1,
+              indentation,
+              rangeStart,
+              ranges,
+              newRanges,
+              currentIndentation,
+              lineOffset);
+      offset += lineOffset;
+      currentIndex = delimiterIndex[0];
     }
 
-    public boolean isEmpty() {
-      return delegate.isEmpty();
+    return newRanges;
+  }
+
+  /**
+   * Returns two numbers in an array:
+   *
+   * <p>1. The index of the next delimiter (his last character)
+   *
+   * <p>2. The length of the delimiter ({@code 1} or {@code 2})
+   *
+   * <p>In case there is no delimiter, it will return the last index of the string and {@code 1}
+   *
+   * @param original is the original string
+   * @param start is the start index of the substring
+   * @param offset is to take into account the previous lines
+   */
+  private static int[] getNextDelimiterIndex(
+      @Nonnull final String original, final int start, final int offset) {
+    for (int i = start; i < original.length(); i++) {
+      final char c = original.charAt(i);
+      if (c == '\n') {
+        return new int[] {i + offset, 1};
+      } else if (c == '\r') {
+        if (i + 1 < original.length() && original.charAt(i + 1) == '\n') {
+          return new int[] {i + 1 + offset, 2};
+        }
+        return new int[] {i + offset, 1};
+      }
     }
 
-    public boolean isFull() {
-      return remaining == 0;
+    return new int[] {original.length() - 1 + offset - start, 1};
+  }
+
+  /**
+   * Updates the {@code newRanges} array between the {@code start} index and the {@code end} index
+   * and taking into account the {@code indentation}
+   *
+   * <p>The {@code rangeStart} is the index of the first range that will be checked
+   *
+   * <p>The {@code ranges} is the current ranges array
+   *
+   * <p>The {@code offset} is to take into account the normalization of the indent method
+   *
+   * <p>The {@code lineOffset} is to know if the line is being normalized
+   *
+   * @return the index of the first range that will be checked
+   */
+  private static int updateRangesWithIndentation(
+      int start,
+      int end,
+      int indentation,
+      int rangeStart,
+      final @Nonnull Range[] ranges,
+      final @Nonnull Range[] newRanges,
+      int offset,
+      int lineOffset) {
+    int i = rangeStart;
+    while (i < ranges.length && ranges[i].getStart() <= end) {
+      Range range = ranges[i];
+      if (range.getStart() >= start) {
+        final int newStart = range.getStart() + offset;
+        int newLength = range.getLength();
+        if (range.getStart() + range.getLength() > end) {
+          newLength -= lineOffset;
+        }
+        newRanges[i] = copyWithPosition(range, newStart, newLength);
+      } else if (range.getStart() + range.getLength() >= start) {
+        final Range newRange = newRanges[i];
+        final int newLength = newRange.getLength() + indentation;
+        newRanges[i] = copyWithPosition(newRange, newRange.getStart(), newLength);
+      }
+
+      if (range.getStart() + range.getLength() - 1 <= end) {
+        rangeStart++;
+      }
+
+      i++;
     }
 
-    public Range[] toArray() {
-      return delegate.toArray(new Range[0]);
+    return rangeStart;
+  }
+
+  /**
+   * Split the range in two taking into account the new length of the characters.
+   *
+   * <p>In case start and end are out of the range, it will return the range without splitting but
+   * taking into account the offset. In the case that the new length is less than or equal to 0, it
+   * will return an empty array.
+   *
+   * @param start is the start of the character sequence
+   * @param end is the end of the character sequence
+   * @param newLength is the new length of the character sequence
+   * @param range is the range to split
+   * @param offset is the offset to apply to the range
+   * @param diffLength is the difference between the new length and the old length
+   */
+  public static Range[] splitRanges(
+      int start, int end, int newLength, Range range, int offset, int diffLength) {
+    start += offset;
+    end += offset;
+    int rangeStart = range.getStart() + offset;
+    int rangeEnd = rangeStart + range.getLength() + diffLength;
+
+    int firstLength = start - rangeStart;
+    int secondLength = range.getLength() - firstLength - newLength + diffLength;
+    if (rangeStart > end || rangeEnd <= start) {
+      if (firstLength <= 0) {
+        return Ranges.EMPTY;
+      }
+      return new Range[] {copyWithPosition(range, rangeStart, firstLength)};
     }
+
+    Range[] splittedRanges = new Range[2];
+    splittedRanges[0] = copyWithPosition(range, rangeStart, firstLength);
+    splittedRanges[1] = copyWithPosition(range, rangeEnd - secondLength, secondLength);
+
+    return splittedRanges;
+  }
+
+  /**
+   * Remove the ranges that have the same origin as the input source.
+   *
+   * @param ranges the ranges to filter
+   * @param source the byte value of the source to exclude (see {@link SourceTypes})
+   */
+  public static Range[] excludeRangesBySource(Range[] ranges, BitSet source) {
+    RangeBuilder newRanges = new RangeBuilder(ranges.length);
+
+    for (Range range : ranges) {
+      if (range.getSource().getOrigin() == SourceTypes.NONE
+          || !source.get(range.getSource().getOrigin())) {
+        newRanges.add(range);
+      }
+    }
+
+    return newRanges.toArray();
   }
 }

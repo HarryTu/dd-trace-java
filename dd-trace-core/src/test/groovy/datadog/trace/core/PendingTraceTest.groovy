@@ -3,7 +3,7 @@ package datadog.trace.core
 import datadog.trace.api.DDTraceId
 import datadog.trace.api.sampling.PrioritySampling
 import datadog.trace.api.time.TimeSource
-import datadog.trace.bootstrap.instrumentation.api.AgentTracer
+import datadog.trace.api.datastreams.NoopPathwayContext
 import datadog.trace.core.monitor.HealthMetrics
 import datadog.trace.core.propagation.PropagationTags
 import spock.lang.Timeout
@@ -39,7 +39,7 @@ class PendingTraceTest extends PendingTraceTestBase {
       trace,
       null,
       null,
-      AgentTracer.NoopPathwayContext.INSTANCE,
+      NoopPathwayContext.INSTANCE,
       false,
       PropagationTags.factory().empty()),
       null)
@@ -49,52 +49,54 @@ class PendingTraceTest extends PendingTraceTestBase {
   def "trace is still reported when unfinished continuation discarded"() {
     when:
     def scope = tracer.activateSpan(rootSpan)
-    scope.setAsyncPropagation(true)
-    scope.capture()
+    tracer.captureActiveSpan()
     scope.close()
     rootSpan.finish()
 
     then:
-    trace.pendingReferenceCount == 1
-    trace.spans.asList() == [rootSpan]
+    traceCollector.pendingReferenceCount == 1
+    traceCollector.spans.asList() == [rootSpan]
     writer == []
 
     when: "root span buffer delay expires"
     writer.waitForTraces(1)
 
     then:
-    trace.pendingReferenceCount == 1
-    trace.spans.isEmpty()
+    traceCollector.pendingReferenceCount == 1
+    traceCollector.spans.isEmpty()
     writer == [[rootSpan]]
     writer.traceCount.get() == 1
   }
   def "verify healthmetrics called"() {
     setup:
-    def tracer = Mock(CoreTracer)
-    def traceConfig = Mock(CoreTracer.ConfigSnapshot)
-    def buffer = Mock(PendingTraceBuffer)
+    def tracer = Stub(CoreTracer)
+    def traceConfig = Stub(CoreTracer.ConfigSnapshot)
+    def buffer = Stub(PendingTraceBuffer)
     def healthMetrics = Mock(HealthMetrics)
     tracer.captureTraceConfig() >> traceConfig
     traceConfig.getServiceMapping() >> [:]
     PendingTrace trace = new PendingTrace(tracer, DDTraceId.from(0), buffer, Mock(TimeSource), null, false, healthMetrics)
+
     when:
     rootSpan = createSimpleSpan(trace)
     trace.registerSpan(rootSpan)
+
     then:
     1 * healthMetrics.onCreateSpan()
 
     when:
     rootSpan.finish()
+
     then:
     1 * healthMetrics.onCreateTrace()
   }
 
   def "write when writeRunningSpans is disabled: only completed spans are written"() {
     setup:
-    def tracer = Mock(CoreTracer)
-    def traceConfig = Mock(CoreTracer.ConfigSnapshot)
-    def buffer = Mock(PendingTraceBuffer)
-    def healthMetrics = Mock(HealthMetrics)
+    def tracer = Stub(CoreTracer)
+    def traceConfig = Stub(CoreTracer.ConfigSnapshot)
+    def buffer = Stub(PendingTraceBuffer)
+    def healthMetrics = Stub(HealthMetrics)
     tracer.captureTraceConfig() >> traceConfig
     traceConfig.getServiceMapping() >> [:]
     PendingTrace trace = new PendingTrace(tracer, DDTraceId.from(0), buffer, Mock(TimeSource), null, false, healthMetrics)
@@ -126,10 +128,10 @@ class PendingTraceTest extends PendingTraceTestBase {
 
   def "write when writeRunningSpans is enabled: complete and running spans are written"() {
     setup:
-    def tracer = Mock(CoreTracer)
-    def traceConfig = Mock(CoreTracer.ConfigSnapshot)
-    def buffer = Mock(PendingTraceBuffer)
-    def healthMetrics = Mock(HealthMetrics)
+    def tracer = Stub(CoreTracer)
+    def traceConfig = Stub(CoreTracer.ConfigSnapshot)
+    def buffer = Stub(PendingTraceBuffer)
+    def healthMetrics = Stub(HealthMetrics)
     tracer.captureTraceConfig() >> traceConfig
     traceConfig.getServiceMapping() >> [:]
     PendingTrace trace = new PendingTrace(tracer, DDTraceId.from(0), buffer, Mock(TimeSource), null, false, healthMetrics)

@@ -11,9 +11,6 @@ addTestSuiteForDir('latestDepTest', 'test')
 
 dependencies {
   testRuntimeOnly project(':dd-java-agent:instrumentation:iast-instrumenter')
+  testImplementation libs.bundles.mockito
+  testImplementation group: 'org.mockito', name: 'mockito-inline', version: '4.11.0'
 }
-
-tasks.compileTestJava.configure {
-  setJavaVersion(it, 8)
-}
-

@@ -1,6 +1,7 @@
 package datadog.telemetry
 
 import datadog.communication.ddagent.DDAgentFeaturesDiscovery
+import datadog.communication.http.HttpRetryPolicy
 import datadog.telemetry.api.RequestType
 import okhttp3.Call
 import okhttp3.HttpUrl
@@ -41,9 +42,9 @@ class TelemetryRouterSpecification extends Specification {
   OkHttpClient okHttpClient = Mock()
   DDAgentFeaturesDiscovery ddAgentFeaturesDiscovery = Mock()
 
-  def agentTelemetryClient = TelemetryClient.buildAgentClient(okHttpClient, agentUrl)
-  def intakeTelemetryClient = new TelemetryClient(okHttpClient, intakeUrl, apiKey)
-  def httpClient = new TelemetryRouter(ddAgentFeaturesDiscovery, agentTelemetryClient, intakeTelemetryClient)
+  def agentTelemetryClient = TelemetryClient.buildAgentClient(okHttpClient, agentUrl, HttpRetryPolicy.Factory.NEVER_RETRY)
+  def intakeTelemetryClient = new TelemetryClient(okHttpClient, HttpRetryPolicy.Factory.NEVER_RETRY, intakeUrl, apiKey)
+  def httpClient = new TelemetryRouter(ddAgentFeaturesDiscovery, agentTelemetryClient, intakeTelemetryClient, false)
 
   def 'map an http status code to the correct send result'() {
     when:
@@ -70,9 +71,18 @@ class TelemetryRouterSpecification extends Specification {
     1 * okHttpClient.newCall(_) >> { throw new IOException("exception") }
   }
 
+  def 'catch InterruptedIOException from OkHttpClient and return INTERRUPTED'() {
+    when:
+    def result = httpClient.sendRequest(dummyRequest())
+
+    then:
+    result == TelemetryClient.Result.INTERRUPTED
+    1 * okHttpClient.newCall(_) >> { throw new InterruptedIOException("interrupted") }
+  }
+
   def 'keep trying to send telemetry to Agent despite of return code when Intake client is null'() {
     setup:
-    def httpClient = new TelemetryRouter(ddAgentFeaturesDiscovery, agentTelemetryClient, null)
+    def httpClient = new TelemetryRouter(ddAgentFeaturesDiscovery, agentTelemetryClient, null, false)
 
     Request request
 
@@ -130,6 +140,98 @@ class TelemetryRouterSpecification extends Specification {
     500        | _
   }
 
+  def 'when configured to prefer Intake: use Intake client from the start'() {
+    Request request
+
+    setup:
+    def telemetryRouter = new TelemetryRouter(ddAgentFeaturesDiscovery, agentTelemetryClient, intakeTelemetryClient, true)
+
+    when:
+    telemetryRouter.sendRequest(dummyRequest())
+
+    then:
+    1 * ddAgentFeaturesDiscovery.discoverIfOutdated()
+    1 * ddAgentFeaturesDiscovery.supportsTelemetryProxy() >> false
+    1 * okHttpClient.newCall(_) >> { args -> request = args[0]; mockResponse(200) }
+    request.url() == intakeUrl
+    request.header(apiKeyHeader) == apiKey
+  }
+
+  def 'when configured to prefer Intake: do not switch to Agent if Intake request succeeds, even if Agent supports telemetry proxy'() {
+    Request request
+
+    setup:
+    def telemetryRouter = new TelemetryRouter(ddAgentFeaturesDiscovery, agentTelemetryClient, intakeTelemetryClient, true)
+
+    when:
+    telemetryRouter.sendRequest(dummyRequest())
+
+    then:
+    1 * ddAgentFeaturesDiscovery.discoverIfOutdated()
+    1 * ddAgentFeaturesDiscovery.supportsTelemetryProxy() >> true
+    1 * okHttpClient.newCall(_) >> { args -> request = args[0]; mockResponse(200) }
+    request.url() == intakeUrl
+    request.header(apiKeyHeader) == apiKey
+
+    when:
+    telemetryRouter.sendRequest(dummyRequest())
+
+    then:
+    1 * okHttpClient.newCall(_) >> { args -> request = args[0]; mockResponse(200) }
+    request.url() == intakeUrl
+    request.header(apiKeyHeader) == apiKey
+  }
+
+  def 'when configured to prefer Intake: do not switch to Agent if request is interrupted'() {
+    Request request
+
+    setup:
+    def telemetryRouter = new TelemetryRouter(ddAgentFeaturesDiscovery, agentTelemetryClient, intakeTelemetryClient, true)
+
+    when:
+    telemetryRouter.sendRequest(dummyRequest())
+
+    then:
+    1 * ddAgentFeaturesDiscovery.discoverIfOutdated()
+    1 * ddAgentFeaturesDiscovery.supportsTelemetryProxy() >> true
+    1 * okHttpClient.newCall(_) >> { args -> request = args[0]; throw new InterruptedIOException("interrupted") }
+    request.url() == intakeUrl
+    request.header(apiKeyHeader) == apiKey
+
+    when:
+    telemetryRouter.sendRequest(dummyRequest())
+
+    then:
+    1 * okHttpClient.newCall(_) >> { args -> request = args[0]; mockResponse(200) }
+    request.url() == intakeUrl
+    request.header(apiKeyHeader) == apiKey
+  }
+
+  def 'when configured to prefer Intake: switch to Agent if Intake request fails'() {
+    Request request
+
+    setup:
+    def telemetryRouter = new TelemetryRouter(ddAgentFeaturesDiscovery, agentTelemetryClient, intakeTelemetryClient, true)
+
+    when:
+    telemetryRouter.sendRequest(dummyRequest())
+
+    then:
+    1 * ddAgentFeaturesDiscovery.discoverIfOutdated()
+    1 * ddAgentFeaturesDiscovery.supportsTelemetryProxy() >> true
+    1 * okHttpClient.newCall(_) >> { args -> request = args[0]; mockResponse(403) }
+    request.url() == intakeUrl
+    request.header(apiKeyHeader) == apiKey
+
+    when:
+    telemetryRouter.sendRequest(dummyRequest())
+
+    then:
+    1 * okHttpClient.newCall(_) >> { args -> request = args[0]; mockResponse(200) }
+    request.url() == agentTelemetryUrl
+    request.header(apiKeyHeader) == null
+  }
+
   def 'do not switch to Intake when Agent stops supporting telemetry proxy but accepts telemetry requests'() {
     Request request
 
@@ -185,7 +287,7 @@ class TelemetryRouterSpecification extends Specification {
 
   def 'use Agent when Intake is not available'() {
     setup:
-    def httpClient = new TelemetryRouter(ddAgentFeaturesDiscovery, agentTelemetryClient, null)
+    def httpClient = new TelemetryRouter(ddAgentFeaturesDiscovery, agentTelemetryClient, null, false)
 
     Request request
 
@@ -227,7 +329,7 @@ class TelemetryRouterSpecification extends Specification {
     500        | null           | agentTelemetryUrl
   }
 
-  def 'switch to Intake when Agent fails to receive telemetry requests'() {
+  def 'switch to Intake then back to Agent when both fail to receive telemetry requests'() {
     Request request
 
     when:

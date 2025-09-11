@@ -15,6 +15,7 @@
  */
 package com.datadog.profiling.uploader;
 
+import static com.datadog.profiling.uploader.ProfileUploader.SERVELESS_TAG;
 import static com.datadog.profiling.uploader.ProfileUploader.V4_PROFILE_END_PARAM;
 import static com.datadog.profiling.uploader.ProfileUploader.V4_PROFILE_START_PARAM;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -39,8 +40,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.ByteStreams;
 import datadog.common.version.VersionInfo;
+import datadog.environment.JavaVirtualMachine;
 import datadog.trace.api.Config;
 import datadog.trace.api.DDTags;
+import datadog.trace.api.ProcessTags;
 import datadog.trace.api.profiling.ProfilingSnapshot;
 import datadog.trace.api.profiling.RecordingData;
 import datadog.trace.api.profiling.RecordingInputStream;
@@ -49,6 +52,7 @@ import datadog.trace.bootstrap.config.provider.ConfigProvider;
 import datadog.trace.relocate.api.IOLogger;
 import datadog.trace.util.PidHelper;
 import delight.fileupload.FileUpload;
+import io.airlift.compress.zstd.ZstdInputStream;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -81,6 +85,7 @@ import okhttp3.mockwebserver.SocketPolicy;
 import org.apache.commons.fileupload.FileItem;
 import org.apache.commons.io.IOUtils;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -104,6 +109,8 @@ public class ProfileUploaderTest {
 
   private static final Map<String, String> TAGS;
 
+  private static final String FUNCTION_NAME = "my_function";
+
   static {
     // Not using Guava's ImmutableMap because we want to test null value
     final Map<String, String> tags = new HashMap<>();
@@ -120,6 +127,7 @@ public class ProfileUploaderTest {
       new ImmutableMap.Builder<String, String>()
           .put("baz", "123")
           .put("foo", "bar")
+          .put(SERVELESS_TAG, FUNCTION_NAME)
           .put("quoted", "quoted")
           .put(DDTags.PID_TAG, PidHelper.getPid())
           .put(VersionInfo.PROFILER_VERSION_TAG, VersionInfo.VERSION)
@@ -148,6 +156,20 @@ public class ProfileUploaderTest {
   private HttpUrl url;
 
   private ProfileUploader uploader;
+
+  @BeforeAll
+  static void setUpAll() throws Exception {
+    Map<String, String> env = System.getenv();
+
+    Field field = env.getClass().getDeclaredField("m");
+    field.setAccessible(true);
+
+    @SuppressWarnings("unchecked")
+    Map<String, String> modifiableEnv = (Map<String, String>) field.get(env);
+    // hard-coding the env variable here; we could theoretically make the field from ServerlessInfo
+    // public instead
+    modifiableEnv.put("AWS_LAMBDA_FUNCTION_NAME", FUNCTION_NAME);
+  }
 
   @BeforeEach
   public void setup() throws IOException {
@@ -316,7 +338,7 @@ public class ProfileUploaderTest {
   }
 
   @ParameterizedTest
-  @ValueSource(strings = {"on", "lz4", "gzip", "off", "invalid"})
+  @ValueSource(strings = {"on", "lz4", "gzip", "zstd", "off", "invalid"})
   public void testCompression(final String compression) throws Exception {
     when(config.getApiKey()).thenReturn(null);
     when(config.getProfilingUploadCompression()).thenReturn(compression);
@@ -351,6 +373,8 @@ public class ProfileUploaderTest {
     byte[] uploadedBytes = rawJfr.get();
     if (compression.equals("gzip")) {
       uploadedBytes = unGzip(uploadedBytes);
+    } else if (compression.equals("zstd")) {
+      uploadedBytes = unZstd(uploadedBytes);
     } else if (compression.equals("on")
         || compression.equals("lz4")
         || compression.equals("invalid")) {
@@ -542,7 +566,10 @@ public class ProfileUploaderTest {
 
     verify(recording).release();
 
-    if (Files.exists(Paths.get(System.getProperty("java.home"), "bin", "jfr"))) {
+    // J9 has 'almost' implemented JFR, but not really
+    // we need to skip this part for J9
+    if (!JavaVirtualMachine.isJ9()
+        && Files.exists(Paths.get(System.getProperty("java.home"), "bin", "jfr"))) {
       verify(ioLogger)
           .error(
               eq("Failed to upload profile, it's too big. Dumping information about the profile"));
@@ -807,6 +834,34 @@ public class ProfileUploaderTest {
     verify(recording).release();
   }
 
+  @ParameterizedTest(name = "process tags enabled ''{0}''")
+  @ValueSource(booleans = {true, false})
+  public void testRequestWithProcessTags(boolean processTagsEnabled) throws Exception {
+    when(config.isExperimentalPropagateProcessTagsEnabled()).thenReturn(processTagsEnabled);
+    ProcessTags.reset(config);
+    uploader =
+        new ProfileUploader(
+            config, configProvider, ioLogger, (int) TERMINATION_TIMEOUT.getSeconds());
+
+    server.enqueue(new MockResponse().setResponseCode(200));
+    uploadAndWait(RECORDING_TYPE, mockRecordingData());
+
+    final RecordedRequest recordedRequest = server.takeRequest(5, TimeUnit.SECONDS);
+    assertNotNull(recordedRequest);
+    final List<FileItem> multiPartItems =
+        FileUpload.parse(
+            recordedRequest.getBody().readByteArray(), recordedRequest.getHeader("Content-Type"));
+
+    final FileItem rawEvent = multiPartItems.get(0);
+    final Map<String, ?> parsed = new ObjectMapper().readValue(rawEvent.get(), Map.class);
+    if (processTagsEnabled) {
+      assertNotNull(ProcessTags.getTagsForSerialization());
+      assertEquals(ProcessTags.getTagsForSerialization().toString(), parsed.get("process_tags"));
+    } else {
+      assertNull(parsed.get("process_tags"));
+    }
+  }
+
   private RecordingData mockRecordingData() throws IOException {
     return mockRecordingData(false, ProfilingSnapshot.Kind.PERIODIC);
   }
@@ -838,6 +893,13 @@ public class ProfileUploaderTest {
 
   private static byte[] unLz4(final byte[] compressed) throws IOException {
     final InputStream stream = new LZ4FrameInputStream(new ByteArrayInputStream(compressed));
+    final ByteArrayOutputStream result = new ByteArrayOutputStream();
+    ByteStreams.copy(stream, result);
+    return result.toByteArray();
+  }
+
+  private static byte[] unZstd(final byte[] compressed) throws IOException {
+    final InputStream stream = new ZstdInputStream(new ByteArrayInputStream(compressed));
     final ByteArrayOutputStream result = new ByteArrayOutputStream();
     ByteStreams.copy(stream, result);
     return result.toByteArray();

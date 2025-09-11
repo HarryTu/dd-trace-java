@@ -1,4 +1,4 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.iast.InstrumentationBridge
 import datadog.trace.api.iast.propagation.PropagationModule
 import datadog.trace.api.iast.sink.HttpResponseHeaderModule
@@ -10,7 +10,7 @@ import javax.servlet.http.Cookie
 import javax.servlet.http.HttpServletResponse
 import javax.servlet.http.HttpServletResponseWrapper
 
-class HttpServletResponseInstrumentationTest extends AgentTestRunner {
+class HttpServletResponseInstrumentationTest extends InstrumentationSpecification {
   @Override
   protected void configurePreAgent() {
     injectSysConfig('dd.iast.enabled', 'true')
@@ -27,12 +27,13 @@ class HttpServletResponseInstrumentationTest extends AgentTestRunner {
     InstrumentationBridge.registerIastModule(module)
     final response = new DummyResponse()
     final cookie = new Cookie("user-id", "7")
+    cookie.setMaxAge(3)
 
     when:
     response.addCookie(cookie)
 
     then:
-    1 * module.onCookie({ IastCookie vul -> vul.cookieName == cookie.name && vul.secure == cookie.secure })
+    1 * module.onCookie({ IastCookie vul -> vul.cookieName == cookie.name && vul.cookieValue == cookie.value && vul.secure == cookie.secure && vul.maxAge == cookie.maxAge })
     0 * _
   }
 
@@ -59,12 +60,13 @@ class HttpServletResponseInstrumentationTest extends AgentTestRunner {
     final response = new DummyResponse()
     final cookie = new Cookie("user-id", "7")
     cookie.setSecure(true)
+    cookie.setMaxAge(3)
 
     when:
     response.addCookie(cookie)
 
     then:
-    1 * module.onCookie({ IastCookie vul -> vul.cookieName == cookie.name && vul.secure == cookie.secure })
+    1 * module.onCookie({ IastCookie vul -> vul.cookieName == cookie.name && vul.cookieValue == cookie.value && vul.secure == cookie.secure && vul.maxAge == cookie.maxAge })
     0 * _
   }
 
@@ -180,7 +182,7 @@ class HttpServletResponseInstrumentationTest extends AgentTestRunner {
 
     then:
     noExceptionThrown()
-    1 * module.taintIfTainted(_, "http://dummy.url.com")
+    1 * module.taintStringIfTainted(_, "http://dummy.url.com")
     0 * _
   }
 
@@ -195,7 +197,7 @@ class HttpServletResponseInstrumentationTest extends AgentTestRunner {
 
     then:
     noExceptionThrown()
-    1 * module.taintIfTainted(_, "http://dummy.url.com")
+    1 * module.taintStringIfTainted(_, "http://dummy.url.com")
     0 * _
   }
 

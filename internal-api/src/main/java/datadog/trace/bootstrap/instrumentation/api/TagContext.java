@@ -5,8 +5,10 @@ import static java.util.Collections.emptyList;
 
 import datadog.trace.api.DDSpanId;
 import datadog.trace.api.DDTraceId;
+import datadog.trace.api.TagMap;
 import datadog.trace.api.TraceConfig;
 import datadog.trace.api.TracePropagationStyle;
+import datadog.trace.api.datastreams.PathwayContext;
 import datadog.trace.api.sampling.PrioritySampling;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -17,12 +19,12 @@ import java.util.Map;
  * When calling extract, we allow for grabbing other configured headers as tags. Those tags are
  * returned here even if the rest of the request would have returned null.
  */
-public class TagContext implements AgentSpan.Context.Extracted {
+public class TagContext implements AgentSpanContext.Extracted {
 
   private static final HttpHeaders EMPTY_HTTP_HEADERS = new HttpHeaders();
 
   private final CharSequence origin;
-  private final Map<String, String> tags;
+  private TagMap tags;
   private List<AgentSpanLink> terminatedContextLinks;
   private Object requestContextDataAppSec;
   private Object requestContextDataIast;
@@ -30,26 +32,29 @@ public class TagContext implements AgentSpan.Context.Extracted {
   private PathwayContext pathwayContext;
   private final HttpHeaders httpHeaders;
   private final Map<String, String> baggage;
+  private Baggage w3cBaggage;
   private final int samplingPriority;
   private final TraceConfig traceConfig;
   private final TracePropagationStyle propagationStyle;
+  private final DDTraceId traceId;
 
   public TagContext() {
     this(null, null);
   }
 
-  public TagContext(final String origin, final Map<String, String> tags) {
-    this(origin, tags, null, null, PrioritySampling.UNSET, null, NONE);
+  public TagContext(final CharSequence origin, final TagMap tags) {
+    this(origin, tags, null, null, PrioritySampling.UNSET, null, NONE, DDTraceId.ZERO);
   }
 
   public TagContext(
       final CharSequence origin,
-      final Map<String, String> tags,
+      final TagMap tags,
       final HttpHeaders httpHeaders,
       final Map<String, String> baggage,
       final int samplingPriority,
       final TraceConfig traceConfig,
-      final TracePropagationStyle propagationStyle) {
+      final TracePropagationStyle propagationStyle,
+      final DDTraceId traceId) {
     this.origin = origin;
     this.tags = tags;
     this.terminatedContextLinks = null;
@@ -58,6 +63,7 @@ public class TagContext implements AgentSpan.Context.Extracted {
     this.samplingPriority = samplingPriority;
     this.traceConfig = traceConfig;
     this.propagationStyle = propagationStyle;
+    this.traceId = traceId;
   }
 
   public TraceConfig getTraceConfig() {
@@ -125,11 +131,6 @@ public class TagContext implements AgentSpan.Context.Extracted {
   }
 
   @Override
-  public String getXForwarded() {
-    return httpHeaders.xForwarded;
-  }
-
-  @Override
   public String getXForwardedFor() {
     return httpHeaders.xForwardedFor;
   }
@@ -164,8 +165,15 @@ public class TagContext implements AgentSpan.Context.Extracted {
     return httpHeaders.customIpHeader;
   }
 
-  public final Map<String, String> getTags() {
-    return tags;
+  public final TagMap getTags() {
+    return (this.tags == null) ? TagMap.EMPTY : this.tags;
+  }
+
+  public void putTag(final String key, final String value) {
+    if (this.tags == null) {
+      this.tags = TagMap.create(4);
+    }
+    this.tags.set(key, value);
   }
 
   @Override
@@ -182,9 +190,17 @@ public class TagContext implements AgentSpan.Context.Extracted {
     return baggage.entrySet();
   }
 
+  public final Baggage getW3CBaggage() {
+    return w3cBaggage;
+  }
+
+  public void setW3CBaggage(Baggage w3cBaggage) {
+    this.w3cBaggage = w3cBaggage;
+  }
+
   @Override
   public DDTraceId getTraceId() {
-    return DDTraceId.ZERO;
+    return traceId;
   }
 
   @Override
@@ -193,8 +209,8 @@ public class TagContext implements AgentSpan.Context.Extracted {
   }
 
   @Override
-  public final AgentTrace getTrace() {
-    return AgentTracer.NoopAgentTrace.INSTANCE;
+  public final AgentTraceCollector getTraceCollector() {
+    return AgentTracer.NoopAgentTraceCollector.INSTANCE;
   }
 
   public final Object getRequestContextDataAppSec() {
@@ -229,6 +245,11 @@ public class TagContext implements AgentSpan.Context.Extracted {
     return this.pathwayContext;
   }
 
+  @Override
+  public boolean isRemote() {
+    return true;
+  }
+
   public TagContext withPathwayContext(PathwayContext pathwayContext) {
     this.pathwayContext = pathwayContext;
     return this;
@@ -256,12 +277,11 @@ public class TagContext implements AgentSpan.Context.Extracted {
     public String fastlyClientIp;
     public String cfConnectingIp;
     public String cfConnectingIpv6;
-    public String xForwarded;
-    public String forwarded;
     public String xForwardedProto;
     public String xForwardedHost;
     public String xForwardedPort;
     public String xForwardedFor;
+    public String forwarded;
     public String forwardedFor;
     public String xClusterClientIp;
     public String xRealIp;

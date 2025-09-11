@@ -110,11 +110,14 @@ public class ExcludeFilter {
     SKIP_TYPE_PREFIXES
         .get(ExcludeType.RUNNABLE)
         .add("com.googlecode.concurrentlinkedhashmap.ConcurrentLinkedHashMap");
+    SKIP_TYPE_PREFIXES
+        .get(ExcludeType.RUNNABLE)
+        .add("org.springframework.kafka.listener.KafkaMessageListenerContainer$ListenerConsumer$");
   }
 
   /**
    * This should only be called during startup to initialize this based on information gathered from
-   * the {@code Instrumenter} instances.
+   * the loaded {@code InstrumenterModule}s.
    *
    * @param excludeTypes the types to exclude
    */

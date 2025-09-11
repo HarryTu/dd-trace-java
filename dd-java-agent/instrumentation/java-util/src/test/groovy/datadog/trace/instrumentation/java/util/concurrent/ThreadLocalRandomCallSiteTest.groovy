@@ -1,20 +1,20 @@
 package datadog.trace.instrumentation.java.util.concurrent
 
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.iast.InstrumentationBridge
 import datadog.trace.api.iast.sink.WeakRandomnessModule
 import foo.bar.TestThreadLocalRandomSuite
 
 import java.util.concurrent.ThreadLocalRandom
 
-class ThreadLocalRandomCallSiteTest extends AgentTestRunner {
+class ThreadLocalRandomCallSiteTest extends InstrumentationSpecification {
 
   @Override
   protected void configurePreAgent() {
     injectSysConfig('dd.iast.enabled', 'true')
   }
 
-  void 'test #target.#method methods'() {
+  void 'test #target.class.name #method methods'() {
     setup:
     final module = Mock(WeakRandomnessModule)
     InstrumentationBridge.registerIastModule(module)

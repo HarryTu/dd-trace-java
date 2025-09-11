@@ -15,6 +15,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import java.lang.reflect.Method;
@@ -22,9 +23,9 @@ import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public final class HttpServletInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public final class HttpServletInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
   public HttpServletInstrumentation() {
     super("servlet-service");
   }
@@ -56,8 +57,8 @@ public final class HttpServletInstrumentation extends Instrumenter.Tracing
    * advice is always called after Servlet3Instrumentation which is instrumenting the public method.
    */
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("service")
             .or(nameStartsWith("do")) // doGet, doPost, etc
             .and(takesArgument(0, named("javax.servlet.http.HttpServletRequest")))
@@ -83,9 +84,7 @@ public final class HttpServletInstrumentation extends Instrumenter.Tracing
       // Here we use the Method instead of "this.class.name" to distinguish calls to "super".
       span.setResourceName(DECORATE.spanNameForMethod(method));
 
-      final AgentScope agentScope = activateSpan(span);
-      agentScope.setAsyncPropagation(true);
-      return agentScope;
+      return activateSpan(span);
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)

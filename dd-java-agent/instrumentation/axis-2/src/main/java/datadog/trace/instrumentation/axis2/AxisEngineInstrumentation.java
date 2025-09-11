@@ -3,7 +3,8 @@ package datadog.trace.instrumentation.axis2;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.namedOneOf;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeScope;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeSpan;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.captureSpan;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
 import static datadog.trace.instrumentation.axis2.AxisMessageDecorator.AXIS2_CONTINUATION_KEY;
 import static datadog.trace.instrumentation.axis2.AxisMessageDecorator.AXIS2_MESSAGE;
@@ -13,6 +14,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.Tracer;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
@@ -20,9 +22,9 @@ import net.bytebuddy.asm.Advice;
 import org.apache.axis2.context.MessageContext;
 import org.apache.axis2.engine.Handler.InvocationResponse;
 
-@AutoService(Instrumenter.class)
-public final class AxisEngineInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class AxisEngineInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public AxisEngineInstrumentation() {
     super("axis2");
@@ -41,18 +43,18 @@ public final class AxisEngineInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(namedOneOf("receive", "send", "sendFault"))
             .and(takesArgument(0, named("org.apache.axis2.context.MessageContext"))),
         getClass().getName() + "$HandleMessageAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(namedOneOf("resumeReceive", "resumeSend", "resumeSendFault"))
             .and(takesArgument(0, named("org.apache.axis2.context.MessageContext"))),
         getClass().getName() + "$ResumeMessageAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(named("invoke"))
             .and(takesArgument(0, named("org.apache.axis2.context.MessageContext"))),
@@ -134,13 +136,11 @@ public final class AxisEngineInstrumentation extends Instrumenter.Tracing
         @Advice.Return final InvocationResponse response) {
       if (InvocationResponse.SUSPEND == response
           && !message.containsSelfManagedDataKey(Tracer.class, AXIS2_CONTINUATION_KEY)) {
-        AgentScope scope = activeScope();
-        if (null != scope) {
-          if (DECORATE.sameTrace(scope.span(), message)) {
-            // record continuation in the message so we can re-activate it on resume
-            // we use the self-managed area of the message which is private/internal
-            message.setSelfManagedData(Tracer.class, AXIS2_CONTINUATION_KEY, scope.capture());
-          }
+        AgentSpan span = activeSpan();
+        if (null != span && DECORATE.sameTrace(span, message)) {
+          // record continuation in the message so we can re-activate it on resume
+          // we use the self-managed area of the message which is private/internal
+          message.setSelfManagedData(Tracer.class, AXIS2_CONTINUATION_KEY, captureSpan(span));
         }
       }
     }

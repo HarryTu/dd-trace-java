@@ -1,13 +1,14 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.agent.test.utils.TraceUtils
 import datadog.trace.api.Trace
 import datadog.trace.bootstrap.instrumentation.api.Tags
+import dd.test.trace.annotation.DontTraceClass
 import dd.test.trace.annotation.SayTracedHello
 import dd.test.trace.annotation.TracedSubClass
 
 import java.util.concurrent.Callable
 
-class TraceAnnotationsTest extends AgentTestRunner {
+class TraceAnnotationsTest extends InstrumentationSpecification {
 
   def "test simple case annotations"() {
     setup:
@@ -510,5 +511,25 @@ class TraceAnnotationsTest extends AgentTestRunner {
       }
     }
   }
+  def "@DoNotTrace should mute tracing"() {
+    setup:
+    TraceUtils.runUnderTrace("parent", () -> {
+      new DontTraceClass().muted()
+    })
+    expect:
+    assertTraces(1) {
+      trace(1) {
+        span {
+          hasServiceName()
+          resourceName "parent"
+          operationName "parent"
+          parent()
+          errored false
+          tags {
+            defaultTags()
+          }
+        }
+      }
+    }
+  }
 }
-

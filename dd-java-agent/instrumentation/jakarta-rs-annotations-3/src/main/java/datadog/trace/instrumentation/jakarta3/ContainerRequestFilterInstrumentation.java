@@ -8,6 +8,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.container.ContainerRequestFilter;
 import net.bytebuddy.asm.Advice;
@@ -18,9 +19,9 @@ import net.bytebuddy.matcher.ElementMatcher;
  * This adds the filter class name to the request properties. The class name is used by <code>
  * DefaultRequestContextInstrumentation</code>
  */
-@AutoService(Instrumenter.class)
-public class ContainerRequestFilterInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class ContainerRequestFilterInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   public ContainerRequestFilterInstrumentation() {
     super("jakarta-rs", "jakartars", "jakarta-rs-filter");
@@ -37,8 +38,8 @@ public class ContainerRequestFilterInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("filter"))
             .and(takesArguments(1))

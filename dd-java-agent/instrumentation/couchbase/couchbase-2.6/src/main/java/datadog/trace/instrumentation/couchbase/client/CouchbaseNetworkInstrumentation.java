@@ -11,6 +11,7 @@ import com.couchbase.client.core.message.CouchbaseRequest;
 import com.couchbase.client.java.transcoder.crypto.JsonCryptoTranscoder;
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.ContextStore;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
@@ -21,9 +22,9 @@ import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public class CouchbaseNetworkInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class CouchbaseNetworkInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
   public CouchbaseNetworkInstrumentation() {
     super("couchbase");
   }
@@ -46,9 +47,9 @@ public class CouchbaseNetworkInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
+  public void methodAdvice(MethodTransformer transformer) {
     // encode(ChannelHandlerContext ctx, REQUEST msg, List<Object> out)
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(named("encode"))
             .and(takesArguments(3))

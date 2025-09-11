@@ -7,10 +7,11 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 
-@AutoService(Instrumenter.class)
-public class ErrorReportValueInstrumentation extends Instrumenter.Iast
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class ErrorReportValueInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public ErrorReportValueInstrumentation() {
     super("tomcat");
@@ -27,8 +28,13 @@ public class ErrorReportValueInstrumentation extends Instrumenter.Iast
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  protected boolean isOptOutEnabled() {
+    return true;
+  }
+
+  @Override
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("report"))
             .and(takesArgument(0, named("org.apache.catalina.connector.Request")))

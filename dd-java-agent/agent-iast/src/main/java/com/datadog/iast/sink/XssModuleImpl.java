@@ -1,26 +1,19 @@
 package com.datadog.iast.sink;
 
-import static com.datadog.iast.taint.Ranges.rangesProviderFor;
 import static com.datadog.iast.taint.Tainteds.canBeTainted;
 
 import com.datadog.iast.Dependencies;
-import com.datadog.iast.IastRequestContext;
-import com.datadog.iast.model.Evidence;
 import com.datadog.iast.model.Location;
-import com.datadog.iast.model.Range;
-import com.datadog.iast.model.Vulnerability;
 import com.datadog.iast.model.VulnerabilityType;
-import com.datadog.iast.overhead.Operations;
-import com.datadog.iast.taint.Ranges;
-import com.datadog.iast.taint.TaintedObject;
-import com.datadog.iast.taint.TaintedObjects;
+import com.datadog.iast.util.Iterators;
 import datadog.trace.api.iast.sink.XssModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
-import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
 public class XssModuleImpl extends SinkModuleBase implements XssModule {
+
+  private static final int MAX_LENGTH = 500;
 
   public XssModuleImpl(final Dependencies dependencies) {
     super(dependencies);
@@ -31,12 +24,7 @@ public class XssModuleImpl extends SinkModuleBase implements XssModule {
     if (!canBeTainted(s)) {
       return;
     }
-    final AgentSpan span = AgentTracer.activeSpan();
-    final IastRequestContext ctx = IastRequestContext.get(span);
-    if (ctx == null) {
-      return;
-    }
-    checkInjection(span, ctx, VulnerabilityType.XSS, s);
+    checkInjection(VulnerabilityType.XSS, s);
   }
 
   @Override
@@ -44,30 +32,7 @@ public class XssModuleImpl extends SinkModuleBase implements XssModule {
     if (!canBeTainted(s)) {
       return;
     }
-    final AgentSpan span = AgentTracer.activeSpan();
-    final IastRequestContext ctx = IastRequestContext.get(span);
-    if (ctx == null) {
-      return;
-    }
-    TaintedObject taintedObject = ctx.getTaintedObjects().get(s);
-    if (taintedObject == null) {
-      return;
-    }
-    Range[] notMarkedRanges =
-        Ranges.getNotMarkedRanges(taintedObject.getRanges(), VulnerabilityType.XSS.mark());
-    if (notMarkedRanges == null || notMarkedRanges.length == 0) {
-      return;
-    }
-    if (!overheadController.consumeQuota(Operations.REPORT_VULNERABILITY, span)) {
-      return;
-    }
-    final Evidence evidence = new Evidence(s, notMarkedRanges);
-    reporter.report(
-        span,
-        new Vulnerability(
-            VulnerabilityType.XSS,
-            Location.forSpanAndClassAndMethod(span, clazz, method),
-            evidence));
+    checkInjection(VulnerabilityType.XSS, s, new ClassMethodLocationSupplier(clazz, method));
   }
 
   @Override
@@ -75,12 +40,7 @@ public class XssModuleImpl extends SinkModuleBase implements XssModule {
     if (array == null || array.length == 0) {
       return;
     }
-    final AgentSpan span = AgentTracer.activeSpan();
-    final IastRequestContext ctx = IastRequestContext.get(span);
-    if (ctx == null) {
-      return;
-    }
-    checkInjection(span, ctx, VulnerabilityType.XSS, array);
+    checkInjection(VulnerabilityType.XSS, array);
   }
 
   @Override
@@ -88,42 +48,55 @@ public class XssModuleImpl extends SinkModuleBase implements XssModule {
     if ((args == null || args.length == 0) && !canBeTainted(format)) {
       return;
     }
-    final AgentSpan span = AgentTracer.activeSpan();
-    final IastRequestContext ctx = IastRequestContext.get(span);
-    if (ctx == null) {
-      return;
+    if (args == null || args.length == 0) {
+      checkInjection(VulnerabilityType.XSS, format);
+    } else {
+      checkInjection(VulnerabilityType.XSS, Iterators.of(format, args));
     }
-    final TaintedObjects to = ctx.getTaintedObjects();
-    checkInjection(
-        span, VulnerabilityType.XSS, rangesProviderFor(to, format), rangesProviderFor(to, args));
   }
 
   @Override
   public void onXss(@Nonnull CharSequence s, @Nullable String file, int line) {
-    if (!canBeTainted(s) || file == null || file.isEmpty()) {
+    if (!canBeTainted(s) || !canBeTainted(file)) {
       return;
     }
-    final AgentSpan span = AgentTracer.activeSpan();
-    final IastRequestContext ctx = IastRequestContext.get(span);
-    if (ctx == null) {
-      return;
+    checkInjection(VulnerabilityType.XSS, s, new FileAndLineLocationSupplier(file, line));
+  }
+
+  private static String truncate(final String s) {
+    if (s == null || s.length() <= MAX_LENGTH) {
+      return s;
     }
-    TaintedObject taintedObject = ctx.getTaintedObjects().get(s);
-    if (taintedObject == null) {
-      return;
+    return s.substring(0, MAX_LENGTH);
+  }
+
+  private static class ClassMethodLocationSupplier implements LocationSupplier {
+    private final String clazz;
+    private final String method;
+
+    private ClassMethodLocationSupplier(final String clazz, final String method) {
+      this.clazz = clazz;
+      this.method = method;
     }
-    Range[] notMarkedRanges =
-        Ranges.getNotMarkedRanges(taintedObject.getRanges(), VulnerabilityType.XSS.mark());
-    if (notMarkedRanges == null || notMarkedRanges.length == 0) {
-      return;
+
+    @Override
+    public Location build(final @Nullable AgentSpan span) {
+      return Location.forSpanAndClassAndMethod(span, truncate(clazz), truncate(method));
     }
-    if (!overheadController.consumeQuota(Operations.REPORT_VULNERABILITY, span)) {
-      return;
+  }
+
+  private static class FileAndLineLocationSupplier implements LocationSupplier {
+    private final String file;
+    private final int line;
+
+    private FileAndLineLocationSupplier(final String file, final int line) {
+      this.file = file;
+      this.line = line;
     }
-    final Evidence evidence = new Evidence(s.toString(), notMarkedRanges);
-    reporter.report(
-        span,
-        new Vulnerability(
-            VulnerabilityType.XSS, Location.forSpanAndFileAndLine(span, file, line), evidence));
+
+    @Override
+    public Location build(@Nullable final AgentSpan span) {
+      return Location.forSpanAndFileAndLine(span, truncate(file), line);
+    }
   }
 }

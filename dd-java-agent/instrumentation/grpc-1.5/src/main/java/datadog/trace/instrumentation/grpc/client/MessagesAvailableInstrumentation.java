@@ -11,6 +11,8 @@ import static net.bytebuddy.matcher.ElementMatchers.isConstructor;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
+import datadog.trace.api.InstrumenterConfig;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
@@ -20,12 +22,12 @@ import java.util.Collections;
 import java.util.Map;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public final class MessagesAvailableInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForKnownTypes {
+@AutoService(InstrumenterModule.class)
+public final class MessagesAvailableInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForKnownTypes, Instrumenter.HasMethodAdvice {
 
   public MessagesAvailableInstrumentation() {
-    super("grpc", "grpc-client");
+    super("grpc", "grpc-client", "grpc-message");
   }
 
   @Override
@@ -51,15 +53,18 @@ public final class MessagesAvailableInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(isConstructor(), getClass().getName() + "$Capture");
-    transformation.applyAdvice(named("runInContext"), getClass().getName() + "$ReceiveMessages");
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(isConstructor(), getClass().getName() + "$Capture");
+    if (InstrumenterConfig.get()
+        .isIntegrationEnabled(Collections.singleton("grpc-message"), false)) {
+      transformer.applyAdvice(named("runInContext"), getClass().getName() + "$ReceiveMessages");
+    }
   }
 
   public static final class Capture {
     @Advice.OnMethodExit
     public static void capture(@Advice.This Runnable task) {
-      AdviceUtils.capture(InstrumentationContext.get(Runnable.class, State.class), task, true);
+      AdviceUtils.capture(InstrumentationContext.get(Runnable.class, State.class), task);
     }
   }
 

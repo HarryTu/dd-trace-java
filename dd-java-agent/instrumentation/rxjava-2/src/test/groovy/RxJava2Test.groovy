@@ -1,4 +1,4 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.Trace
 import datadog.trace.bootstrap.instrumentation.api.AgentScope
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan
@@ -16,7 +16,7 @@ import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSp
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan
 import static java.util.concurrent.TimeUnit.MILLISECONDS
 
-class RxJava2Test extends AgentTestRunner {
+class RxJava2Test extends InstrumentationSpecification {
 
   public static final String EXCEPTION_MESSAGE = "test exception"
 
@@ -359,7 +359,7 @@ class RxJava2Test extends AgentTestRunner {
     "basic flowable" | 2         | { -> Flowable.fromIterable([1, 2]).map(addOne) }
   }
 
-  def "Flowables produce the right number of results '#scheduler'"() {
+  def "Flowables produce the right number of results on '#schedulerName' scheduler"() {
     when:
     List<String> values = Flowable.fromIterable(Arrays.asList(1, 2, 3, 4))
       .parallel()
@@ -373,12 +373,11 @@ class RxJava2Test extends AgentTestRunner {
     values.size() == 4
 
     where:
-    scheduler << [
-      Schedulers.newThread(),
-      Schedulers.computation(),
-      Schedulers.single(),
-      Schedulers.trampoline()
-    ]
+    schedulerName | scheduler
+    "new-thread"   | Schedulers.newThread()
+    "computation" | Schedulers.computation()
+    "single"      | Schedulers.single()
+    "trampoline"  | Schedulers.trampoline()
   }
 
   @Trace(operationName = "trace-parent", resourceName = "trace-parent")
@@ -389,8 +388,6 @@ class RxJava2Test extends AgentTestRunner {
 
     def publisher = publisherSupplier()
     try {
-      scope.setAsyncPropagation(true)
-
       // Read all data from publisher
       if (publisher instanceof Maybe) {
         return ((Maybe) publisher).blockingGet()
@@ -409,7 +406,6 @@ class RxJava2Test extends AgentTestRunner {
   def cancelUnderTrace(def publisherSupplier) {
     final AgentSpan span = startSpan("publisher-parent")
     AgentScope scope = activateSpan(span)
-    scope.setAsyncPropagation(true)
 
     def publisher = publisherSupplier()
     if (publisher instanceof Maybe) {

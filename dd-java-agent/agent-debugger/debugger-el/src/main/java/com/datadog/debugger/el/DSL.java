@@ -14,8 +14,8 @@ import com.datadog.debugger.el.expressions.HasAnyExpression;
 import com.datadog.debugger.el.expressions.IfElseExpression;
 import com.datadog.debugger.el.expressions.IfExpression;
 import com.datadog.debugger.el.expressions.IndexExpression;
+import com.datadog.debugger.el.expressions.IsDefinedExpression;
 import com.datadog.debugger.el.expressions.IsEmptyExpression;
-import com.datadog.debugger.el.expressions.IsUndefinedExpression;
 import com.datadog.debugger.el.expressions.LenExpression;
 import com.datadog.debugger.el.expressions.MatchesExpression;
 import com.datadog.debugger.el.expressions.NotExpression;
@@ -31,9 +31,11 @@ import com.datadog.debugger.el.values.MapValue;
 import com.datadog.debugger.el.values.NullValue;
 import com.datadog.debugger.el.values.NumericValue;
 import com.datadog.debugger.el.values.ObjectValue;
+import com.datadog.debugger.el.values.SetValue;
 import com.datadog.debugger.el.values.StringValue;
 import java.util.Collection;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * A debugger DSL representation. A simple all-static class which can be used to build a complete
@@ -95,6 +97,10 @@ public class DSL {
     return new ComparisonExpression(left, right, ComparisonOperator.EQ);
   }
 
+  public static BooleanExpression instanceOf(ValueExpression<?> left, ValueExpression<?> right) {
+    return new ComparisonExpression(left, right, ComparisonOperator.INSTANCEOF);
+  }
+
   public static BooleanExpression not(BooleanExpression expression) {
     return new NotExpression(expression);
   }
@@ -134,6 +140,10 @@ public class DSL {
 
   public static ListValue value(Collection<?> value) {
     return new ListValue(value);
+  }
+
+  public static SetValue value(Set<?> value) {
+    return new SetValue(value);
   }
 
   public static NullValue nullValue() {
@@ -189,9 +199,8 @@ public class DSL {
     return new EndsWithExpression(valueExpression, str);
   }
 
-  public static StringPredicateExpression contains(
-      ValueExpression<?> valueExpression, StringValue str) {
-    return new ContainsExpression(valueExpression, str);
+  public static ContainsExpression contains(ValueExpression<?> target, ValueExpression<?> value) {
+    return new ContainsExpression(target, value);
   }
 
   public static StringPredicateExpression matches(
@@ -207,7 +216,7 @@ public class DSL {
     return new BooleanValueExpressionAdapter(expression);
   }
 
-  public static IsUndefinedExpression isUndefined(ValueExpression<?> valueExpression) {
-    return new IsUndefinedExpression(valueExpression);
+  public static IsDefinedExpression isDefined(ValueExpression<?> valueExpression) {
+    return new IsDefinedExpression(valueExpression);
   }
 }

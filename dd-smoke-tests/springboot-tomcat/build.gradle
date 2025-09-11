@@ -19,9 +19,9 @@ repositories {
     url 'https://archive.apache.org/dist'
     patternLayout {
       artifact '/[organisation]/[module]/v[revision]/bin/apache-[organisation]-[revision].[ext]'
-      metadataSources {
-        artifact()
-      }
+    }
+    metadataSources {
+      it.artifact()
     }
   }
 }
@@ -67,10 +67,6 @@ dependencies {
   testImplementation project(':dd-smoke-tests')
 }
 
-tasks.packageSources {
-  dependsOn 'unzip'
-}
-
 tasks.sourcesJar {
   dependsOn 'unzip'
 }
@@ -95,11 +91,15 @@ tasks.javadocJar{
   dependsOn 'unzip'
 }
 
-tasks.packageSources{
+tasks.sourcesJar{
   dependsOn 'unzip'
 }
 
-tasks.sourcesJar{
+tasks.forbiddenApisMain {
+  dependsOn 'unzip'
+}
+
+tasks.spotbugsMain {
   dependsOn 'unzip'
 }
 

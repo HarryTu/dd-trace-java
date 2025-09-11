@@ -2,8 +2,8 @@ package com.datadog.profiling.controller.ddprof;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.datadog.profiling.controller.UnsupportedEnvironmentException;
 import com.datadog.profiling.ddprof.DatadogProfiler;
+import datadog.libs.ddprof.DdprofLibraryLoader;
 import datadog.trace.api.profiling.RecordingData;
 import java.time.Instant;
 import org.junit.jupiter.api.AfterEach;
@@ -27,17 +27,20 @@ public class DatadogProfilerOngoingRecordingTest {
   @Mock private Instant start;
   @Mock private Instant end;
 
-  private static DatadogProfiler datadogProfiler;
   private DatadogProfilerOngoingRecording ongoingRecording;
 
   @BeforeAll
-  public static void setupAll() throws UnsupportedEnvironmentException {
-    datadogProfiler = DatadogProfiler.getInstance();
+  public static void setupAll() {
+    // If the profiler couldn't be loaded, the reason why is saved.
+    // This test assumes the profiler could be loaded.
+    assertDoesNotThrow(
+        () -> DdprofLibraryLoader.jvmAccess().getReasonNotLoaded(), "Profiler not available");
   }
 
   @BeforeEach
   public void setup() throws Exception {
-    ongoingRecording = new DatadogProfilerOngoingRecording(datadogProfiler, TEST_NAME);
+    ongoingRecording =
+        new DatadogProfilerOngoingRecording(DatadogProfiler.newInstance(), TEST_NAME);
   }
 
   @AfterEach

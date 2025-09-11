@@ -2,12 +2,14 @@ package com.datadog.iast;
 
 import datadog.trace.api.gateway.Flow;
 import datadog.trace.api.gateway.RequestContext;
+import datadog.trace.api.gateway.RequestContextSlot;
 import datadog.trace.api.iast.IastContext;
 import datadog.trace.api.iast.InstrumentationBridge;
 import datadog.trace.api.iast.SourceTypes;
 import datadog.trace.api.iast.propagation.PropagationModule;
 import datadog.trace.api.iast.telemetry.IastMetric;
 import datadog.trace.api.iast.telemetry.IastMetricCollector;
+import java.util.Map;
 import java.util.function.BiFunction;
 import javax.annotation.Nonnull;
 
@@ -31,10 +33,11 @@ public class GrpcRequestMessageHandler implements BiFunction<RequestContext, Obj
   public Flow<Void> apply(final RequestContext ctx, final Object o) {
     final PropagationModule module = InstrumentationBridge.PROPAGATION;
     if (module != null && o != null) {
-      final IastContext iastCtx = IastContext.Provider.get(ctx);
+      final IastContext iastCtx = ctx.getData(RequestContextSlot.IAST);
       final byte source = SourceTypes.GRPC_BODY;
       final int tainted =
-          module.taintDeeply(iastCtx, o, source, GrpcRequestMessageHandler::isProtobufArtifact);
+          module.taintObjectDeeply(
+              iastCtx, o, source, GrpcRequestMessageHandler::visitProtobufArtifact);
       if (tainted > 0) {
         IastMetricCollector.add(IastMetric.EXECUTED_SOURCE, source, tainted, iastCtx);
       }
@@ -42,8 +45,15 @@ public class GrpcRequestMessageHandler implements BiFunction<RequestContext, Obj
     return Flow.ResultFlow.empty();
   }
 
-  static boolean isProtobufArtifact(@Nonnull final Class<?> kls) {
-    return kls.getSuperclass().getName().startsWith(GENERATED_MESSAGE)
-        || MAP_FIELD.equals(kls.getName());
+  static boolean visitProtobufArtifact(@Nonnull final Class<?> kls) {
+    final Class<?> superClass = kls.getSuperclass();
+    if (superClass != null && superClass.getName().startsWith(GENERATED_MESSAGE)) {
+      return true; // GRPC custom messages
+    }
+    if (MAP_FIELD.equals(kls.getName())) {
+      return true; // a map that does not implement the map interface
+    }
+    // nested collections are safe in GRPC
+    return kls.isArray() || Iterable.class.isAssignableFrom(kls) || Map.class.isAssignableFrom(kls);
   }
 }

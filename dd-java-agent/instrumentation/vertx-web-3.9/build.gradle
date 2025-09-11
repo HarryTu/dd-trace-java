@@ -10,7 +10,8 @@ muzzle {
   pass {
     group = 'io.vertx'
     module = "vertx-web"
-    versions = "[3.8.1,5)"
+    versions = "[3.8.1,)" // it won't fail on 5+ since won't apply
+    javaVersion = "11"
     assertInverse = true
   }
 }
@@ -31,7 +32,7 @@ dependencies {
 
   testImplementation project(':dd-java-agent:instrumentation:netty-4.1')
   testImplementation project(':dd-java-agent:instrumentation:trace-annotation')
-  testImplementation(testFixtures(project(':dd-java-agent:agent-iast')))
+  testImplementation project(':dd-java-agent:agent-iast:iast-test-fixtures')
 
   testImplementation group: 'io.vertx', name: 'vertx-web', version: '3.9.0'
   testImplementation group: 'io.vertx', name: 'vertx-web-client', version: '3.9.0'

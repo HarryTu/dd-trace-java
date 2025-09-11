@@ -1,7 +1,6 @@
 package com.datadog.iast.taint
 
 import static TaintedMap.POSITIVE_MASK
-import static TaintedMap.PURGE_MASK
 
 /**
  * Generate objects to test {@link TaintedMap}.
@@ -10,14 +9,16 @@ class ObjectGen {
 
   final int capacity
   final Map<Integer, List<Object>> pool
+  final Closure<Object> factory
 
-  ObjectGen(int capacity) {
+  ObjectGen(int capacity, Closure<Object> factory = { new Object() }) {
     assert (capacity & (capacity - 1)) == 0, 'capacity must be a power of 2'
     this.capacity = capacity
     this.pool = new HashMap<>(capacity)
     for (int i = 0; i < capacity; i++) {
       this.pool.put(i, new ArrayList<Object>())
     }
+    this.factory = factory
   }
 
   def genBuckets(int nBuckets, int nObjects) {
@@ -58,7 +59,7 @@ class ObjectGen {
   def genObjects(int nObjects, Closure<Boolean> isValid) {
     def res = new ArrayList(nObjects)
     while (res.size() < nObjects) {
-      def obj = new Object()
+      def obj = factory.call()
       int bucket = getIndex(obj)
       if (isValid.call(bucket)) {
         res.add(obj)
@@ -70,7 +71,7 @@ class ObjectGen {
   }
 
   def genObject() {
-    def obj = new Object()
+    def obj = factory.call()
     int bucket = getIndex(obj)
     pool.get(bucket).add(obj)
     return bucket
@@ -86,7 +87,5 @@ class ObjectGen {
     return bucket
   }
 
-  static final Closure<Boolean> TRIGGERS_PURGE = { i -> (i & PURGE_MASK) == 0 }
-  static final Closure<Boolean> DOES_NOT_TRIGGER_PURGE = { i -> (i & PURGE_MASK) != 0 }
   static final Closure<Boolean> TRUE = { i -> true }
 }

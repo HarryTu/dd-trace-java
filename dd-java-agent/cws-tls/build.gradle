@@ -1,7 +1,5 @@
-// This component is only included in the Java Agent if the gradle property agentIncludeCwsTls is true
-
 plugins {
-  id "com.github.johnrengelman.shadow"
+  id 'com.gradleup.shadow'
 }
 
 apply from: "$rootDir/gradle/java.gradle"
@@ -22,5 +20,6 @@ dependencies {
 
 shadowJar {
   dependencies deps.excludeShared
+  // exclude this since it's available in the instrumentation jar
+  exclude 'com/sun/jna/**/*'
 }
-

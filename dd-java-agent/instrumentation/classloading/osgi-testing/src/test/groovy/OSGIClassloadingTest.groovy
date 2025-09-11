@@ -1,4 +1,4 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import org.apache.felix.framework.BundleWiringImpl
 import org.eclipse.osgi.internal.debug.Debug
 import org.eclipse.osgi.internal.framework.EquinoxConfiguration
@@ -7,8 +7,8 @@ import org.eclipse.osgi.internal.loader.ModuleClassLoader
 import org.eclipse.osgi.internal.loader.classpath.ClasspathManager
 import org.eclipse.osgi.storage.BundleInfo
 
-class OSGIClassloadingTest extends AgentTestRunner {
-  def "OSGI delegates to bootstrap class loader for agent classes"() {
+class OSGIClassloadingTest extends InstrumentationSpecification {
+  def "OSGI delegates to bootstrap class loader for agent classes #loaderName using #args args"() {
     when:
     def clazz
     if (args == 1) {
@@ -27,6 +27,7 @@ class OSGIClassloadingTest extends AgentTestRunner {
     new TestClassLoader()                                    | 2
     new BundleWiringImpl.BundleClassLoader(null, null, null) | 1
     new BundleWiringImpl.BundleClassLoader(null, null, null) | 2
+    loaderName = loader.class.simpleName
   }
 
   static class TestClassLoader extends ModuleClassLoader {

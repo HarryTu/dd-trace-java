@@ -8,9 +8,13 @@ import static com.datadog.debugger.instrumentation.Types.STRING_TYPE;
 
 import com.datadog.debugger.instrumentation.DiagnosticMessage.Kind;
 import com.datadog.debugger.probe.ProbeDefinition;
-import com.datadog.debugger.probe.Where;
+import com.datadog.debugger.util.ClassFileLines;
+import datadog.trace.bootstrap.debugger.ProbeId;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
@@ -19,10 +23,10 @@ import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
-import org.objectweb.asm.tree.LineNumberNode;
 import org.objectweb.asm.tree.LocalVariableNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.TryCatchBlockNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 
 /** Common class for generating instrumentation */
@@ -34,32 +38,30 @@ public abstract class Instrumentor {
   protected final ClassLoader classLoader;
   protected final ClassNode classNode;
   protected final MethodNode methodNode;
+  protected final ClassFileLines classFileLines;
   protected final List<DiagnosticMessage> diagnostics;
-  protected final List<String> probeIds;
+  protected final List<ProbeId> probeIds;
   protected final boolean isStatic;
-  protected final boolean isLineProbe;
-  protected final LineMap lineMap = new LineMap();
   protected final LabelNode methodEnterLabel;
   protected int localVarBaseOffset;
   protected int argOffset;
-  protected final LocalVariableNode[] localVarsBySlot;
+  protected final LocalVariableNode[] localVarsBySlotArray;
+  protected final JvmLanguage language;
   protected LabelNode returnHandlerLabel;
+  protected final List<CapturedContextInstrumentor.FinallyBlock> finallyBlocks = new ArrayList<>();
 
   public Instrumentor(
       ProbeDefinition definition,
-      ClassLoader classLoader,
-      ClassNode classNode,
-      MethodNode methodNode,
+      MethodInfo methodInfo,
       List<DiagnosticMessage> diagnostics,
-      List<String> probeIds) {
+      List<ProbeId> probeIds) {
     this.definition = definition;
-    this.classLoader = classLoader;
-    this.classNode = classNode;
-    this.methodNode = methodNode;
+    this.classLoader = methodInfo.getClassLoader();
+    this.classNode = methodInfo.getClassNode();
+    this.methodNode = methodInfo.getMethodNode();
+    this.classFileLines = methodInfo.getClassFileLines();
     this.diagnostics = diagnostics;
     this.probeIds = probeIds;
-    Where.SourceLine[] sourceLines = definition.getWhere().getSourceLines();
-    isLineProbe = sourceLines != null && sourceLines.length > 0;
     isStatic = (methodNode.access & Opcodes.ACC_STATIC) != 0;
     methodEnterLabel = insertMethodEnterLabel();
     argOffset = isStatic ? 0 : 1;
@@ -67,7 +69,8 @@ public abstract class Instrumentor {
     for (Type t : argTypes) {
       argOffset += t.getSize();
     }
-    localVarsBySlot = extractLocalVariables(argTypes);
+    localVarsBySlotArray = extractLocalVariables(argTypes);
+    this.language = JvmLanguage.of(classNode);
   }
 
   public abstract InstrumentationResult.Status instrument();
@@ -147,26 +150,17 @@ public abstract class Instrumentor {
     return lastInvokeSpecial;
   }
 
-  protected void fillLineMap() {
-    AbstractInsnNode node = methodNode.instructions.getFirst();
-    while (node != null) {
-      if (node.getType() == AbstractInsnNode.LINE) {
-        lineMap.addLine((LineNumberNode) node);
-      }
-      node = node.getNext();
-    }
-  }
-
   protected void processInstructions() {
     AbstractInsnNode node = methodNode.instructions.getFirst();
-    while (node != null && !node.equals(returnHandlerLabel)) {
-      if (node.getType() == AbstractInsnNode.LINE) {
-        lineMap.addLine((LineNumberNode) node);
-      } else {
+    LabelNode sentinelNode = new LabelNode();
+    methodNode.instructions.add(sentinelNode);
+    while (node != null && !node.equals(sentinelNode)) {
+      if (node.getType() != AbstractInsnNode.LINE) {
         node = processInstruction(node);
       }
       node = node.getNext();
     }
+    methodNode.instructions.remove(sentinelNode);
     if (returnHandlerLabel == null) {
       // if no return found, fallback to use the last instruction as last resort
       returnHandlerLabel = new LabelNode();
@@ -208,9 +202,8 @@ public abstract class Instrumentor {
     if (exitNode.getNext() != null || exitNode.getPrevious() != null) {
       throw new IllegalArgumentException("exitNode is not removed from original instruction list");
     }
-    if (returnHandlerLabel != null) {
-      return returnHandlerLabel;
-    }
+    // Create the returnHandlerLabel every time because the stack state could be different
+    // for each return (suspend method in Kotlin)
     returnHandlerLabel = new LabelNode();
     methodNode.instructions.add(returnHandlerLabel);
     // stack top is return value (if any)
@@ -268,5 +261,66 @@ public abstract class Instrumentor {
     ProbeDefinition.Tag[] newTags = Arrays.copyOf(tags, tags.length + 1);
     newTags[newTags.length - 1] = new ProbeDefinition.Tag(PROBEID_TAG_NAME, probeId);
     return newTags;
+  }
+
+  protected InsnList clone(InsnList insnList) {
+    InsnList result = new InsnList();
+    Map<LabelNode, LabelNode> labels = new HashMap<>();
+    for (AbstractInsnNode node : insnList) {
+      if (node instanceof LabelNode) {
+        labels.put((LabelNode) node, new LabelNode());
+      }
+    }
+    for (AbstractInsnNode node : insnList) {
+      result.add(node.clone(labels));
+    }
+    return result;
+  }
+
+  protected void installFinallyBlocks() {
+    for (FinallyBlock finallyBlock : finallyBlocks) {
+      methodNode.tryCatchBlocks.add(
+          new TryCatchBlockNode(
+              finallyBlock.startLabel, finallyBlock.endLabel, finallyBlock.handlerLabel, null));
+    }
+  }
+
+  protected static class FinallyBlock {
+    final LabelNode startLabel;
+    final LabelNode endLabel;
+    final LabelNode handlerLabel;
+
+    public FinallyBlock(LabelNode startLabel, LabelNode endLabel, LabelNode handlerLabel) {
+      this.startLabel = startLabel;
+      this.endLabel = endLabel;
+      this.handlerLabel = handlerLabel;
+    }
+  }
+
+  protected enum JvmLanguage {
+    JAVA,
+    KOTLIN,
+    SCALA,
+    GROOVY,
+    UNKNOWN;
+
+    public static JvmLanguage of(ClassNode classNode) {
+      if (classNode.sourceFile == null) {
+        return UNKNOWN;
+      }
+      if (classNode.sourceFile.endsWith(".java")) {
+        return JAVA;
+      }
+      if (classNode.sourceFile.endsWith(".kt")) {
+        return KOTLIN;
+      }
+      if (classNode.sourceFile.endsWith(".scala")) {
+        return SCALA;
+      }
+      if (classNode.sourceFile.endsWith(".groovy")) {
+        return GROOVY;
+      }
+      return UNKNOWN;
+    }
   }
 }

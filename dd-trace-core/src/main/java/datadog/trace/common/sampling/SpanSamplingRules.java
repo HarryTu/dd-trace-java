@@ -4,6 +4,7 @@ import com.squareup.moshi.FromJson;
 import com.squareup.moshi.JsonAdapter;
 import com.squareup.moshi.JsonReader;
 import com.squareup.moshi.Moshi;
+import com.squareup.moshi.ToJson;
 import com.squareup.moshi.Types;
 import datadog.trace.api.sampling.SamplingRule;
 import java.io.File;
@@ -87,6 +88,7 @@ public class SpanSamplingRules {
     private final Map<String, String> tags;
     private final double sampleRate;
     private final int maxPerSecond;
+    private final Provenance provenance;
 
     private Rule(
         String service,
@@ -94,13 +96,15 @@ public class SpanSamplingRules {
         String resource,
         Map<String, String> tags,
         double sampleRate,
-        int maxPerSecond) {
+        int maxPerSecond,
+        Provenance provenance) {
       this.service = service;
       this.name = name;
       this.resource = resource;
       this.tags = tags;
       this.sampleRate = sampleRate;
       this.maxPerSecond = maxPerSecond;
+      this.provenance = provenance;
     }
 
     /**
@@ -144,7 +148,7 @@ public class SpanSamplingRules {
           return null;
         }
       }
-      return new Rule(service, name, resource, tags, sampleRate, maxPerSecond);
+      return new Rule(service, name, resource, tags, sampleRate, maxPerSecond, Provenance.LOCAL);
     }
 
     private static void logRuleError(JsonRule rule, String error) {
@@ -180,6 +184,11 @@ public class SpanSamplingRules {
     public int getMaxPerSecond() {
       return maxPerSecond;
     }
+
+    @Override
+    public Provenance getProvenance() {
+      return provenance;
+    }
   }
 
   private static final class JsonRule {
@@ -202,6 +211,12 @@ public class SpanSamplingRules {
     @FromJson
     Rule fromJson(JsonRule jsonRule) {
       return Rule.create(jsonRule);
+    }
+
+    @ToJson
+    JsonRule toJson(TraceSamplingRules.Rule rule) {
+      // This method only purpose is to prevent a "No @ToJson adapter for class" exception.
+      throw new UnsupportedOperationException();
     }
   }
 }

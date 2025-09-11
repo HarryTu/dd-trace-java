@@ -5,6 +5,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.instrumentation.testng.TestNGClassListener;
 import datadog.trace.instrumentation.testng.TestNGUtils;
 import datadog.trace.util.Strings;
@@ -16,9 +17,9 @@ import org.testng.annotations.CustomAttribute;
 import org.testng.xml.XmlSuite;
 import org.testng.xml.XmlTest;
 
-@AutoService(Instrumenter.class)
-public class TestNGClassListenerInstrumentation extends Instrumenter.CiVisibility
-    implements Instrumenter.ForKnownTypes {
+@AutoService(InstrumenterModule.class)
+public class TestNGClassListenerInstrumentation extends InstrumenterModule.CiVisibility
+    implements Instrumenter.ForKnownTypes, Instrumenter.HasMethodAdvice {
 
   private final String commonPackageName = Strings.getPackageName(TestNGUtils.class.getName());
 
@@ -35,14 +36,14 @@ public class TestNGClassListenerInstrumentation extends Instrumenter.CiVisibilit
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("invokeBeforeClassMethods")
             .and(takesArgument(0, named("org.testng.ITestClass")))
             .and(takesArgument(1, named("org.testng.IMethodInstance"))),
         TestNGClassListenerInstrumentation.class.getName() + "$InvokeBeforeClassAdvice");
 
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         named("invokeAfterClassMethods")
             .and(takesArgument(0, named("org.testng.ITestClass")))
             .and(takesArgument(1, named("org.testng.IMethodInstance"))),
@@ -59,6 +60,7 @@ public class TestNGClassListenerInstrumentation extends Instrumenter.CiVisibilit
   }
 
   public static class InvokeBeforeClassAdvice {
+    @SuppressWarnings("bytebuddy-exception-suppression")
     @Advice.OnMethodEnter
     public static void invokeBeforeClass(
         @Advice.FieldValue("m_testContext") final ITestContext testContext,
@@ -80,6 +82,7 @@ public class TestNGClassListenerInstrumentation extends Instrumenter.CiVisibilit
   }
 
   public static class InvokeAfterClassAdvice {
+    @SuppressWarnings("bytebuddy-exception-suppression")
     @Advice.OnMethodExit
     public static void invokeAfterClass(
         @Advice.FieldValue("m_testContext") final ITestContext testContext,

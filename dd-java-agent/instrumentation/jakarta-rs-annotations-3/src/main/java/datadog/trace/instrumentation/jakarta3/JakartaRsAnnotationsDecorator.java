@@ -122,8 +122,10 @@ public class JakartaRsAnnotationsDecorator extends BaseDecorator {
   private String locateHttpMethod(final Method method) {
     String httpMethod = null;
     for (final Annotation ann : method.getDeclaredAnnotations()) {
-      if (ann.annotationType().getAnnotation(HttpMethod.class) != null) {
-        httpMethod = ann.annotationType().getSimpleName();
+      final HttpMethod annotation = ann.annotationType().getAnnotation(HttpMethod.class);
+      if (annotation != null) {
+        httpMethod = annotation.value();
+        break;
       }
     }
     return httpMethod;
@@ -177,7 +179,7 @@ public class JakartaRsAnnotationsDecorator extends BaseDecorator {
     boolean skipSlash = false;
     if (classPath != null) {
       if (!classPath.value().startsWith("/")) {
-        route.append("/");
+        route.append('/');
       }
       route.append(classPath.value());
       skipSlash = classPath.value().endsWith("/");
@@ -190,7 +192,7 @@ public class JakartaRsAnnotationsDecorator extends BaseDecorator {
           path = path.length() == 1 ? "" : path.substring(1);
         }
       } else if (!path.startsWith("/")) {
-        route.append("/");
+        route.append('/');
       }
       route.append(path);
     }

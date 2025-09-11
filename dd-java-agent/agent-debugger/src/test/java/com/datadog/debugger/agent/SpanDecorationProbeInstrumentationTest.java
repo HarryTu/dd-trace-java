@@ -8,6 +8,7 @@ import static com.datadog.debugger.el.DSL.value;
 import static com.datadog.debugger.probe.SpanDecorationProbe.TargetSpan.ACTIVE;
 import static com.datadog.debugger.probe.SpanDecorationProbe.TargetSpan.ROOT;
 import static com.datadog.debugger.util.LogProbeTestHelper.parseTemplate;
+import static java.util.Arrays.asList;
 import static java.util.Collections.singletonList;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -15,22 +16,26 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static utils.InstrumentationTestHelper.compileAndLoadClass;
+import static utils.InstrumentationTestHelper.getLineForLineProbe;
 
 import com.datadog.debugger.el.DSL;
 import com.datadog.debugger.el.ProbeCondition;
 import com.datadog.debugger.el.expressions.BooleanExpression;
 import com.datadog.debugger.el.values.StringValue;
 import com.datadog.debugger.probe.LogProbe;
+import com.datadog.debugger.probe.ProbeDefinition;
 import com.datadog.debugger.probe.SpanDecorationProbe;
 import com.datadog.debugger.sink.DebuggerSink;
 import com.datadog.debugger.sink.ProbeStatusSink;
 import com.datadog.debugger.sink.Snapshot;
+import com.datadog.debugger.util.TestTraceInterceptor;
 import datadog.trace.agent.tooling.TracerInstaller;
 import datadog.trace.api.Config;
 import datadog.trace.api.interceptor.MutableSpan;
-import datadog.trace.api.interceptor.TraceInterceptor;
 import datadog.trace.bootstrap.debugger.CapturedContext;
 import datadog.trace.bootstrap.debugger.DebuggerContext;
 import datadog.trace.bootstrap.debugger.MethodLocation;
@@ -40,8 +45,6 @@ import datadog.trace.bootstrap.debugger.util.Redaction;
 import datadog.trace.core.CoreTracer;
 import java.io.IOException;
 import java.net.URISyntaxException;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import org.joor.Reflect;
@@ -49,12 +52,17 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentMatchers;
 
 public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentationTest {
   private static final String LANGUAGE = "java";
   private static final ProbeId PROBE_ID = new ProbeId("beae1807-f3b0-4ea8-a74f-826790c5e6f8", 0);
   private static final ProbeId PROBE_ID1 = new ProbeId("beae1807-f3b0-4ea8-a74f-826790c5e6f6", 0);
   private static final ProbeId PROBE_ID2 = new ProbeId("beae1807-f3b0-4ea8-a74f-826790c5e6f7", 0);
+  private static final ProbeId PROBE_ID3 = new ProbeId("beae1807-f3b0-4ea8-a74f-826790c5e6f8", 0);
+  private static final ProbeId PROBE_ID4 = new ProbeId("beae1807-f3b0-4ea8-a74f-826790c5e6f9", 0);
+  private static final ProbeId LINE_PROBE_ID1 =
+      new ProbeId("beae1817-f3b0-4ea8-a74f-000000000001", 0);
 
   private TestTraceInterceptor traceInterceptor = new TestTraceInterceptor();
 
@@ -84,6 +92,7 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
     MutableSpan span = traceInterceptor.getFirstSpan();
     assertEquals("1", span.getTags().get("tag1"));
     assertEquals(PROBE_ID.getId(), span.getTags().get("_dd.di.tag1.probe_id"));
+    verify(probeStatusSink).addEmitting(ArgumentMatchers.eq(PROBE_ID));
   }
 
   @Test
@@ -97,7 +106,7 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
     installSingleSpanDecoration(
         CLASS_NAME,
         ACTIVE,
-        Arrays.asList(deco1, deco2, deco3, deco4, deco5),
+        asList(deco1, deco2, deco3, deco4, deco5),
         "process",
         "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
@@ -119,11 +128,7 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
     SpanDecorationProbe.Decoration deco3 = createDecoration("tag3", "{strField}");
     SpanDecorationProbe.Decoration deco4 = createDecoration("tag4", "{@return}");
     installSingleSpanDecoration(
-        CLASS_NAME,
-        ROOT,
-        Arrays.asList(deco1, deco2, deco3, deco4),
-        "process3",
-        "int (java.lang.String)");
+        CLASS_NAME, ROOT, asList(deco1, deco2, deco3, deco4), "process3", "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     assertEquals(45, result);
@@ -153,6 +158,24 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
   }
 
   @Test
+  public void methodActiveSpanConditionFalse() throws IOException, URISyntaxException {
+    final String CLASS_NAME = "com.datadog.debugger.CapturedSnapshot20";
+    SpanDecorationProbe.Decoration decoration =
+        createDecoration(eq(ref("arg"), value("5")), "arg == '5'", "tag1", "{arg}");
+    installSingleSpanDecoration(
+        CLASS_NAME, ACTIVE, decoration, "process", "int (java.lang.String)");
+    Class<?> testClass = compileAndLoadClass(CLASS_NAME);
+    int result = Reflect.on(testClass).call("main", "0").get();
+    assertEquals(84, result);
+    assertEquals(1, traceInterceptor.getAllTraces().size());
+    MutableSpan span = traceInterceptor.getAllTraces().get(0).get(0);
+    // probe executed, but no tag set
+    assertFalse(span.getTags().containsKey("tag1"));
+    // EMITTING status is not sent
+    verify(probeStatusSink, times(0)).addEmitting(ArgumentMatchers.eq(PROBE_ID));
+  }
+
+  @Test
   public void methodTagEvalError() throws IOException, URISyntaxException {
     final String CLASS_NAME = "com.datadog.debugger.CapturedSnapshot20";
     SpanDecorationProbe.Decoration decoration = createDecoration("tag1", "{noarg}");
@@ -163,7 +186,8 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
     assertEquals(84, result);
     MutableSpan span = traceInterceptor.getFirstSpan();
     assertNull(span.getTags().get("tag1"));
-    assertEquals("Cannot find symbol: noarg", span.getTags().get("_dd.di.tag1.evaluation_error"));
+    assertEquals(
+        "Cannot dereference field: noarg", span.getTags().get("_dd.di.tag1.evaluation_error"));
   }
 
   @Test
@@ -180,7 +204,8 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
     assertEquals(1, mockSink.getSnapshots().size());
     Snapshot snapshot = mockSink.getSnapshots().get(0);
     assertEquals(1, snapshot.getEvaluationErrors().size());
-    assertEquals("Cannot find symbol: noarg", snapshot.getEvaluationErrors().get(0).getMessage());
+    assertEquals(
+        "Cannot dereference field: noarg", snapshot.getEvaluationErrors().get(0).getMessage());
   }
 
   @Test
@@ -237,13 +262,16 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
   public void lineActiveSpanSimpleTag() throws IOException, URISyntaxException {
     final String CLASS_NAME = "com.datadog.debugger.CapturedSnapshot20";
     SpanDecorationProbe.Decoration decoration = createDecoration("tag1", "{arg}");
-    installSingleSpanDecoration(CLASS_NAME, ACTIVE, decoration, "CapturedSnapshot20.java", 41);
+    int line = getLineForLineProbe(CLASS_NAME, LINE_PROBE_ID1);
+    installSingleSpanDecoration(
+        LINE_PROBE_ID1, CLASS_NAME, ACTIVE, decoration, "CapturedSnapshot20.java", line);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     assertEquals(84, result);
     MutableSpan span = traceInterceptor.getFirstSpan();
     assertEquals("1", span.getTags().get("tag1"));
-    assertEquals(PROBE_ID.getId(), span.getTags().get("_dd.di.tag1.probe_id"));
+    assertEquals(LINE_PROBE_ID1.getId(), span.getTags().get("_dd.di.tag1.probe_id"));
+    verify(probeStatusSink).addEmitting(ArgumentMatchers.eq(LINE_PROBE_ID1));
   }
 
   @Test
@@ -252,8 +280,14 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
     SpanDecorationProbe.Decoration deco1 = createDecoration("tag1", "{arg}");
     SpanDecorationProbe.Decoration deco2 = createDecoration("tag2", "{this.intField}");
     SpanDecorationProbe.Decoration deco3 = createDecoration("tag3", "{strField}");
+    int line = getLineForLineProbe(CLASS_NAME, LINE_PROBE_ID1);
     installSingleSpanDecoration(
-        CLASS_NAME, ROOT, Arrays.asList(deco1, deco2, deco3), "CapturedSnapshot21.java", 67);
+        LINE_PROBE_ID1,
+        CLASS_NAME,
+        ROOT,
+        asList(deco1, deco2, deco3),
+        "CapturedSnapshot21.java",
+        line);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "1").get();
     assertEquals(45, result);
@@ -269,7 +303,9 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
     final String CLASS_NAME = "com.datadog.debugger.CapturedSnapshot20";
     SpanDecorationProbe.Decoration decoration =
         createDecoration(eq(ref("arg"), value("5")), "arg == '5'", "tag1", "{arg}");
-    installSingleSpanDecoration(CLASS_NAME, ACTIVE, decoration, "CapturedSnapshot20.java", 41);
+    int line = getLineForLineProbe(CLASS_NAME, LINE_PROBE_ID1);
+    installSingleSpanDecoration(
+        LINE_PROBE_ID1, CLASS_NAME, ACTIVE, decoration, "CapturedSnapshot20.java", line);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     for (int i = 0; i < 10; i++) {
       int result = Reflect.on(testClass).call("main", String.valueOf(i)).get();
@@ -285,7 +321,9 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
     final String CLASS_NAME = "com.datadog.debugger.CapturedSnapshot20";
     SpanDecorationProbe.Decoration decoration =
         createDecoration(eq(ref("noarg"), value("5")), "arg == '5'", "tag1", "{arg}");
-    installSingleSpanDecoration(CLASS_NAME, ACTIVE, decoration, "CapturedSnapshot20.java", 41);
+    int line = getLineForLineProbe(CLASS_NAME, LINE_PROBE_ID1);
+    installSingleSpanDecoration(
+        LINE_PROBE_ID1, CLASS_NAME, ACTIVE, decoration, "CapturedSnapshot20.java", line);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
     int result = Reflect.on(testClass).call("main", "5").get();
     assertEquals(84, result);
@@ -293,7 +331,8 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
     assertEquals(1, mockSink.getSnapshots().size());
     Snapshot snapshot = mockSink.getSnapshots().get(0);
     assertEquals(1, snapshot.getEvaluationErrors().size());
-    assertEquals("Cannot find symbol: noarg", snapshot.getEvaluationErrors().get(0).getMessage());
+    assertEquals(
+        "Cannot dereference field: noarg", snapshot.getEvaluationErrors().get(0).getMessage());
   }
 
   @Test
@@ -310,30 +349,39 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
   @Test
   public void mixedWithLogProbes() throws IOException, URISyntaxException {
     final String CLASS_NAME = "com.datadog.debugger.CapturedSnapshot20";
-    SpanDecorationProbe.Decoration decoration = createDecoration("tag1", "{intLocal}");
-    SpanDecorationProbe spanDecoProbe =
+    SpanDecorationProbe.Decoration decoration1 = createDecoration("tag1", "{intLocal}");
+    SpanDecorationProbe.Decoration decoration2 = createDecoration("tag2", "{arg}");
+    SpanDecorationProbe spanDecoProbe1 =
         createProbeBuilder(
-                PROBE_ID, ACTIVE, singletonList(decoration), CLASS_NAME, "process", null, null)
+                PROBE_ID1, ACTIVE, singletonList(decoration1), CLASS_NAME, "process", null)
             .evaluateAt(MethodLocation.EXIT)
+            .build();
+    SpanDecorationProbe spanDecoProbe2 =
+        createProbeBuilder(
+                PROBE_ID2, ACTIVE, singletonList(decoration2), CLASS_NAME, "process", null)
+            .evaluateAt(MethodLocation.ENTRY)
             .build();
     LogProbe logProbe1 =
         LogProbe.builder()
-            .probeId(PROBE_ID1)
+            .probeId(PROBE_ID3)
             .where(CLASS_NAME, "process")
             .captureSnapshot(true)
+            .capture(1, 50, 50, 10)
             .build();
     LogProbe logProbe2 =
         LogProbe.builder()
-            .probeId(PROBE_ID2)
+            .probeId(PROBE_ID4)
             .where(CLASS_NAME, "process")
             .captureSnapshot(true)
+            .capture(5, 200, 200, 30)
             .build();
     Configuration configuration =
         Configuration.builder()
             .setService(SERVICE_NAME)
             .add(logProbe1)
             .add(logProbe2)
-            .add(spanDecoProbe)
+            .add(spanDecoProbe1)
+            .add(spanDecoProbe2)
             .build();
     installSpanDecorationProbes(CLASS_NAME, configuration);
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
@@ -341,12 +389,44 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
     assertEquals(84, result);
     MutableSpan span = traceInterceptor.getFirstSpan();
     assertEquals("84", span.getTags().get("tag1"));
-    assertEquals(PROBE_ID.getId(), span.getTags().get("_dd.di.tag1.probe_id"));
+    assertEquals(PROBE_ID1.getId(), span.getTags().get("_dd.di.tag1.probe_id"));
+    assertEquals("1", span.getTags().get("tag2"));
+    assertEquals(PROBE_ID2.getId(), span.getTags().get("_dd.di.tag2.probe_id"));
     List<Snapshot> snapshots = mockSink.getSnapshots();
     assertEquals(2, snapshots.size());
     CapturedContext.CapturedValue intLocal =
         snapshots.get(0).getCaptures().getReturn().getLocals().get("intLocal");
     assertNotNull(intLocal);
+  }
+
+  @Test
+  public void mixedEntryExit() throws IOException, URISyntaxException {
+    final String CLASS_NAME = "com.datadog.debugger.CapturedSnapshot20";
+    SpanDecorationProbe.Decoration decoration1 = createDecoration("tag1", "{intLocal}");
+    SpanDecorationProbe.Decoration decoration2 = createDecoration("tag2", "{arg}");
+    SpanDecorationProbe spanDecoProbe1 =
+        createProbeBuilder(
+                PROBE_ID1, ACTIVE, singletonList(decoration1), CLASS_NAME, "process", null)
+            .evaluateAt(MethodLocation.EXIT)
+            .build();
+    SpanDecorationProbe spanDecoProbe2 =
+        createProbeBuilder(
+                PROBE_ID2, ACTIVE, singletonList(decoration2), CLASS_NAME, "process", null)
+            .evaluateAt(MethodLocation.ENTRY)
+            .build();
+    Configuration configuration =
+        Configuration.builder()
+            .setService(SERVICE_NAME)
+            .add(spanDecoProbe1)
+            .add(spanDecoProbe2)
+            .build();
+    installSpanDecorationProbes(CLASS_NAME, configuration);
+    Class<?> testClass = compileAndLoadClass(CLASS_NAME);
+    int result = Reflect.on(testClass).call("main", "1").get();
+    assertEquals(84, result);
+    MutableSpan span = traceInterceptor.getFirstSpan();
+    assertEquals("84", span.getTags().get("tag1"));
+    assertEquals("1", span.getTags().get("tag2"));
   }
 
   @Test
@@ -356,7 +436,7 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
     SpanDecorationProbe.Decoration decoration2 = createDecoration("tag2", "{this.password}");
     SpanDecorationProbe.Decoration decoration3 = createDecoration("tag3", "{strMap['password']}");
     List<SpanDecorationProbe.Decoration> decorations =
-        Arrays.asList(decoration1, decoration2, decoration3);
+        asList(decoration1, decoration2, decoration3);
     installSingleSpanDecoration(
         CLASS_NAME, ACTIVE, decorations, "process", "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
@@ -399,7 +479,7 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
             "tag3",
             "foo");
     List<SpanDecorationProbe.Decoration> decorations =
-        Arrays.asList(decoration1, decoration2, decoration3);
+        asList(decoration1, decoration2, decoration3);
     installSingleSpanDecoration(
         CLASS_NAME, ACTIVE, decorations, "process", "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
@@ -426,14 +506,14 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
   public void typeRedaction() throws IOException, URISyntaxException {
     final String CLASS_NAME = "com.datadog.debugger.CapturedSnapshot28";
     Config config = mock(Config.class);
-    when(config.getDebuggerRedactedTypes())
+    when(config.getDynamicInstrumentationRedactedTypes())
         .thenReturn("com.datadog.debugger.CapturedSnapshot28$Creds");
     Redaction.addUserDefinedTypes(config);
     SpanDecorationProbe.Decoration decoration1 = createDecoration("tag1", "{creds}");
     SpanDecorationProbe.Decoration decoration2 = createDecoration("tag2", "{this.creds}");
     SpanDecorationProbe.Decoration decoration3 = createDecoration("tag3", "{credMap['dave']}");
     List<SpanDecorationProbe.Decoration> decorations =
-        Arrays.asList(decoration1, decoration2, decoration3);
+        asList(decoration1, decoration2, decoration3);
     installSingleSpanDecoration(
         CLASS_NAME, ACTIVE, decorations, "process", "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
@@ -461,7 +541,7 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
   public void typeRedactionConditions() throws IOException, URISyntaxException {
     final String CLASS_NAME = "com.datadog.debugger.CapturedSnapshot28";
     Config config = mock(Config.class);
-    when(config.getDebuggerRedactedTypes())
+    when(config.getDynamicInstrumentationRedactedTypes())
         .thenReturn("com.datadog.debugger.CapturedSnapshot28$Creds");
     Redaction.addUserDefinedTypes(config);
     SpanDecorationProbe.Decoration decoration1 =
@@ -485,7 +565,7 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
             "tag3",
             "foo");
     List<SpanDecorationProbe.Decoration> decorations =
-        Arrays.asList(decoration1, decoration2, decoration3);
+        asList(decoration1, decoration2, decoration3);
     installSingleSpanDecoration(
         CLASS_NAME, ACTIVE, decorations, "process", "int (java.lang.String)");
     Class<?> testClass = compileAndLoadClass(CLASS_NAME);
@@ -510,7 +590,7 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
 
   private SpanDecorationProbe.Decoration createDecoration(String tagName, String valueDsl) {
     List<SpanDecorationProbe.Tag> tags =
-        Arrays.asList(
+        asList(
             new SpanDecorationProbe.Tag(
                 tagName, new SpanDecorationProbe.TagValue(valueDsl, parseTemplate(valueDsl))));
     return new SpanDecorationProbe.Decoration(null, tags);
@@ -519,7 +599,7 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
   private SpanDecorationProbe.Decoration createDecoration(
       BooleanExpression expression, String dsl, String tagName, String valueDsl) {
     List<SpanDecorationProbe.Tag> tags =
-        Arrays.asList(
+        asList(
             new SpanDecorationProbe.Tag(
                 tagName, new SpanDecorationProbe.TagValue(valueDsl, parseTemplate(valueDsl))));
     return new SpanDecorationProbe.Decoration(new ProbeCondition(DSL.when(expression), dsl), tags);
@@ -531,17 +611,18 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
       SpanDecorationProbe.Decoration decoration,
       String methodName,
       String signature) {
-    installSingleSpanDecoration(
-        typeName, targetSpan, Arrays.asList(decoration), methodName, signature);
+    installSingleSpanDecoration(typeName, targetSpan, asList(decoration), methodName, signature);
   }
 
   private void installSingleSpanDecoration(
+      ProbeId probeId,
       String typeName,
       SpanDecorationProbe.TargetSpan targetSpan,
       SpanDecorationProbe.Decoration decoration,
       String sourceFile,
       int line) {
-    installSingleSpanDecoration(typeName, targetSpan, Arrays.asList(decoration), sourceFile, line);
+    installSingleSpanDecoration(
+        probeId, typeName, targetSpan, asList(decoration), sourceFile, line);
   }
 
   private void installSingleSpanDecoration(
@@ -557,12 +638,13 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
   }
 
   private void installSingleSpanDecoration(
+      ProbeId probeId,
       String typeName,
       SpanDecorationProbe.TargetSpan targetSpan,
       List<SpanDecorationProbe.Decoration> decorations,
       String sourceFile,
       int line) {
-    SpanDecorationProbe probe = createProbe(PROBE_ID, targetSpan, decorations, sourceFile, line);
+    SpanDecorationProbe probe = createProbe(probeId, targetSpan, decorations, sourceFile, line);
     installSpanDecorationProbes(
         typeName, Configuration.builder().setService(SERVICE_NAME).add(probe).build());
   }
@@ -573,10 +655,8 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
       List<SpanDecorationProbe.Decoration> decorationList,
       String typeName,
       String methodName,
-      String signature,
-      String... lines) {
-    return createProbeBuilder(
-            id, targetSpan, decorationList, typeName, methodName, signature, lines)
+      String signature) {
+    return createProbeBuilder(id, targetSpan, decorationList, typeName, methodName, signature)
         .evaluateAt(MethodLocation.EXIT)
         .build();
   }
@@ -596,12 +676,11 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
       List<SpanDecorationProbe.Decoration> decorationList,
       String typeName,
       String methodName,
-      String signature,
-      String... lines) {
+      String signature) {
     return SpanDecorationProbe.builder()
         .language(LANGUAGE)
         .probeId(id)
-        .where(typeName, methodName, signature, lines)
+        .where(typeName, methodName, signature)
         .evaluateAt(MethodLocation.EXIT)
         .targetSpan(targetSpan)
         .decorate(decorationList);
@@ -624,17 +703,13 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
 
   private void installSpanProbes(String expectedClassName, SpanDecorationProbe... probes) {
     installSpanDecorationProbes(
-        expectedClassName,
-        Configuration.builder()
-            .setService(SERVICE_NAME)
-            .addSpanDecorationProbes(Arrays.asList(probes))
-            .build());
+        expectedClassName, Configuration.builder().setService(SERVICE_NAME).add(probes).build());
   }
 
   private void installSpanDecorationProbes(String expectedClassName, Configuration configuration) {
     Config config = mock(Config.class);
-    when(config.isDebuggerEnabled()).thenReturn(true);
-    when(config.isDebuggerClassFileDumpEnabled()).thenReturn(true);
+    when(config.isDynamicInstrumentationEnabled()).thenReturn(true);
+    when(config.isDynamicInstrumentationClassFileDumpEnabled()).thenReturn(true);
     when(config.getFinalDebuggerSnapshotUrl())
         .thenReturn("http://localhost:8126/debugger/v1/input");
     when(config.getFinalDebuggerSymDBUrl()).thenReturn("http://localhost:8126/symdb/v1/input");
@@ -645,57 +720,35 @@ public class SpanDecorationProbeInstrumentationTest extends ProbeInstrumentation
     instr.addTransformer(currentTransformer);
     mockSink = new MockSink(config, probeStatusSink);
     DebuggerAgentHelper.injectSink(mockSink);
-    DebuggerContext.init(
-        (id, callingClass) -> resolver(id, callingClass, expectedClassName, configuration), null);
+    DebuggerContext.initProbeResolver((encodedProbeId) -> resolver(encodedProbeId, configuration));
     DebuggerContext.initClassFilter(new DenyListHelper(null));
   }
 
-  private ProbeImplementation resolver(
-      String id, Class<?> callingClass, String expectedClassName, Configuration configuration) {
-    Assertions.assertEquals(expectedClassName, callingClass.getName());
-    for (SpanDecorationProbe probe : configuration.getSpanDecorationProbes()) {
-      if (probe.getId().equals(id)) {
-        return probe;
-      }
-    }
-    for (LogProbe probe : configuration.getLogProbes()) {
-      if (probe.getId().equals(id)) {
+  static ProbeImplementation resolver(String encodedProbeId, Configuration configuration) {
+    List<Collection<? extends ProbeDefinition>> list1 =
+        asList(
+            configuration.getSpanDecorationProbes(),
+            configuration.getLogProbes(),
+            configuration.getTriggerProbes());
+    for (Collection<? extends ProbeDefinition> list : list1) {
+
+      ProbeImplementation probe = scanForProbe(encodedProbeId, list);
+      if (probe != null) {
         return probe;
       }
     }
     return null;
   }
 
-  private static class TestTraceInterceptor implements TraceInterceptor {
-    private Collection<? extends MutableSpan> currentTrace;
-    private List<List<? extends MutableSpan>> allTraces = new ArrayList<>();
-
-    @Override
-    public Collection<? extends MutableSpan> onTraceComplete(
-        Collection<? extends MutableSpan> trace) {
-      currentTrace = trace;
-      allTraces.add(new ArrayList<>(trace));
-      return trace;
-    }
-
-    @Override
-    public int priority() {
-      return 0;
-    }
-
-    public Collection<? extends MutableSpan> getTrace() {
-      return currentTrace;
-    }
-
-    public MutableSpan getFirstSpan() {
-      if (currentTrace == null) {
-        return null;
+  private static ProbeDefinition scanForProbe(
+      String encodedProbeId, Collection<? extends ProbeDefinition> probes) {
+    if (probes != null) {
+      for (ProbeDefinition probe : probes) {
+        if (probe.getProbeId().getEncodedId().equals(encodedProbeId)) {
+          return probe;
+        }
       }
-      return currentTrace.iterator().next();
     }
-
-    public List<List<? extends MutableSpan>> getAllTraces() {
-      return allTraces;
-    }
+    return null;
   }
 }

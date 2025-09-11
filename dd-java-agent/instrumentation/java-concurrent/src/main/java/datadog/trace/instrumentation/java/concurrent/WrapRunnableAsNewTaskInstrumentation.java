@@ -4,6 +4,7 @@ import static datadog.trace.agent.tooling.bytebuddy.matcher.HierarchyMatchers.ex
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
 import static datadog.trace.bootstrap.instrumentation.java.concurrent.ExcludeFilter.ExcludeType.RUNNABLE;
 import static datadog.trace.bootstrap.instrumentation.java.concurrent.ExcludeFilter.exclude;
+import static datadog.trace.instrumentation.java.concurrent.ConcurrentInstrumentationNames.EXECUTOR_INSTRUMENTATION_NAME;
 import static net.bytebuddy.matcher.ElementMatchers.isDeclaredBy;
 import static net.bytebuddy.matcher.ElementMatchers.isMethod;
 import static net.bytebuddy.matcher.ElementMatchers.not;
@@ -11,6 +12,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.NewTaskForPlaceholder;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.Wrapper;
 import java.util.concurrent.AbstractExecutorService;
@@ -20,11 +22,11 @@ import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.matcher.ElementMatcher.Junction;
 
-@AutoService(Instrumenter.class)
-public final class WrapRunnableAsNewTaskInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForBootstrap, Instrumenter.ForKnownTypes {
+@AutoService(InstrumenterModule.class)
+public final class WrapRunnableAsNewTaskInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForBootstrap, Instrumenter.ForKnownTypes, Instrumenter.HasMethodAdvice {
   public WrapRunnableAsNewTaskInstrumentation() {
-    super("java_concurrent", "new-task-for");
+    super(EXECUTOR_INSTRUMENTATION_NAME, "new-task-for");
   }
 
   @Override
@@ -41,11 +43,12 @@ public final class WrapRunnableAsNewTaskInstrumentation extends Instrumenter.Tra
       "java.util.concurrent.AbstractExecutorService",
       "org.glassfish.grizzly.threadpool.GrizzlyExecutorService",
       "org.jboss.threads.EnhancedQueueExecutor",
+      "io.vertx.core.impl.WorkerExecutor",
     };
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
+  public void methodAdvice(MethodTransformer transformer) {
     Junction<MethodDescription> hasExecute =
         isMethod().and(named("execute").and(takesArgument(0, named(Runnable.class.getName()))));
 
@@ -53,10 +56,10 @@ public final class WrapRunnableAsNewTaskInstrumentation extends Instrumenter.Tra
         isDeclaredBy(extendsClass(named("java.util.concurrent.AbstractExecutorService")));
 
     // executors that extend AbstractExecutorService should use 'newTaskFor' wrapper
-    transformation.applyAdvice(hasExecute.and(hasNewTaskFor), getClass().getName() + "$NewTaskFor");
+    transformer.applyAdvice(hasExecute.and(hasNewTaskFor), getClass().getName() + "$NewTaskFor");
 
     // use simple wrapper for executors that don't extend AbstractExecutorService
-    transformation.applyAdvice(hasExecute.and(not(hasNewTaskFor)), getClass().getName() + "$Wrap");
+    transformer.applyAdvice(hasExecute.and(not(hasNewTaskFor)), getClass().getName() + "$Wrap");
   }
 
   // We tolerate a bit of duplication between these advice classes because

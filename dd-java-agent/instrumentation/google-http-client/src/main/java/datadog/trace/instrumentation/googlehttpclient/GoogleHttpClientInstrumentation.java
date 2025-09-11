@@ -2,7 +2,7 @@ package datadog.trace.instrumentation.googlehttpclient;
 
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeScope;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeSpan;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
 import static datadog.trace.instrumentation.googlehttpclient.GoogleHttpClientDecorator.DECORATE;
 import static datadog.trace.instrumentation.googlehttpclient.GoogleHttpClientDecorator.HTTP_REQUEST;
@@ -15,13 +15,14 @@ import com.google.api.client.http.HttpRequest;
 import com.google.api.client.http.HttpResponse;
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public class GoogleHttpClientInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class GoogleHttpClientInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public GoogleHttpClientInstrumentation() {
     super("google-http-client");
   }
@@ -42,12 +43,12 @@ public class GoogleHttpClientInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(isPublic()).and(named("execute")).and(takesArguments(0)),
         GoogleHttpClientInstrumentation.class.getName() + "$GoogleHttpClientAdvice");
 
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(isPublic())
             .and(named("executeAsync"))
@@ -59,17 +60,16 @@ public class GoogleHttpClientInstrumentation extends Instrumenter.Tracing
   public static class GoogleHttpClientAdvice {
     @Advice.OnMethodEnter(suppress = Throwable.class)
     public static AgentScope methodEnter(
-        @Advice.This HttpRequest request, @Advice.Local("inherited") boolean inheritedScope) {
-      AgentScope scope = activeScope();
-      // detect if scope was propagated here by java-concurrent handling
+        @Advice.This HttpRequest request, @Advice.Local("inherited") AgentSpan inheritedSpan) {
+      AgentSpan activeSpan = activeSpan();
+      // detect if span was propagated here by java-concurrent handling
       // of async requests
-      if (null != scope) {
-        AgentSpan span = scope.span();
+      if (null != activeSpan) {
         // reference equality to check this instrumentation created the span,
         // not some other HTTP client
-        if (HTTP_REQUEST == span.getOperationName()) {
-          inheritedScope = true;
-          return scope;
+        if (HTTP_REQUEST == activeSpan.getOperationName()) {
+          inheritedSpan = activeSpan;
+          return null;
         }
       }
       return activateSpan(DECORATE.prepareSpan(startSpan(HTTP_REQUEST), request));
@@ -78,18 +78,18 @@ public class GoogleHttpClientInstrumentation extends Instrumenter.Tracing
     @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
     public static void methodExit(
         @Advice.Enter AgentScope scope,
-        @Advice.Local("inherited") boolean inheritedScope,
+        @Advice.Local("inherited") AgentSpan inheritedSpan,
         @Advice.Return final HttpResponse response,
         @Advice.Thrown final Throwable throwable) {
       try {
-        AgentSpan span = scope.span();
+        AgentSpan span = scope != null ? scope.span() : inheritedSpan;
         DECORATE.onError(span, throwable);
         DECORATE.onResponse(span, response);
 
         DECORATE.beforeFinish(span);
         span.finish();
       } finally {
-        if (!inheritedScope) {
+        if (scope != null) {
           scope.close();
         }
       }

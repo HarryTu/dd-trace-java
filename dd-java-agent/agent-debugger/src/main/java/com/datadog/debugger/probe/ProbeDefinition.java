@@ -1,10 +1,9 @@
 package com.datadog.debugger.probe;
 
-import static java.util.Collections.singletonList;
-
 import com.datadog.debugger.agent.Generated;
 import com.datadog.debugger.instrumentation.DiagnosticMessage;
 import com.datadog.debugger.instrumentation.InstrumentationResult;
+import com.datadog.debugger.instrumentation.MethodInfo;
 import com.squareup.moshi.JsonAdapter;
 import com.squareup.moshi.JsonReader;
 import com.squareup.moshi.JsonWriter;
@@ -21,8 +20,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.MethodNode;
 
 /** Generic class storing common probe definition */
 public abstract class ProbeDefinition implements ProbeImplementation {
@@ -31,6 +28,7 @@ public abstract class ProbeDefinition implements ProbeImplementation {
   protected final String language;
   protected final String id;
   protected final int version;
+  protected transient ProbeId probeId;
   protected final Tag[] tags;
   protected final Map<String, String> tagMap = new HashMap<>();
   protected final Where where;
@@ -47,6 +45,7 @@ public abstract class ProbeDefinition implements ProbeImplementation {
     this.language = language;
     this.id = probeId != null ? probeId.getId() : null;
     this.version = probeId != null ? probeId.getVersion() : 0;
+    this.probeId = probeId;
     this.tags = tags;
     initTagMap(tagMap, tags);
     this.where = where;
@@ -60,7 +59,10 @@ public abstract class ProbeDefinition implements ProbeImplementation {
 
   @Override
   public ProbeId getProbeId() {
-    return new ProbeId(id, version);
+    if (probeId == null) {
+      probeId = new ProbeId(id, version);
+    }
+    return probeId;
   }
 
   public String getLanguage() {
@@ -83,7 +85,7 @@ public abstract class ProbeDefinition implements ProbeImplementation {
     StringBuilder sb = new StringBuilder();
     for (Tag tag : tags) {
       if (sb.length() > 0) {
-        sb.append(",");
+        sb.append(',');
       }
       sb.append(tag);
     }
@@ -91,6 +93,9 @@ public abstract class ProbeDefinition implements ProbeImplementation {
   }
 
   public Map<String, String> getTagMap() {
+    if (tagMap.isEmpty() && tags != null) {
+      initTagMap(tagMap, tags);
+    }
     return Collections.unmodifiableMap(tagMap);
   }
 
@@ -102,12 +107,12 @@ public abstract class ProbeDefinition implements ProbeImplementation {
     return evaluateAt;
   }
 
-  public void buildLocation(InstrumentationResult result) {
+  public void buildLocation(MethodInfo methodInfo) {
     String type = where.getTypeName();
     String method = where.getMethodName();
-    if (result != null) {
-      type = result.getTypeName();
-      method = result.getMethodName();
+    if (methodInfo != null) {
+      type = methodInfo.getTypeName();
+      method = methodInfo.getMethodName();
     }
     List<String> lines = where.getLines() != null ? Arrays.asList(where.getLines()) : null;
     this.location = new ProbeLocation(type, method, where.getSourceFile(), lines);
@@ -122,20 +127,8 @@ public abstract class ProbeDefinition implements ProbeImplementation {
     }
   }
 
-  public InstrumentationResult.Status instrument(
-      ClassLoader classLoader,
-      ClassNode classNode,
-      MethodNode methodNode,
-      List<DiagnosticMessage> diagnostics) {
-    return instrument(classLoader, classNode, methodNode, diagnostics, singletonList(getId()));
-  }
-
   public abstract InstrumentationResult.Status instrument(
-      ClassLoader classLoader,
-      ClassNode classNode,
-      MethodNode methodNode,
-      List<DiagnosticMessage> diagnostics,
-      List<String> probeIds);
+      MethodInfo methodInfo, List<DiagnosticMessage> diagnostics, List<ProbeId> probeIds);
 
   @Override
   public ProbeLocation getLocation() {
@@ -169,6 +162,11 @@ public abstract class ProbeDefinition implements ProbeImplementation {
   @Override
   public CapturedContext.Status createStatus() {
     return null;
+  }
+
+  public boolean isLineProbe() {
+    Where.SourceLine[] sourceLines = where.getSourceLines();
+    return sourceLines != null && sourceLines.length > 0;
   }
 
   public abstract static class Builder<T extends Builder> {

@@ -4,10 +4,13 @@ import static datadog.trace.util.AgentThreadFactory.AgentThread.JMX_COLLECTOR;
 import static datadog.trace.util.AgentThreadFactory.newAgentThread;
 import static org.datadog.jmxfetch.AppConfig.ACTION_COLLECT;
 
+import datadog.environment.SystemProperties;
 import datadog.trace.api.Config;
 import datadog.trace.api.GlobalTracer;
 import datadog.trace.api.StatsDClient;
 import datadog.trace.api.StatsDClientManager;
+import datadog.trace.api.flare.TracerFlare;
+import datadog.trace.api.telemetry.LogCollector;
 import de.thetaphi.forbiddenapis.SuppressForbidden;
 import java.io.IOException;
 import java.io.InputStream;
@@ -28,8 +31,8 @@ public class JMXFetch {
 
   private static final Logger log = LoggerFactory.getLogger(JMXFetch.class);
 
-  public static final List<String> DEFAULT_CONFIGS =
-      Collections.singletonList("jmxfetch-config.yaml");
+  private static final String DEFAULT_CONFIG = "jmxfetch-config.yaml";
+  private static final String WEBSPHERE_CONFIG = "jmxfetch-websphere-config.yaml";
 
   private static final int DELAY_BETWEEN_RUN_ATTEMPTS = 5000;
 
@@ -45,9 +48,9 @@ public class JMXFetch {
     }
 
     if (!log.isDebugEnabled()
-        && System.getProperty("org.slf4j.simpleLogger.log.org.datadog.jmxfetch") == null) {
+        && SystemProperties.get("org.slf4j.simpleLogger.log.org.datadog.jmxfetch") == null) {
       // Reduce noisiness of jmxfetch logging.
-      System.setProperty("org.slf4j.simpleLogger.log.org.datadog.jmxfetch", "warn");
+      SystemProperties.set("org.slf4j.simpleLogger.log.org.datadog.jmxfetch", "warn");
     }
 
     final String jmxFetchConfigDir = config.getJmxFetchConfigDir();
@@ -88,6 +91,14 @@ public class JMXFetch {
     }
 
     final StatsDClient statsd = statsDClientManager.statsDClient(host, port, namedPipe, null, null);
+    final AgentStatsdReporter reporter = new AgentStatsdReporter(statsd);
+
+    TracerFlare.addReporter(reporter);
+    final List<String> defaultConfigs = new ArrayList<>();
+    defaultConfigs.add(DEFAULT_CONFIG);
+    if (config.isJmxFetchIntegrationEnabled(Collections.singletonList("websphere"), false)) {
+      defaultConfigs.add(WEBSPHERE_CONFIG);
+    }
 
     final AppConfig.AppConfigBuilder configBuilder =
         AppConfig.builder()
@@ -98,13 +109,14 @@ public class JMXFetch {
             .confdDirectory(jmxFetchConfigDir)
             .yamlFileList(jmxFetchConfigs)
             .targetDirectInstances(true)
-            .instanceConfigResources(DEFAULT_CONFIGS)
+            .instanceConfigResources(defaultConfigs)
             .metricConfigResources(internalMetricsConfigs)
             .metricConfigFiles(metricsConfigs)
             .initialRefreshBeansPeriod(initialRefreshBeansPeriod)
             .refreshBeansPeriod(refreshBeansPeriod)
             .globalTags(globalTags)
-            .reporter(new AgentStatsdReporter(statsd));
+            .reporter(reporter)
+            .connectionFactory(new AgentConnectionFactory());
 
     if (config.isJmxFetchMultipleRuntimeServicesEnabled()) {
       ServiceNameCollectingTraceInterceptor serviceNameProvider =
@@ -117,6 +129,7 @@ public class JMXFetch {
     if (checkPeriod != null) {
       configBuilder.checkPeriod(checkPeriod);
     }
+
     final AppConfig appConfig = configBuilder.build();
 
     final Thread thread =
@@ -131,9 +144,16 @@ public class JMXFetch {
                   if (!appConfig.getExitWatcher().shouldExit()) {
                     try {
                       final int result = app.run();
-                      log.error("jmx collector exited with result: {}", result);
+                      if (result != 0) {
+                        log.warn("jmx collector exited with error code: {}", result);
+                      }
                     } catch (final Exception e) {
-                      log.error("Exception in jmx collector thread", e);
+                      String message = e.getMessage();
+                      boolean ignoredException =
+                          message != null && message.startsWith("Shutdown in progress");
+                      if (!ignoredException) {
+                        log.warn("Exception in jmx collector thread", e);
+                      }
                     }
                   }
                   // always wait before next attempt
@@ -156,6 +176,7 @@ public class JMXFetch {
         log.debug("metricconfigs not found. returning empty set");
         return Collections.emptyList();
       }
+      log.debug("reading found metricconfigs");
       Scanner scanner = new Scanner(metricConfigsStream);
       scanner.useDelimiter("\n");
       final List<String> result = new ArrayList<>();
@@ -165,8 +186,19 @@ public class JMXFetch {
         integrationName.clear();
         integrationName.add(config.replace(".yaml", ""));
 
-        if (Config.get().isJmxFetchIntegrationEnabled(integrationName, false)) {
+        if (!Config.get().isJmxFetchIntegrationEnabled(integrationName, false)) {
+          log.debug(
+              "skipping metric config `{}` because integration {} is disabled",
+              config,
+              integrationName);
+        } else {
           final URL resource = JMXFetch.class.getResource("metricconfigs/" + config);
+          if (resource == null) {
+            log.debug(
+                LogCollector.SEND_TELEMETRY, "metric config `{}` not found. skipping", config);
+            continue;
+          }
+          log.debug("adding metric config `{}`", config);
 
           // jar!/ means a file internal to a jar, only add the part after if it exists
           final String path = resource.getPath();
@@ -186,10 +218,11 @@ public class JMXFetch {
   }
 
   private static String getLogLocation() {
-    return System.getProperty("org.slf4j.simpleLogger.logFile", "System.err");
+    return SystemProperties.getOrDefault("org.slf4j.simpleLogger.logFile", "System.err");
   }
 
   private static String getLogLevel() {
-    return System.getProperty("org.slf4j.simpleLogger.defaultLogLevel", "info").toUpperCase();
+    return SystemProperties.getOrDefault("org.slf4j.simpleLogger.defaultLogLevel", "info")
+        .toUpperCase();
   }
 }

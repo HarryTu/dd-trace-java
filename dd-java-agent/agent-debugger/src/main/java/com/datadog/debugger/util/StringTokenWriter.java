@@ -6,9 +6,11 @@ import static com.datadog.debugger.util.MoshiSnapshotHelper.TIMEOUT_REASON;
 
 import com.datadog.debugger.el.Value;
 import datadog.trace.bootstrap.debugger.EvaluationError;
+import datadog.trace.bootstrap.debugger.util.WellKnownClasses;
 import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 /**
  * Implementation of {@link com.datadog.debugger.util.SerializerWithLimits.TokenWriter} for String
@@ -29,7 +31,7 @@ public class StringTokenWriter implements SerializerWithLimits.TokenWriter {
   @Override
   public void prologue(Object value, String type) {
     if (inMapEntry && !initial) {
-      sb.append("=");
+      sb.append('=');
     } else if (inCollection && !initial) {
       sb.append(", ");
     }
@@ -51,7 +53,12 @@ public class StringTokenWriter implements SerializerWithLimits.TokenWriter {
 
   @Override
   public void primitiveValue(Object value) {
-    sb.append(value);
+    String typeName = value.getClass().getTypeName();
+    Function<Object, String> toString = WellKnownClasses.getSafeToString(typeName);
+    if (toString == null) {
+      throw new UnsupportedOperationException("Cannot convert value from type: " + typeName);
+    }
+    sb.append(toString.apply(value));
   }
 
   @Override
@@ -78,7 +85,7 @@ public class StringTokenWriter implements SerializerWithLimits.TokenWriter {
 
   @Override
   public void collectionPrologue(Object value) {
-    sb.append("[");
+    sb.append('[');
     initial = true;
     inCollection = true;
   }
@@ -91,7 +98,7 @@ public class StringTokenWriter implements SerializerWithLimits.TokenWriter {
 
   @Override
   public void mapPrologue(Object value) {
-    sb.append("{");
+    sb.append('{');
     initial = true;
     inCollection = true;
   }
@@ -101,14 +108,14 @@ public class StringTokenWriter implements SerializerWithLimits.TokenWriter {
     if (!initial) {
       sb.append(", ");
     }
-    sb.append("[");
+    sb.append('[');
     initial = true;
     inMapEntry = true;
   }
 
   @Override
   public void mapEntryEpilogue(Map.Entry<?, ?> entry) {
-    sb.append("]");
+    sb.append(']');
     inMapEntry = false;
   }
 
@@ -120,33 +127,37 @@ public class StringTokenWriter implements SerializerWithLimits.TokenWriter {
 
   @Override
   public void objectPrologue(Object value) {
-    sb.append("{");
+    sb.append('{');
     initial = true;
   }
 
   @Override
-  public void objectFieldPrologue(Field field, Object value, int maxDepth) {
+  public void objectFieldPrologue(String fieldName, Object value, int maxDepth) {
     if (!initial) {
       sb.append(", ");
     }
     initial = false;
-    sb.append(field.getName()).append("=");
+    sb.append(fieldName).append('=');
   }
 
   @Override
   public void objectEpilogue(Object value) {
-    sb.append("}");
+    sb.append('}');
   }
 
   @Override
   public void handleFieldException(Exception ex, Field field) {
+    fieldNotCaptured("Cannot extract field: " + ex.toString(), field);
+  }
+
+  @Override
+  public void fieldNotCaptured(String reason, Field field) {
     if (!initial) {
       sb.append(", ");
     }
     initial = false;
-    String fieldName = field.getName();
-    sb.append(fieldName).append('=').append(Value.undefinedValue());
-    evalErrors.add(new EvaluationError(fieldName, "Cannot extract field: " + ex.toString()));
+    sb.append(field.getName()).append('=').append(Value.undefinedValue());
+    evalErrors.add(new EvaluationError(field.getName(), reason));
   }
 
   @Override
@@ -156,16 +167,16 @@ public class StringTokenWriter implements SerializerWithLimits.TokenWriter {
         sb.append("...");
         break;
       case TIMEOUT:
-        sb.append("{").append(TIMEOUT_REASON).append("}");
+        sb.append('{').append(TIMEOUT_REASON).append('}');
         break;
       case FIELD_COUNT:
         sb.append(", ...");
         break;
       case REDACTED_IDENT:
-        sb.append("{").append(REDACTED_IDENT_REASON).append("}");
+        sb.append('{').append(REDACTED_IDENT_REASON).append('}');
         break;
       case REDACTED_TYPE:
-        sb.append("{").append(REDACTED_TYPE_REASON).append("}");
+        sb.append('{').append(REDACTED_TYPE_REASON).append('}');
         break;
       default:
         throw new RuntimeException("Unsupported NotCapturedReason: " + reason);
@@ -174,6 +185,6 @@ public class StringTokenWriter implements SerializerWithLimits.TokenWriter {
 
   @Override
   public void notCaptured(String reason) throws Exception {
-    sb.append("(Error: ").append(reason).append(")");
+    sb.append("(Error: ").append(reason).append(')');
   }
 }

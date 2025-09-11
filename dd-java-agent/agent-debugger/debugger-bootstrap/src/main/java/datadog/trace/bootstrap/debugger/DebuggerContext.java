@@ -2,9 +2,12 @@ package datadog.trace.bootstrap.debugger;
 
 import datadog.trace.api.Config;
 import datadog.trace.bootstrap.debugger.util.TimeoutChecker;
+import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,16 +22,44 @@ public class DebuggerContext {
   private static final ThreadLocal<Boolean> IN_PROBE = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
   public enum SkipCause {
-    RATE,
-    CONDITION
+    RATE {
+      @Override
+      public String tag() {
+        return "cause:rate";
+      }
+    },
+    CONDITION {
+      @Override
+      public String tag() {
+        return "cause:condition";
+      }
+    },
+    DEBUG_SESSION_DISABLED {
+      @Override
+      public String tag() {
+        return "cause:debug session disabled";
+      }
+    },
+    BUDGET {
+      @Override
+      public String tag() {
+        return "cause:budget_exceeded";
+      }
+    };
+
+    public abstract String tag();
   }
 
   public interface ProbeResolver {
-    ProbeImplementation resolve(String id, Class<?> callingClass);
+    ProbeImplementation resolve(String encodedProbeId);
   }
 
   public interface ClassFilter {
     boolean isDenied(String fullyQualifiedClassName);
+  }
+
+  public interface ClassNameFilter {
+    boolean isExcluded(String className);
   }
 
   public enum MetricKind {
@@ -39,37 +70,53 @@ public class DebuggerContext {
   }
 
   public interface MetricForwarder {
-    void count(String name, long delta, String[] tags);
+    void count(String encodedProbeId, String name, long delta, String[] tags);
 
-    void gauge(String name, long value, String[] tags);
+    void gauge(String encodedProbeId, String name, long value, String[] tags);
 
-    void gauge(String name, double value, String[] tags);
+    void gauge(String encodedProbeId, String name, double value, String[] tags);
 
-    void histogram(String name, long value, String[] tags);
+    void histogram(String encodedProbeId, String name, long value, String[] tags);
 
-    void histogram(String name, double value, String[] tags);
+    void histogram(String encodedProbeId, String name, double value, String[] tags);
 
-    void distribution(String name, long value, String[] tags);
+    void distribution(String encodedProbeId, String name, long value, String[] tags);
 
-    void distribution(String name, double value, String[] tags);
+    void distribution(String encodedProbeId, String name, double value, String[] tags);
   }
 
   public interface Tracer {
-    DebuggerSpan createSpan(String resourceName, String[] tags);
+    DebuggerSpan createSpan(String encodedProbeId, String resourceName, String[] tags);
   }
 
   public interface ValueSerializer {
     String serializeValue(CapturedContext.CapturedValue value);
   }
 
+  public interface ExceptionDebugger {
+    void handleException(Throwable t, AgentSpan span);
+  }
+
+  public interface CodeOriginRecorder {
+    String captureCodeOrigin(boolean entry);
+
+    String captureCodeOrigin(Method method, boolean entry);
+  }
+
   private static volatile ProbeResolver probeResolver;
   private static volatile ClassFilter classFilter;
+  private static volatile ClassNameFilter classNameFilter;
   private static volatile MetricForwarder metricForwarder;
   private static volatile Tracer tracer;
   private static volatile ValueSerializer valueSerializer;
+  private static volatile ExceptionDebugger exceptionDebugger;
+  private static volatile CodeOriginRecorder codeOriginRecorder;
 
-  public static void init(ProbeResolver probeResolver, MetricForwarder metricForwarder) {
+  public static void initProbeResolver(ProbeResolver probeResolver) {
     DebuggerContext.probeResolver = probeResolver;
+  }
+
+  public static void initMetricForwarder(MetricForwarder metricForwarder) {
     DebuggerContext.metricForwarder = metricForwarder;
   }
 
@@ -81,20 +128,32 @@ public class DebuggerContext {
     DebuggerContext.classFilter = classFilter;
   }
 
+  public static void initClassNameFilter(ClassNameFilter classNameFilter) {
+    DebuggerContext.classNameFilter = classNameFilter;
+  }
+
   public static void initValueSerializer(ValueSerializer valueSerializer) {
     DebuggerContext.valueSerializer = valueSerializer;
+  }
+
+  public static void initExceptionDebugger(ExceptionDebugger exceptionDebugger) {
+    DebuggerContext.exceptionDebugger = exceptionDebugger;
+  }
+
+  public static void initCodeOrigin(CodeOriginRecorder codeOriginRecorder) {
+    DebuggerContext.codeOriginRecorder = codeOriginRecorder;
   }
 
   /**
    * Returns the probe details based on the probe id provided. If no probe is found, try to
    * re-transform the class using the callingClass parameter No-op if no implementation available
    */
-  public static ProbeImplementation resolveProbe(String id, Class<?> callingClass) {
+  public static ProbeImplementation resolveProbe(String id) {
     ProbeResolver resolver = probeResolver;
     if (resolver == null) {
       return null;
     }
-    return resolver.resolve(id, callingClass);
+    return resolver.resolve(id);
   }
 
   /**
@@ -111,7 +170,8 @@ public class DebuggerContext {
   }
 
   /** Increments or updates the specified metric No-op if no implementation is available */
-  public static void metric(MetricKind kind, String name, long value, String[] tags) {
+  public static void metric(
+      String probeId, MetricKind kind, String name, long value, String[] tags) {
     try {
       MetricForwarder forwarder = metricForwarder;
       if (forwarder == null) {
@@ -119,16 +179,17 @@ public class DebuggerContext {
       }
       switch (kind) {
         case COUNT:
-          forwarder.count(name, value, tags);
+          forwarder.count(probeId, name, value, tags);
           break;
         case GAUGE:
-          forwarder.gauge(name, value, tags);
+          forwarder.gauge(probeId, name, value, tags);
           break;
         case HISTOGRAM:
-          forwarder.histogram(name, value, tags);
+          forwarder.histogram(probeId, name, value, tags);
           break;
         case DISTRIBUTION:
-          forwarder.distribution(name, value, tags);
+          forwarder.distribution(probeId, name, value, tags);
+          break;
         default:
           throw new IllegalArgumentException("Unsupported metric kind: " + kind);
       }
@@ -138,7 +199,8 @@ public class DebuggerContext {
   }
 
   /** Updates the specified metric No-op if no implementation is available */
-  public static void metric(MetricKind kind, String name, double value, String[] tags) {
+  public static void metric(
+      String probeId, MetricKind kind, String name, double value, String[] tags) {
     try {
       MetricForwarder forwarder = metricForwarder;
       if (forwarder == null) {
@@ -146,13 +208,13 @@ public class DebuggerContext {
       }
       switch (kind) {
         case GAUGE:
-          forwarder.gauge(name, value, tags);
+          forwarder.gauge(probeId, name, value, tags);
           break;
         case HISTOGRAM:
-          forwarder.histogram(name, value, tags);
+          forwarder.histogram(probeId, name, value, tags);
           break;
         case DISTRIBUTION:
-          forwarder.distribution(name, value, tags);
+          forwarder.distribution(probeId, name, value, tags);
           break;
         default:
           throw new IllegalArgumentException("Unsupported metric kind: " + kind);
@@ -173,13 +235,13 @@ public class DebuggerContext {
   }
 
   /** Creates a span, returns null if no implementation available */
-  public static DebuggerSpan createSpan(String operationName, String[] tags) {
+  public static DebuggerSpan createSpan(String probeId, String operationName, String[] tags) {
     try {
       Tracer localTracer = tracer;
       if (localTracer == null) {
         return DebuggerSpan.NOOP_SPAN;
       }
-      return localTracer.createSpan(operationName, tags);
+      return localTracer.createSpan(probeId, operationName, tags);
     } catch (Exception ex) {
       LOGGER.debug("Error in createSpan: ", ex);
       return DebuggerSpan.NOOP_SPAN;
@@ -191,7 +253,7 @@ public class DebuggerContext {
    *
    * @return true if can proceed to capture data
    */
-  public static boolean isReadyToCapture(Class<?> callingClass, String... probeIds) {
+  public static boolean isReadyToCapture(Class<?> callingClass, String... encodedProbeIds) {
     try {
       return checkAndSetInProbe();
     } catch (Exception ex) {
@@ -225,17 +287,17 @@ public class DebuggerContext {
       Class<?> callingClass,
       long startTimestamp,
       MethodLocation methodLocation,
-      String... probeIds) {
+      String... encodedProbeIds) {
     try {
       boolean needFreeze = false;
-      for (String probeId : probeIds) {
-        ProbeImplementation probeImplementation = resolveProbe(probeId, callingClass);
+      for (String encodedProbeId : encodedProbeIds) {
+        ProbeImplementation probeImplementation = resolveProbe(encodedProbeId);
         if (probeImplementation == null) {
           continue;
         }
         CapturedContext.Status status =
             context.evaluate(
-                probeId,
+                encodedProbeId,
                 probeImplementation,
                 callingClass.getTypeName(),
                 startTimestamp,
@@ -245,7 +307,8 @@ public class DebuggerContext {
       // only freeze the context when we have at lest one snapshot probe, and we should send
       // snapshot
       if (needFreeze) {
-        Duration timeout = Duration.of(Config.get().getDebuggerCaptureTimeout(), ChronoUnit.MILLIS);
+        Duration timeout =
+            Duration.of(Config.get().getDynamicInstrumentationCaptureTimeout(), ChronoUnit.MILLIS);
         context.freeze(new TimeoutChecker(timeout));
       }
     } catch (Exception ex) {
@@ -258,16 +321,20 @@ public class DebuggerContext {
    * conditions and commit snapshot to send it if needed. This is for line probes.
    */
   public static void evalContextAndCommit(
-      CapturedContext context, Class<?> callingClass, int line, String... probeIds) {
+      CapturedContext context, Class<?> callingClass, int line, String... encodedProbeIds) {
     try {
       List<ProbeImplementation> probeImplementations = new ArrayList<>();
-      for (String probeId : probeIds) {
-        ProbeImplementation probeImplementation = resolveProbe(probeId, callingClass);
+      for (String encodedProbeId : encodedProbeIds) {
+        ProbeImplementation probeImplementation = resolveProbe(encodedProbeId);
         if (probeImplementation == null) {
           continue;
         }
         context.evaluate(
-            probeId, probeImplementation, callingClass.getTypeName(), -1, MethodLocation.DEFAULT);
+            encodedProbeId,
+            probeImplementation,
+            callingClass.getTypeName(),
+            -1,
+            MethodLocation.DEFAULT);
         probeImplementations.add(probeImplementation);
       }
       for (ProbeImplementation probeImplementation : probeImplementations) {
@@ -275,6 +342,18 @@ public class DebuggerContext {
       }
     } catch (Exception ex) {
       LOGGER.debug("Error in evalContextAndCommit: ", ex);
+    }
+  }
+
+  public static void codeOrigin(String probeId) {
+    try {
+      ProbeImplementation probe = probeResolver.resolve(probeId);
+      if (probe != null) {
+        probe.commit(
+            CapturedContext.EMPTY_CONTEXT, CapturedContext.EMPTY_CONTEXT, Collections.emptyList());
+      }
+    } catch (Exception e) {
+      LOGGER.debug("Error in codeOrigin: ", e);
     }
   }
 
@@ -286,16 +365,16 @@ public class DebuggerContext {
       CapturedContext entryContext,
       CapturedContext exitContext,
       List<CapturedContext.CapturedThrowable> caughtExceptions,
-      String... probeIds) {
+      String... encodedProbeIds) {
     try {
       if (entryContext == CapturedContext.EMPTY_CONTEXT
           && exitContext == CapturedContext.EMPTY_CONTEXT) {
         // rate limited
         return;
       }
-      for (String probeId : probeIds) {
-        CapturedContext.Status entryStatus = entryContext.getStatus(probeId);
-        CapturedContext.Status exitStatus = exitContext.getStatus(probeId);
+      for (String encodedProbeId : encodedProbeIds) {
+        CapturedContext.Status entryStatus = entryContext.getStatus(encodedProbeId);
+        CapturedContext.Status exitStatus = exitContext.getStatus(encodedProbeId);
         ProbeImplementation probeImplementation;
         if (entryStatus.probeImplementation != ProbeImplementation.UNKNOWN
             && (entryStatus.probeImplementation.getEvaluateAt() == MethodLocation.ENTRY
@@ -304,12 +383,57 @@ public class DebuggerContext {
         } else if (exitStatus.probeImplementation.getEvaluateAt() == MethodLocation.EXIT) {
           probeImplementation = exitStatus.probeImplementation;
         } else {
-          throw new IllegalStateException("no probe details");
+          throw new IllegalStateException("no probe details for " + encodedProbeId);
         }
         probeImplementation.commit(entryContext, exitContext, caughtExceptions);
       }
     } catch (Exception ex) {
       LOGGER.debug("Error in commit: ", ex);
+    }
+  }
+
+  public static void marker() {}
+
+  public static void captureCodeOrigin(boolean entry) {
+    try {
+      CodeOriginRecorder recorder = codeOriginRecorder;
+      if (recorder != null) {
+        recorder.captureCodeOrigin(entry);
+      }
+    } catch (Exception ex) {
+      LOGGER.debug("Error in captureCodeOrigin: ", ex);
+    }
+  }
+
+  public static void captureCodeOrigin(Method method, boolean entry) {
+    try {
+      CodeOriginRecorder recorder = codeOriginRecorder;
+      if (recorder != null) {
+        recorder.captureCodeOrigin(method, entry);
+      }
+    } catch (Exception ex) {
+      LOGGER.debug("Error in captureCodeOrigin: ", ex);
+    }
+  }
+
+  public static void handleException(Throwable t, AgentSpan span) {
+    try {
+      ExceptionDebugger exDebugger = exceptionDebugger;
+      if (exDebugger == null) {
+        return;
+      }
+      exDebugger.handleException(t, span);
+    } catch (Exception ex) {
+      LOGGER.debug("Error in handleException: ", ex);
+    }
+  }
+
+  public static boolean isClassNameExcluded(String className) {
+    try {
+      return classNameFilter != null && classNameFilter.isExcluded(className);
+    } catch (Exception ex) {
+      LOGGER.debug("Error in isClassNameExcluded: ", ex);
+      return false;
     }
   }
 }

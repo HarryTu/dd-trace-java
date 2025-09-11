@@ -5,7 +5,6 @@ import datadog.telemetry.TelemetryService;
 import datadog.telemetry.api.LogMessage;
 import datadog.telemetry.api.LogMessageLevel;
 import datadog.trace.api.telemetry.LogCollector;
-import datadog.trace.util.stacktrace.StackUtils;
 
 public class LogPeriodicAction implements TelemetryRunnable.TelemetryPeriodicAction {
 
@@ -15,9 +14,18 @@ public class LogPeriodicAction implements TelemetryRunnable.TelemetryPeriodicAct
    * create the trie and store it as a constant in LogPeriodicAction to be passed in here and used
    * as a filter)
    */
-  static final String[] PACKAGE_LIST = {"datadog.", "com.datadog.", "java.", "javax.", "jakarta."};
+  static final String[] PACKAGE_ALLOW_LIST = {
+    "datadog.",
+    "com.datadog.",
+    "java.",
+    "javax.",
+    "jakarta.",
+    "jdk.",
+    "sun.",
+    "com.sun.",
+    "com.datadog.ddwaf."
+  };
 
-  private static final String RET = "\r\n";
   private static final String UNKNOWN = "<unknown>";
 
   @Override
@@ -25,7 +33,11 @@ public class LogPeriodicAction implements TelemetryRunnable.TelemetryPeriodicAct
     for (LogCollector.RawLogMessage rawLogMsg : LogCollector.get().drain()) {
 
       LogMessage logMessage =
-          new LogMessage().message(rawLogMsg.message()).tracerTime(rawLogMsg.timestamp);
+          new LogMessage()
+              .message(rawLogMsg.message)
+              .tracerTime(rawLogMsg.timestamp)
+              .tags(rawLogMsg.tags)
+              .count(rawLogMsg.count);
 
       if (rawLogMsg.logLevel != null) {
         logMessage.level(LogMessageLevel.fromString(rawLogMsg.logLevel));
@@ -40,42 +52,85 @@ public class LogPeriodicAction implements TelemetryRunnable.TelemetryPeriodicAct
   }
 
   private static String renderStackTrace(Throwable t) {
-    StringBuilder stackTrace = new StringBuilder();
+    StringBuilder result = new StringBuilder();
 
-    String name = t.getClass().getCanonicalName();
-    if (name == null || name.isEmpty()) {
-      stackTrace.append(UNKNOWN);
-    } else {
-      stackTrace.append(name);
-    }
+    StackTraceElement[] previousStackTrace = null;
 
-    if (isDataDogCode(t)) {
-      String msg = t.getMessage();
-      stackTrace.append(": ");
-      if (msg == null || msg.isEmpty()) {
-        stackTrace.append(UNKNOWN);
+    while (t != null) {
+      String name = t.getClass().getCanonicalName();
+      if (name == null || name.isEmpty()) {
+        result.append(UNKNOWN);
       } else {
-        stackTrace.append(msg);
+        result.append(name);
+      }
+      result.append('\n');
+
+      final StackTraceElement[] stacktrace = t.getStackTrace();
+      int pendingRedacted = 0;
+      if (stacktrace != null) {
+        int commonFrames = 0;
+        if (previousStackTrace != null) {
+          commonFrames = countCommonFrames(previousStackTrace, stacktrace);
+        }
+        int maxIndex = stacktrace.length - commonFrames;
+
+        for (int i = 0; i < maxIndex; i++) {
+          final StackTraceElement frame = stacktrace[i];
+          final String className = frame.getClassName();
+          if (shouldRedactClass(className)) {
+            pendingRedacted++;
+          } else {
+            writePendingRedacted(result, pendingRedacted);
+            pendingRedacted = 0;
+            result.append("  at ").append(frame).append('\n');
+          }
+        }
+        writePendingRedacted(result, pendingRedacted);
+
+        if (commonFrames > 0) {
+          result.append("  ... ").append(commonFrames).append(" more\n");
+        }
+      }
+
+      previousStackTrace = stacktrace;
+      t = t.getCause();
+      if (t != null) {
+        result.append("Caused by: ");
       }
     }
-    stackTrace.append(RET);
 
-    Throwable filtered = StackUtils.filterPackagesIn(t, PACKAGE_LIST);
-    for (StackTraceElement stackTraceElement : filtered.getStackTrace()) {
-      stackTrace.append("  at ").append(stackTraceElement).append(RET);
-    }
-    return stackTrace.toString();
+    return result.toString();
   }
 
-  private static boolean isDataDogCode(Throwable t) {
-    StackTraceElement[] stackTrace = t.getStackTrace();
-    if (stackTrace == null || stackTrace.length == 0) {
-      return false;
+  private static int countCommonFrames(
+      StackTraceElement[] previousStackTrace, StackTraceElement[] currentStackTrace) {
+    int previousIndex = previousStackTrace.length - 1;
+    int currentIndex = currentStackTrace.length - 1;
+    int count = 0;
+    while (previousIndex >= 0
+        && currentIndex >= 0
+        && previousStackTrace[previousIndex].equals(currentStackTrace[currentIndex])) {
+      count++;
+      previousIndex--;
+      currentIndex--;
     }
-    String cn = stackTrace[0].getClassName();
-    if (cn.isEmpty()) {
-      return false;
+    return count;
+  }
+
+  private static boolean shouldRedactClass(final String className) {
+    for (final String prefix : PACKAGE_ALLOW_LIST) {
+      if (className.startsWith(prefix)) {
+        return false;
+      }
     }
-    return cn.startsWith("datadog.") || cn.startsWith("com.datadog.");
+    return true;
+  }
+
+  private static void writePendingRedacted(final StringBuilder result, final int pendingRedacted) {
+    if (pendingRedacted == 1) {
+      result.append("  at ").append("(redacted)\n");
+    } else if (pendingRedacted > 1) {
+      result.append("  at (redacted: ").append(pendingRedacted).append(" frames)\n");
+    }
   }
 }

@@ -1,9 +1,10 @@
 package com.datadog.iast.sink
 
 import com.datadog.iast.IastModuleImplTestBase
+import com.datadog.iast.Reporter
+import com.datadog.iast.model.VulnerabilityType
 import com.datadog.iast.overhead.Operations
 import datadog.trace.api.iast.sink.WeakRandomnessModule
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan
 
 import java.security.SecureRandom
 
@@ -11,13 +12,13 @@ class WeakRandomnessModuleTest extends IastModuleImplTestBase {
 
   private WeakRandomnessModule module
 
-  private AgentSpan span
-
   def setup() {
     module = new WeakRandomnessModuleImpl(dependencies)
-    span = Mock(AgentSpan) {
-      getSpanId() >> 123456
-    }
+  }
+
+  @Override
+  protected Reporter buildReporter() {
+    return Mock(Reporter)
   }
 
   void 'test weak randomness detection'() {
@@ -29,7 +30,6 @@ class WeakRandomnessModuleTest extends IastModuleImplTestBase {
       0 * _
     } else {
       tracer.activeSpan() >> span
-      1 * overheadController.consumeQuota(Operations.REPORT_VULNERABILITY, span) >> true
       1 * reporter.report(span, _)
     }
 
@@ -41,7 +41,6 @@ class WeakRandomnessModuleTest extends IastModuleImplTestBase {
       0 * _
     } else {
       tracer.activeSpan() >> null
-      1 * overheadController.consumeQuota(Operations.REPORT_VULNERABILITY, null) >> true
       1 * reporter.report(_, _)
     }
 
@@ -56,8 +55,7 @@ class WeakRandomnessModuleTest extends IastModuleImplTestBase {
     module.onWeakRandom(Random)
 
     then:
-    tracer.activeSpan() >> span
-    1 * overheadController.consumeQuota(Operations.REPORT_VULNERABILITY, span) >> false
+    overheadController.consumeQuota(Operations.REPORT_VULNERABILITY, span, _ as VulnerabilityType) >> false
     0 * _
   }
 }

@@ -13,15 +13,16 @@ import static net.bytebuddy.matcher.ElementMatchers.takesNoArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.iast.InstrumentationBridge;
 import datadog.trace.api.iast.Propagation;
 import datadog.trace.api.iast.propagation.PropagationModule;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public class JsonReaderInstrumentation extends Instrumenter.Iast
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class JsonReaderInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public JsonReaderInstrumentation() {
     super("gson");
@@ -33,16 +34,16 @@ public class JsonReaderInstrumentation extends Instrumenter.Iast
   }
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     return hasClassNamed("com.google.gson.stream.JsonReader");
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isConstructor().and(takesArguments(1)).and(takesArgument(0, named("java.io.Reader"))),
         getClass().getName() + "$ConstructAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(isPublic())
             .and(returns(String.class))
@@ -58,7 +59,7 @@ public class JsonReaderInstrumentation extends Instrumenter.Iast
         @Advice.This Object self, @Advice.Argument(0) final java.io.Reader input) {
       final PropagationModule iastModule = InstrumentationBridge.PROPAGATION;
       if (iastModule != null && input != null) {
-        iastModule.taintIfTainted(self, input);
+        iastModule.taintObjectIfTainted(self, input);
       }
     }
   }
@@ -69,7 +70,7 @@ public class JsonReaderInstrumentation extends Instrumenter.Iast
     public static void afterMethod(@Advice.This Object self, @Advice.Return final String result) {
       final PropagationModule iastModule = InstrumentationBridge.PROPAGATION;
       if (iastModule != null && result != null) {
-        iastModule.taintIfTainted(result, self);
+        iastModule.taintStringIfTainted(result, self);
       }
     }
   }

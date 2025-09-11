@@ -1,8 +1,7 @@
 package datadog.trace.core;
 
 import static datadog.trace.api.DDTags.TRACE_START_TIME;
-import static datadog.trace.api.sampling.PrioritySampling.SAMPLER_DROP;
-import static datadog.trace.api.sampling.PrioritySampling.USER_DROP;
+import static datadog.trace.api.sampling.SamplingMechanism.DEFAULT;
 import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.RECORD_END_TO_END_DURATION_MS;
 import static datadog.trace.bootstrap.instrumentation.api.Tags.HTTP_STATUS;
 import static java.util.concurrent.TimeUnit.MICROSECONDS;
@@ -14,21 +13,23 @@ import datadog.trace.api.DDSpanId;
 import datadog.trace.api.DDTags;
 import datadog.trace.api.DDTraceId;
 import datadog.trace.api.EndpointTracker;
+import datadog.trace.api.TagMap;
 import datadog.trace.api.TraceConfig;
+import datadog.trace.api.debugger.DebuggerConfigBridge;
 import datadog.trace.api.gateway.Flow;
 import datadog.trace.api.gateway.RequestContext;
 import datadog.trace.api.metrics.SpanMetricRegistry;
 import datadog.trace.api.metrics.SpanMetrics;
-import datadog.trace.api.profiling.TransientProfilingContextHolder;
 import datadog.trace.api.sampling.PrioritySampling;
 import datadog.trace.api.sampling.SamplingMechanism;
+import datadog.trace.bootstrap.debugger.DebuggerContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpanLink;
 import datadog.trace.bootstrap.instrumentation.api.AttachableWrapper;
 import datadog.trace.bootstrap.instrumentation.api.ErrorPriorities;
 import datadog.trace.bootstrap.instrumentation.api.ResourceNamePriorities;
-import java.io.PrintWriter;
-import java.io.StringWriter;
+import datadog.trace.bootstrap.instrumentation.api.Tags;
+import datadog.trace.core.util.StackTraces;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -46,11 +47,8 @@ import org.slf4j.LoggerFactory;
  * <p>Spans are created by the {@link CoreTracer#buildSpan}. This implementation adds some features
  * according to the DD agent.
  */
-public class DDSpan
-    implements AgentSpan, CoreSpan<DDSpan>, TransientProfilingContextHolder, AttachableWrapper {
+public class DDSpan implements AgentSpan, CoreSpan<DDSpan>, AttachableWrapper {
   private static final Logger log = LoggerFactory.getLogger(DDSpan.class);
-
-  public static final String CHECKPOINTED_TAG = "checkpointed";
 
   static DDSpan create(
       final String instrumentationName,
@@ -59,7 +57,7 @@ public class DDSpan
       final List<AgentSpanLink> links) {
     final DDSpan span = new DDSpan(instrumentationName, timestampMicro, context, links);
     log.debug("Started span: {}", span);
-    context.getTrace().registerSpan(span);
+    context.getTraceCollector().registerSpan(span);
     return span;
   }
 
@@ -111,7 +109,7 @@ public class DDSpan
    */
   private volatile int longRunningVersion = 0;
 
-  private final List<AgentSpanLink> links;
+  protected final List<AgentSpanLink> links;
 
   /**
    * Spans should be constructed using the builder, not by calling the constructor directly.
@@ -131,12 +129,12 @@ public class DDSpan
 
     if (timestampMicro <= 0L) {
       // note: getting internal time from the trace implicitly 'touches' it
-      startTimeNano = context.getTrace().getCurrentTimeNano();
+      startTimeNano = context.getTraceCollector().getCurrentTimeNano();
       externalClock = false;
     } else {
       startTimeNano = MICROSECONDS.toNanos(timestampMicro);
       externalClock = true;
-      context.getTrace().touch(); // external clock: explicitly update lastReferenced
+      context.getTraceCollector().touch(); // external clock: explicitly update lastReferenced
     }
 
     this.links = links == null ? new CopyOnWriteArrayList<>() : new CopyOnWriteArrayList<>(links);
@@ -151,7 +149,7 @@ public class DDSpan
     if (DURATION_NANO_UPDATER.compareAndSet(this, 0, Math.max(1, durationNano))) {
       setLongRunningVersion(-this.longRunningVersion);
       this.metrics.onSpanFinished();
-      PendingTrace.PublishState publishState = context.getTrace().onPublish(this);
+      TraceCollector.PublishState publishState = context.getTraceCollector().onPublish(this);
       log.debug("Finished span ({}): {}", publishState, this);
     } else {
       log.debug("Already finished: {}", this);
@@ -162,9 +160,9 @@ public class DDSpan
   public void finish() {
     if (!externalClock) {
       // no external clock was used, so we can rely on nano time
-      finishAndAddToTrace(context.getTrace().getCurrentTimeNano() - startTimeNano);
+      finishAndAddToTrace(context.getTraceCollector().getCurrentTimeNano() - startTimeNano);
     } else {
-      finish(context.getTrace().getTimeSource().getCurrentTimeMicros());
+      finish(context.getTraceCollector().getTimeSource().getCurrentTimeMicros());
     }
   }
 
@@ -174,17 +172,17 @@ public class DDSpan
     if (!externalClock) {
       // first capture wall-clock offset from 'now' to external stop time
       long externalOffsetMicros =
-          stopTimeMicros - context.getTrace().getTimeSource().getCurrentTimeMicros();
+          stopTimeMicros - context.getTraceCollector().getTimeSource().getCurrentTimeMicros();
       // immediately afterwards calculate internal duration of span to 'now'
       // note: getting internal time from the trace implicitly 'touches' it
-      durationNano = context.getTrace().getCurrentTimeNano() - startTimeNano;
+      durationNano = context.getTraceCollector().getCurrentTimeNano() - startTimeNano;
       // drop nanosecond precision part of internal duration (expected behaviour)
       durationNano = MILLISECONDS.toNanos(NANOSECONDS.toMillis(durationNano));
       // add wall-clock offset to get total duration to external stop time
       durationNano += MICROSECONDS.toNanos(externalOffsetMicros);
     } else {
       durationNano = MICROSECONDS.toNanos(stopTimeMicros) - startTimeNano;
-      context.getTrace().touch(); // external clock: explicitly update lastReferenced
+      context.getTraceCollector().touch(); // external clock: explicitly update lastReferenced
     }
     finishAndAddToTrace(durationNano);
   }
@@ -238,10 +236,11 @@ public class DDSpan
     long durationNano;
     if (!externalClock) {
       // note: getting internal time from the trace implicitly 'touches' it
-      durationNano = context.getTrace().getCurrentTimeNano() - startTimeNano;
+      durationNano = context.getTraceCollector().getCurrentTimeNano() - startTimeNano;
     } else {
-      durationNano = context.getTrace().getTimeSource().getCurrentTimeNanos() - startTimeNano;
-      context.getTrace().touch(); // external clock: explicitly update lastReferenced
+      durationNano =
+          context.getTraceCollector().getTimeSource().getCurrentTimeNanos() - startTimeNano;
+      context.getTraceCollector().touch(); // external clock: explicitly update lastReferenced
     }
     // Flip the negative bit of the result to allow verifying that publish() is only called once.
     if (DURATION_NANO_UPDATER.compareAndSet(this, 0, Math.max(1, durationNano) | Long.MIN_VALUE)) {
@@ -262,7 +261,7 @@ public class DDSpan
       log.debug("Already published: {}", this);
     } else if (DURATION_NANO_UPDATER.compareAndSet(
         this, durationNano, durationNano & Long.MAX_VALUE)) {
-      PendingTrace.PublishState publishState = context.getTrace().onPublish(this);
+      TraceCollector.PublishState publishState = context.getTraceCollector().onPublish(this);
       log.debug("Published span ({}): {}", publishState, this);
     }
   }
@@ -313,7 +312,7 @@ public class DDSpan
 
   @Override
   public DDSpan getLocalRootSpan() {
-    return context.getTrace().getRootSpan();
+    return context.getTraceCollector().getRootSpan();
   }
 
   /**
@@ -327,12 +326,7 @@ public class DDSpan
 
   @Override
   public boolean isSameTrace(final AgentSpan otherSpan) {
-    // FIXME [API] AgentSpan or AgentSpan.Context should have a "getTraceId()" type method
-    if (otherSpan instanceof DDSpan) {
-      return getTraceId().equals(otherSpan.getTraceId());
-    }
-
-    return false;
+    return null != otherSpan && getTraceId().equals(otherSpan.getTraceId());
   }
 
   @Override
@@ -357,15 +351,31 @@ public class DDSpan
         // or warming up - capturing the stack trace and keeping
         // the trace may exacerbate existing problems.
         setError(true, errorPriority);
-        final StringWriter errorString = new StringWriter();
-        error.printStackTrace(new PrintWriter(errorString));
-        setTag(DDTags.ERROR_STACK, errorString.toString());
+        setTag(
+            DDTags.ERROR_STACK,
+            StackTraces.getStackTrace(error, Config.get().getStackTraceLengthLimit()));
       }
 
       setTag(DDTags.ERROR_MSG, message);
       setTag(DDTags.ERROR_TYPE, error.getClass().getName());
+      if (isExceptionReplayEnabled()) {
+        DebuggerContext.handleException(error, this);
+      }
     }
     return this;
+  }
+
+  private boolean isExceptionReplayEnabled() {
+    if (!DebuggerConfigBridge.isExceptionReplayEnabled()) {
+      return false;
+    }
+    boolean captureOnlyRootSpan =
+        (Config.get().isDebuggerExceptionOnlyLocalRoot()
+            || !Config.get().isDebuggerExceptionCaptureIntermediateSpansEnabled());
+    if (captureOnlyRootSpan && !isLocalRootSpan()) {
+      return false;
+    }
+    return true;
   }
 
   @Override
@@ -471,6 +481,12 @@ public class DDSpan
     return this;
   }
 
+  @Override
+  public AgentSpan setAllTags(Map<String, ?> map) {
+    context.setAllTags(map);
+    return this;
+  }
+
   // FIXME [API] this is not on AgentSpan or MutableSpan
   @Override
   public DDSpan removeTag(final String tag) {
@@ -540,21 +556,15 @@ public class DDSpan
   }
 
   @Override
-  public boolean eligibleForDropping() {
-    int samplingPriority = context.getSamplingPriority();
-    return samplingPriority == USER_DROP || samplingPriority == SAMPLER_DROP;
-  }
-
-  @Override
   public RequestContext getRequestContext() {
     return context.getRequestContext();
   }
 
   @Override
   public Integer forceSamplingDecision() {
-    PendingTrace trace = this.context.getTrace();
-    DDSpan rootSpan = trace.getRootSpan();
-    trace.setSamplingPriorityIfNecessary();
+    TraceCollector traceCollector = this.context.getTraceCollector();
+    DDSpan rootSpan = traceCollector.getRootSpan();
+    traceCollector.setSamplingPriorityIfNecessary();
     if (rootSpan == null) {
       return null;
     }
@@ -684,14 +694,19 @@ public class DDSpan
   }
 
   @Override
-  public Map<String, Object> getTags() {
-    // This is an imutable copy of the tags
+  public TagMap getTags() {
+    // This is an immutable copy of the tags
     return context.getTags();
   }
 
   @Override
   public CharSequence getType() {
     return context.getSpanType();
+  }
+
+  @Override
+  public void processServiceTags() {
+    context.earlyProcessTags(links);
   }
 
   @Override
@@ -723,7 +738,7 @@ public class DDSpan
 
   @Override
   public boolean hasSamplingPriority() {
-    return context.getTrace().getRootSpan() == this;
+    return context.getTraceCollector().getRootSpan() == this;
   }
 
   @Override
@@ -807,7 +822,7 @@ public class DDSpan
 
   @Override
   public TraceConfig traceConfig() {
-    return context.getTrace().getTraceConfig();
+    return context.getTraceCollector().getTraceConfig();
   }
 
   @Override
@@ -820,5 +835,43 @@ public class DDSpan
   // to be accessible in Spock spies, which the field wouldn't otherwise be
   public long getStartTimeNano() {
     return startTimeNano;
+  }
+
+  @Override
+  public Map<String, Object> getMetaStruct() {
+    return context.getMetaStruct();
+  }
+
+  @Override
+  public DDSpan setMetaStruct(final String field, final Object value) {
+    context.setMetaStruct(field, value);
+    return this;
+  }
+
+  @Override
+  public boolean isOutbound() {
+    Object spanKind = context.getTag(Tags.SPAN_KIND);
+    return Tags.SPAN_KIND_CLIENT.equals(spanKind) || Tags.SPAN_KIND_PRODUCER.equals(spanKind);
+  }
+
+  @Override
+  public void copyPropagationAndBaggage(final AgentSpan source) {
+    if (source instanceof DDSpan) {
+      final DDSpanContext sourceSpanContext = ((DDSpan) source).context();
+      // align the sampling priority for this span context
+      setSamplingPriority(sourceSpanContext.getSamplingPriority(), DEFAULT);
+      // the sampling mechanism determine the dm tag hence we need to override and lock the current
+      // ptags
+      context
+          .getPropagationTags()
+          .updateAndLockDecisionMaker(sourceSpanContext.getPropagationTags());
+      context.setOrigin(sourceSpanContext.getOrigin());
+      sourceSpanContext.getBaggageItems().forEach(context::setBaggageItem);
+    }
+  }
+
+  @Override
+  public int getLongRunningVersion() {
+    return longRunningVersion;
   }
 }

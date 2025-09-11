@@ -20,7 +20,7 @@ abstract class MongoSyncClientTest extends MongoBaseTest {
   MongoClient client
 
   def setup() throws Exception {
-    client = MongoClients.create("mongodb://localhost:$port/?appname=some-description")
+    client = MongoClients.create("mongodb://${mongoDbContainer.getHost()}:$port/?appname=some-description")
   }
 
   def cleanup() throws Exception {
@@ -28,8 +28,9 @@ abstract class MongoSyncClientTest extends MongoBaseTest {
     client = null
   }
 
-  def "test create collection"() {
+  def "test create collection with renameService=#renameService"() {
     setup:
+    String collectionName = randomCollectionName()
     MongoDatabase db = client.getDatabase(databaseName)
     injectSysConfig(DB_CLIENT_HOST_SPLIT_BY_INSTANCE, "$renameService")
 
@@ -45,13 +46,13 @@ abstract class MongoSyncClientTest extends MongoBaseTest {
     }
 
     where:
-    collectionName = randomCollectionName()
     renameService << [false, true]
   }
 
   def "test create collection no description"() {
     setup:
-    MongoDatabase db = MongoClients.create("mongodb://localhost:$port").getDatabase(databaseName)
+    String collectionName = randomCollectionName()
+    MongoDatabase db = MongoClients.create("mongodb://${mongoDbContainer.getHost()}:$port").getDatabase(databaseName)
 
     when:
     db.createCollection(collectionName)
@@ -62,13 +63,11 @@ abstract class MongoSyncClientTest extends MongoBaseTest {
         mongoSpan(it, 0, "create", "{\"create\":\"$collectionName\",\"capped\":\"?\"}", false, databaseName)
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test get collection"() {
     setup:
+    String collectionName = randomCollectionName()
     MongoDatabase db = client.getDatabase(databaseName)
 
     when:
@@ -81,13 +80,11 @@ abstract class MongoSyncClientTest extends MongoBaseTest {
         mongoSpan(it, 0, "count", "{\"count\":\"$collectionName\",\"query\":{}}")
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test insert"() {
     setup:
+    String collectionName = randomCollectionName()
     DDSpan setupSpan = null
     MongoCollection<Document> collection = runUnderTrace("setup") {
       setupSpan = activeSpan() as DDSpan
@@ -113,13 +110,11 @@ abstract class MongoSyncClientTest extends MongoBaseTest {
         mongoSpan(it, 0, "count", "{\"count\":\"$collectionName\",\"query\":{}}")
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test update"() {
     setup:
+    String collectionName = randomCollectionName()
     DDSpan setupSpan = null
     MongoCollection<Document> collection = runUnderTrace("setup") {
       setupSpan = activeSpan() as DDSpan
@@ -150,13 +145,11 @@ abstract class MongoSyncClientTest extends MongoBaseTest {
         mongoSpan(it, 0, "count", "{\"count\":\"$collectionName\",\"query\":{}}")
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test delete"() {
     setup:
+    String collectionName = randomCollectionName()
     DDSpan setupSpan = null
     MongoCollection<Document> collection = runUnderTrace("setup") {
       setupSpan = activeSpan() as DDSpan
@@ -185,13 +178,11 @@ abstract class MongoSyncClientTest extends MongoBaseTest {
         mongoSpan(it, 0, "count", "{\"count\":\"$collectionName\",\"query\":{}}")
       }
     }
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test error"() {
     setup:
+    String collectionName = randomCollectionName()
     DDSpan setupSpan = null
     MongoCollection<Document> collection = runUnderTrace("setup") {
       setupSpan = activeSpan() as DDSpan
@@ -209,14 +200,12 @@ abstract class MongoSyncClientTest extends MongoBaseTest {
     thrown(IllegalArgumentException)
     // Unfortunately not caught by our instrumentation.
     assertTraces(0) {}
-
-    where:
-    collectionName = randomCollectionName()
   }
 
   def "test client failure"() {
     setup:
-    def client = MongoClients.create("mongodb://localhost:$UNUSABLE_PORT/?serverselectiontimeoutms=10")
+    String collectionName = randomCollectionName()
+    def client = MongoClients.create("mongodb://${mongoDbContainer.getHost()}:$UNUSABLE_PORT/?serverselectiontimeoutms=10")
 
     when:
     MongoDatabase db = client.getDatabase(databaseName)
@@ -226,9 +215,6 @@ abstract class MongoSyncClientTest extends MongoBaseTest {
     thrown(MongoTimeoutException)
     // Unfortunately not caught by our instrumentation.
     assertTraces(0) {}
-
-    where:
-    collectionName = randomCollectionName()
   }
 }
 

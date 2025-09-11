@@ -6,7 +6,7 @@ import datadog.trace.api.DDTraceId
 import datadog.trace.api.StatsDClient
 import datadog.trace.api.intake.TrackType
 import datadog.trace.api.sampling.PrioritySampling
-import datadog.trace.bootstrap.instrumentation.api.AgentTracer
+import datadog.trace.api.datastreams.NoopPathwayContext
 import datadog.trace.common.writer.ddagent.DDAgentApi
 import datadog.trace.common.writer.ddagent.DDAgentMapperDiscovery
 import datadog.trace.core.CoreTracer
@@ -186,8 +186,8 @@ class DDIntakeWriterTest extends DDCoreSpecification {
   }
 
   def newSpan() {
-    CoreTracer tracer = Mock(CoreTracer)
-    PendingTrace trace = Mock(PendingTrace)
+    CoreTracer tracer = Stub(CoreTracer)
+    PendingTrace trace = Stub(PendingTrace)
     trace.mapServiceName(_) >> { String serviceName -> serviceName }
     trace.getTracer() >> tracer
     def context = new DDSpanContext(
@@ -207,7 +207,7 @@ class DDIntakeWriterTest extends DDCoreSpecification {
       trace,
       null,
       null,
-      AgentTracer.NoopPathwayContext.INSTANCE,
+      NoopPathwayContext.INSTANCE,
       false,
       PropagationTags.factory().empty())
     return new DDSpan("test", 0, context, null)

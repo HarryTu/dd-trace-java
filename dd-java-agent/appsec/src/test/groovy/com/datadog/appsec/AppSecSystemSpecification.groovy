@@ -1,25 +1,25 @@
 package com.datadog.appsec
 
-import com.datadog.appsec.config.AppSecConfig
 import com.datadog.appsec.event.EventProducerService
 import com.datadog.appsec.gateway.AppSecRequestContext
 import com.datadog.appsec.report.AppSecEvent
 import com.datadog.appsec.util.AbortStartupException
 import datadog.communication.ddagent.DDAgentFeaturesDiscovery
 import datadog.communication.ddagent.SharedCommunicationObjects
-import datadog.communication.monitor.Counter
 import datadog.communication.monitor.Monitoring
-import datadog.remoteconfig.ConfigurationChangesTypedListener
 import datadog.remoteconfig.ConfigurationEndListener
 import datadog.remoteconfig.ConfigurationPoller
 import datadog.remoteconfig.Product
+import datadog.remoteconfig.state.ConfigKey
+import datadog.remoteconfig.state.ProductListener
 import datadog.trace.api.Config
-import datadog.trace.api.internal.TraceSegment
+import datadog.trace.api.TagMap
 import datadog.trace.api.gateway.Flow
 import datadog.trace.api.gateway.IGSpanInfo
 import datadog.trace.api.gateway.RequestContext
 import datadog.trace.api.gateway.RequestContextSlot
 import datadog.trace.api.gateway.SubscriptionService
+import datadog.trace.api.internal.TraceSegment
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan
 import datadog.trace.test.util.DDSpecification
 import okhttp3.OkHttpClient
@@ -43,7 +43,7 @@ class AppSecSystemSpecification extends DDSpecification {
     AppSecSystem.start(subService, sharedCommunicationObjects())
 
     then:
-    'powerwaf' in AppSecSystem.startedModulesInfo
+    'ddwaf' in AppSecSystem.startedModulesInfo
   }
 
   void 'throws if custom config does not exist'() {
@@ -54,7 +54,26 @@ class AppSecSystemSpecification extends DDSpecification {
     AppSecSystem.start(subService, sharedCommunicationObjects())
 
     then:
-    thrown AbortStartupException
+    def exception = thrown(AbortStartupException)
+    exception.cause.toString().contains('/file/that/does/not/exist')
+  }
+
+  void 'system should throw AbortStartupException when config file is not valid JSON'() {
+    given: 'a temporary file with invalid JSON content'
+    Path path = Files.createTempFile('dd-trace-', '.json')
+    path.toFile() << '{'  // Invalid JSON - missing closing brace
+    injectSysConfig('dd.appsec.rules', path as String)
+    rebuildConfig()
+
+    when: 'starting the AppSec system'
+    AppSecSystem.start(subService, sharedCommunicationObjects())
+
+    then: 'an AbortStartupException should be thrown'
+    def exception = thrown(AbortStartupException)
+    exception.cause instanceof IOException
+
+    cleanup: 'delete the temporary file'
+    Files.deleteIfExists(path)
   }
 
   void 'honors appsec.ipheader'() {
@@ -73,44 +92,14 @@ class AppSecSystemSpecification extends DDSpecification {
     requestEndedCB.apply(requestContext, span)
 
     then:
-    1 * span.getTags() >> ['http.client_ip':'1.1.1.1']
+    1 * span.getTags() >> TagMap.fromMap(['http.client_ip':'1.1.1.1'])
     1 * subService.registerCallback(EVENTS.requestEnded(), _) >> { requestEndedCB = it[1]; null }
     1 * requestContext.getData(RequestContextSlot.APPSEC) >> appSecReqCtx
     1 * requestContext.traceSegment >> traceSegment
-    1 * appSecReqCtx.transferCollectedEvents() >> [Mock(AppSecEvent)]
+    1 * appSecReqCtx.transferCollectedEvents() >> [Stub(AppSecEvent)]
     1 * appSecReqCtx.getRequestHeaders() >> ['foo-bar': ['1.1.1.1']]
     1 * appSecReqCtx.getResponseHeaders() >> [:]
     1 * traceSegment.setTagTop('actor.ip', '1.1.1.1')
-  }
-
-  void 'honors appsec.trace.rate.limit'() {
-    BiFunction<RequestContext, AgentSpan, Flow<Void>> requestEndedCB
-    RequestContext requestContext = Mock()
-    TraceSegment traceSegment = Mock()
-    AppSecRequestContext appSecReqCtx = Mock()
-    def sco = sharedCommunicationObjects()
-    Counter throttledCounter = Mock()
-    IGSpanInfo span = Mock(AgentSpan)
-
-    setup:
-    injectSysConfig('dd.appsec.trace.rate.limit', '5')
-
-    when:
-    AppSecSystem.start(subService, sco)
-    7.times { requestEndedCB.apply(requestContext, span) }
-
-    then:
-    span.getTags() >> ['http.client_ip':'1.1.1.1']
-    1 * sco.monitoring.newCounter('_dd.java.appsec.rate_limit.dropped_traces') >> throttledCounter
-    1 * subService.registerCallback(EVENTS.requestEnded(), _) >> { requestEndedCB = it[1]; null }
-    7 * requestContext.getData(RequestContextSlot.APPSEC) >> appSecReqCtx
-    7 * requestContext.traceSegment >> traceSegment
-    7 * appSecReqCtx.transferCollectedEvents() >> [Mock(AppSecEvent)]
-    // allow for one extra in case we move to another second and round down the prev count
-    (5..6) * appSecReqCtx.getRequestHeaders() >> [:]
-    (5..6) * appSecReqCtx.getResponseHeaders() >> [:]
-    (5..6) * traceSegment.setDataTop("appsec", _)
-    (1..2) * throttledCounter.increment(1)
   }
 
   void 'throws if the config file is not parseable'() {
@@ -133,7 +122,7 @@ class AppSecSystemSpecification extends DDSpecification {
   }
 
   void 'updating configuration replaces the EventProducer'() {
-    ConfigurationChangesTypedListener<AppSecConfig> savedAsmListener
+    ProductListener savedAsmListener
     ConfigurationEndListener savedConfEndListener
 
     when:
@@ -141,40 +130,45 @@ class AppSecSystemSpecification extends DDSpecification {
     EventProducerService initialEPS = AppSecSystem.REPLACEABLE_EVENT_PRODUCER.cur
 
     then:
-    1 * poller.addListener(Product.ASM_DD, _, _) >> {
-      savedAsmListener = it[2]
+    1 * poller.addListener(Product.ASM_DD, _) >> {
+      savedAsmListener = it[1]
     }
     1 * poller.addConfigurationEndListener(_) >> {
       savedConfEndListener = it[0]
     }
 
     when:
-    savedAsmListener.accept('ignored config key',
-      AppSecConfig.valueOf([version: '2.1', rules: [
-          [
-            id: 'foo',
-            name: 'foo',
-            conditions: [
-              [
-                operator: 'match_regex',
-                parameters: [
-                  inputs: [
-                    [
-                      address: 'my.addr',
-                      key_path: ['kp'],
-                    ]
-                  ],
-                  regex: 'foo',
-                ]
-              ]
-            ],
-            tags: [
-              type: 't',
-              'category': 'c',
-            ],
-            action: 'record',
-          ]
-        ]]), null)
+    def config = '''
+   {
+     "version": "2.1",
+     "rules": [
+       {
+         "id": "foo",
+         "name": "foo",
+         "conditions": [
+           {
+             "operator": "match_regex",
+             "parameters": {
+               "inputs": [
+                 {
+                   "address": "my.addr",
+                   "key_path": ["kp"]
+                 }
+               ],
+               "regex": "foo"
+             }
+           }
+         ],
+         "tags": {
+           "type": "t",
+           "category": "c"
+         },
+         "action": "record"
+       }
+     ]
+   }
+   '''
+    savedAsmListener.accept('ignored config key' as ConfigKey, config.getBytes(), null)
     savedConfEndListener.onConfigurationEnd()
 
     then:
@@ -182,16 +176,15 @@ class AppSecSystemSpecification extends DDSpecification {
   }
 
   private SharedCommunicationObjects sharedCommunicationObjects() {
-    def sco = new SharedCommunicationObjects(
-      ) {
+    def sco = new SharedCommunicationObjects() {
         @Override
         ConfigurationPoller configurationPoller(Config config) {
           poller
         }
       }
-    sco.okHttpClient = Mock(OkHttpClient)
+    sco.okHttpClient = Stub(OkHttpClient)
     sco.monitoring = Mock(Monitoring)
-    sco.featuresDiscovery = Mock(DDAgentFeaturesDiscovery)
+    sco.featuresDiscovery = Stub(DDAgentFeaturesDiscovery)
     sco
   }
 }

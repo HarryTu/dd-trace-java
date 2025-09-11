@@ -1,7 +1,16 @@
 package datadog.trace.api.gateway;
 
+import static datadog.trace.api.gateway.Events.DATABASE_CONNECTION_ID;
+import static datadog.trace.api.gateway.Events.DATABASE_SQL_QUERY_ID;
+import static datadog.trace.api.gateway.Events.EXEC_CMD_ID;
+import static datadog.trace.api.gateway.Events.FILE_LOADED_ID;
+import static datadog.trace.api.gateway.Events.GRAPHQL_SERVER_REQUEST_MESSAGE_ID;
+import static datadog.trace.api.gateway.Events.GRPC_SERVER_METHOD_ID;
 import static datadog.trace.api.gateway.Events.GRPC_SERVER_REQUEST_MESSAGE_ID;
+import static datadog.trace.api.gateway.Events.HTTP_ROUTE_ID;
+import static datadog.trace.api.gateway.Events.LOGIN_EVENT_ID;
 import static datadog.trace.api.gateway.Events.MAX_EVENTS;
+import static datadog.trace.api.gateway.Events.NETWORK_CONNECTION_ID;
 import static datadog.trace.api.gateway.Events.REQUEST_BODY_CONVERTED_ID;
 import static datadog.trace.api.gateway.Events.REQUEST_BODY_DONE_ID;
 import static datadog.trace.api.gateway.Events.REQUEST_BODY_START_ID;
@@ -12,17 +21,23 @@ import static datadog.trace.api.gateway.Events.REQUEST_HEADER_ID;
 import static datadog.trace.api.gateway.Events.REQUEST_INFERRED_CLIENT_ADDRESS_ID;
 import static datadog.trace.api.gateway.Events.REQUEST_METHOD_URI_RAW_ID;
 import static datadog.trace.api.gateway.Events.REQUEST_PATH_PARAMS_ID;
+import static datadog.trace.api.gateway.Events.REQUEST_SESSION_ID;
 import static datadog.trace.api.gateway.Events.REQUEST_STARTED_ID;
+import static datadog.trace.api.gateway.Events.RESPONSE_BODY_ID;
 import static datadog.trace.api.gateway.Events.RESPONSE_HEADER_DONE_ID;
 import static datadog.trace.api.gateway.Events.RESPONSE_HEADER_ID;
 import static datadog.trace.api.gateway.Events.RESPONSE_STARTED_ID;
+import static datadog.trace.api.gateway.Events.SHELL_CMD_ID;
+import static datadog.trace.api.gateway.Events.USER_ID;
 
 import datadog.trace.api.function.TriConsumer;
 import datadog.trace.api.function.TriFunction;
 import datadog.trace.api.http.StoredBodySupplier;
+import datadog.trace.api.telemetry.LoginEvent;
 import datadog.trace.bootstrap.instrumentation.api.URIDataAdapter;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReferenceArray;
+import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -148,7 +163,7 @@ public class InstrumentationGateway {
   }
 
   /** Ensure that callbacks don't leak exceptions */
-  @SuppressWarnings({"unchecked", "rawtypes", "DuplicateBranchesInSwitch"})
+  @SuppressWarnings({"unchecked", "DuplicateBranchesInSwitch"})
   public static <C> C wrap(final EventType<C> eventType, final C callback) {
     switch (eventType.getId()) {
       case REQUEST_STARTED_ID:
@@ -283,6 +298,7 @@ public class InstrumentationGateway {
                 return callback.equals(obj);
               }
             };
+      case GRPC_SERVER_METHOD_ID:
       case REQUEST_INFERRED_CLIENT_ADDRESS_ID:
         return (C)
             new BiFunction<RequestContext, String, Flow<Void>>() {
@@ -330,7 +346,9 @@ public class InstrumentationGateway {
               }
             };
       case GRPC_SERVER_REQUEST_MESSAGE_ID:
+      case GRAPHQL_SERVER_REQUEST_MESSAGE_ID:
       case REQUEST_BODY_CONVERTED_ID:
+      case RESPONSE_BODY_ID:
         return (C)
             new BiFunction<RequestContext, Object, Flow<Void>>() {
               @Override
@@ -352,6 +370,93 @@ public class InstrumentationGateway {
                 try {
                   return ((BiFunction<RequestContext, Integer, Flow<Void>>) callback)
                       .apply(ctx, status);
+                } catch (Throwable t) {
+                  log.warn("Callback for {} threw.", eventType, t);
+                  return Flow.ResultFlow.empty();
+                }
+              }
+            };
+      case DATABASE_CONNECTION_ID:
+      case HTTP_ROUTE_ID:
+        return (C)
+            new BiConsumer<RequestContext, String>() {
+              @Override
+              public void accept(RequestContext ctx, String arg) {
+                try {
+                  ((BiConsumer<RequestContext, String>) callback).accept(ctx, arg);
+                } catch (Throwable t) {
+                  log.warn("Callback for {} threw.", eventType, t);
+                }
+              }
+            };
+      case USER_ID:
+        return (C)
+            new BiFunction<RequestContext, String, Flow<Void>>() {
+              @Override
+              public Flow<Void> apply(RequestContext ctx, String userId) {
+                try {
+                  return ((BiFunction<RequestContext, String, Flow<Void>>) callback)
+                      .apply(ctx, userId);
+                } catch (Throwable t) {
+                  log.warn("Callback for {} threw.", eventType, t);
+                  return Flow.ResultFlow.empty();
+                }
+              }
+            };
+      case LOGIN_EVENT_ID:
+        return (C)
+            new TriFunction<RequestContext, LoginEvent, String, Flow<Void>>() {
+
+              @Override
+              public Flow<Void> apply(RequestContext ctx, LoginEvent event, String user) {
+                try {
+                  return ((TriFunction<RequestContext, LoginEvent, String, Flow<Void>>) callback)
+                      .apply(ctx, event, user);
+                } catch (Throwable t) {
+                  log.warn("Callback for {} threw.", eventType, t);
+                  return Flow.ResultFlow.empty();
+                }
+              }
+            };
+      case REQUEST_SESSION_ID:
+        return (C)
+            new BiFunction<RequestContext, String, Flow<Void>>() {
+              @Override
+              public Flow<Void> apply(RequestContext ctx, String arg) {
+                try {
+                  return ((BiFunction<RequestContext, String, Flow<Void>>) callback)
+                      .apply(ctx, arg);
+                } catch (Throwable t) {
+                  log.warn("Callback for {} threw.", eventType, t);
+                  return Flow.ResultFlow.empty();
+                }
+              }
+            };
+      case DATABASE_SQL_QUERY_ID:
+      case NETWORK_CONNECTION_ID:
+      case FILE_LOADED_ID:
+      case SHELL_CMD_ID:
+        return (C)
+            new BiFunction<RequestContext, String, Flow<Void>>() {
+              @Override
+              public Flow<Void> apply(RequestContext ctx, String arg) {
+                try {
+                  return ((BiFunction<RequestContext, String, Flow<Void>>) callback)
+                      .apply(ctx, arg);
+                } catch (Throwable t) {
+                  log.warn("Callback for {} threw.", eventType, t);
+                  return Flow.ResultFlow.empty();
+                }
+              }
+            };
+      case EXEC_CMD_ID:
+        return (C)
+            new BiFunction<RequestContext, String[], Flow<Void>>() {
+              @Override
+              public Flow<Void> apply(RequestContext ctx, String[] arg) {
+                try {
+                  return ((BiFunction<RequestContext, String[], Flow<Void>>) callback)
+                      .apply(ctx, arg);
                 } catch (Throwable t) {
                   log.warn("Callback for {} threw.", eventType, t);
                   return Flow.ResultFlow.empty();

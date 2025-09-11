@@ -8,6 +8,8 @@ import datadog.telemetry.api.Metric;
 import datadog.telemetry.api.RequestType;
 import datadog.telemetry.dependency.Dependency;
 import datadog.trace.api.ConfigSetting;
+import datadog.trace.api.telemetry.Endpoint;
+import datadog.trace.api.telemetry.ProductChange;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -32,10 +34,22 @@ public class TelemetryService {
   private final BlockingQueue<DistributionSeries> distributionSeries =
       new LinkedBlockingQueue<>(1024);
 
+  private final BlockingQueue<ProductChange> productChanges = new LinkedBlockingQueue<>();
+
   private final ExtendedHeartbeatData extendedHeartbeatData = new ExtendedHeartbeatData();
+
+  private final BlockingQueue<Endpoint> endpoints = new LinkedBlockingQueue<>();
+
   private final EventSource.Queued eventSource =
       new EventSource.Queued(
-          configurations, integrations, dependencies, metrics, distributionSeries, logMessages);
+          configurations,
+          integrations,
+          dependencies,
+          metrics,
+          distributionSeries,
+          logMessages,
+          productChanges,
+          endpoints);
 
   private final long messageBytesSoftLimit;
   private final boolean debug;
@@ -50,9 +64,11 @@ public class TelemetryService {
       DDAgentFeaturesDiscovery ddAgentFeaturesDiscovery,
       TelemetryClient agentClient,
       TelemetryClient intakeClient,
+      boolean useIntakeClientByDefault,
       boolean debug) {
     TelemetryRouter telemetryRouter =
-        new TelemetryRouter(ddAgentFeaturesDiscovery, agentClient, intakeClient);
+        new TelemetryRouter(
+            ddAgentFeaturesDiscovery, agentClient, intakeClient, useIntakeClientByDefault);
     return new TelemetryService(telemetryRouter, DEFAULT_MESSAGE_BYTES_SOFT_LIMIT, debug);
   }
 
@@ -105,9 +121,16 @@ public class TelemetryService {
     return this.logMessages.offer(message);
   }
 
+  public boolean addProductChange(ProductChange productChange) {
+    return this.productChanges.offer(productChange);
+  }
+
   public boolean addDistributionSeries(DistributionSeries series) {
-    // TODO doesn't seem to be used
     return this.distributionSeries.offer(series);
+  }
+
+  public boolean addEndpoint(final Endpoint endpoint) {
+    return this.endpoints.offer(endpoint);
   }
 
   public void sendAppClosingEvent() {
@@ -145,8 +168,10 @@ public class TelemetryService {
     TelemetryRequest request =
         new TelemetryRequest(
             eventSource, eventSink, messageBytesSoftLimit, RequestType.APP_STARTED, debug);
+
     request.writeProducts();
     request.writeConfigurations();
+    request.writeInstallSignature();
     if (telemetryRouter.sendRequest(request) == TelemetryClient.Result.SUCCESS) {
       // discard already sent buffered event on the successful attempt
       bufferedEvents = null;
@@ -193,6 +218,8 @@ public class TelemetryService {
       request.writeMetrics();
       request.writeDistributions();
       request.writeLogs();
+      request.writeChangedProducts();
+      request.writeEndpoints();
       isMoreDataAvailable = !this.eventSource.isEmpty();
     }
 

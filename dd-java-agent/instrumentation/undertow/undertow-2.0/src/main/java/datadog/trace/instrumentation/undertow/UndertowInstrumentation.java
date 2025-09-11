@@ -6,12 +6,13 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import io.undertow.server.HttpServerExchange;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public final class UndertowInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class UndertowInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public UndertowInstrumentation() {
     super("undertow", "undertow-2.0");
@@ -23,8 +24,8 @@ public final class UndertowInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("dispatch"))
             .and(takesArgument(0, named("java.util.concurrent.Executor")))

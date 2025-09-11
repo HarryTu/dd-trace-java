@@ -16,25 +16,34 @@
 package com.datadog.profiling.controller.openjdk;
 
 import static com.datadog.profiling.controller.ProfilingSupport.*;
-import static com.datadog.profiling.controller.ProfilingSupport.isObjectCountParallelized;
-import static datadog.trace.api.Platform.isJavaVersionAtLeast;
+import static datadog.environment.JavaVirtualMachine.isJavaVersionAtLeast;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_HEAP_HISTOGRAM_ENABLED;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_HEAP_HISTOGRAM_ENABLED_DEFAULT;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_HEAP_HISTOGRAM_MODE;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_HEAP_HISTOGRAM_MODE_DEFAULT;
+import static datadog.trace.api.config.ProfilingConfig.PROFILING_QUEUEING_TIME_ENABLED;
+import static datadog.trace.api.config.ProfilingConfig.PROFILING_QUEUEING_TIME_ENABLED_DEFAULT;
+import static datadog.trace.api.config.ProfilingConfig.PROFILING_QUEUEING_TIME_THRESHOLD_MILLIS;
+import static datadog.trace.api.config.ProfilingConfig.PROFILING_QUEUEING_TIME_THRESHOLD_MILLIS_DEFAULT;
 import static datadog.trace.api.config.ProfilingConfig.PROFILING_ULTRA_MINIMAL;
 
 import com.datadog.profiling.controller.ConfigurationException;
 import com.datadog.profiling.controller.Controller;
-import com.datadog.profiling.controller.UnsupportedEnvironmentException;
+import com.datadog.profiling.controller.ControllerContext;
+import com.datadog.profiling.controller.jfr.JFRAccess;
 import com.datadog.profiling.controller.jfr.JfpUtils;
 import com.datadog.profiling.controller.openjdk.events.AvailableProcessorCoresEvent;
-import datadog.trace.api.Platform;
+import datadog.environment.JavaVirtualMachine;
+import datadog.trace.api.Config;
 import datadog.trace.api.config.ProfilingConfig;
 import datadog.trace.bootstrap.config.provider.ConfigProvider;
+import datadog.trace.bootstrap.instrumentation.jfr.backpressure.BackpressureProfiling;
 import datadog.trace.bootstrap.instrumentation.jfr.exceptions.ExceptionProfiling;
+import datadog.trace.util.TempLocationManager;
 import de.thetaphi.forbiddenapis.SuppressForbidden;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
@@ -47,25 +56,21 @@ import org.slf4j.LoggerFactory;
  * messier... ;)
  */
 public final class OpenJdkController implements Controller {
+  private static final Logger log = LoggerFactory.getLogger(OpenJdkController.class);
 
   private static final String EXPLICITLY_DISABLED = "explicitly disabled by user";
   private static final String EXPLICITLY_ENABLED = "explicitly enabled by user";
   private static final String EXPENSIVE_ON_CURRENT_JVM =
-      "expensive on this version of the JVM (" + Platform.getRuntimeVersion() + ")";
+      "expensive on this version of the JVM (" + JavaVirtualMachine.getRuntimeVersion() + ")";
   static final Duration RECORDING_MAX_AGE = Duration.ofMinutes(5);
-
-  private static final Logger log = LoggerFactory.getLogger(OpenJdkController.class);
 
   private final ConfigProvider configProvider;
   private final Map<String, String> recordingSettings;
+  private final boolean jfrStackDepthApplied;
 
-  public static Controller instance(ConfigProvider configProvider) {
-    try {
-      return new OpenJdkController(configProvider);
-    } catch (ConfigurationException | ClassNotFoundException e) {
-      log.debug("Unable to create OpenJDK controller", e);
-      return new MisconfiguredController(e);
-    }
+  public static Controller instance(ConfigProvider configProvider)
+      throws ConfigurationException, ClassNotFoundException {
+    return new OpenJdkController(configProvider);
   }
 
   /**
@@ -76,6 +81,11 @@ public final class OpenJdkController implements Controller {
   @SuppressForbidden
   public OpenJdkController(final ConfigProvider configProvider)
       throws ConfigurationException, ClassNotFoundException {
+    // configure the JFR stackdepth before we try to load any JFR classes
+    int requestedStackDepth = getConfiguredStackDepth(configProvider);
+    this.jfrStackDepthApplied = JFRAccess.instance().setStackDepth(requestedStackDepth);
+    String jfrRepositoryBase = getJfrRepositoryBase(configProvider);
+    JFRAccess.instance().setBaseLocation(jfrRepositoryBase);
     // Make sure we can load JFR classes before declaring that we have successfully created
     // factory and can use it.
     Class.forName("jdk.jfr.Recording");
@@ -135,6 +145,15 @@ public final class OpenJdkController implements Controller {
       }
     }
 
+    if (configProvider.getBoolean(
+        PROFILING_QUEUEING_TIME_ENABLED, PROFILING_QUEUEING_TIME_ENABLED_DEFAULT)) {
+      long threshold =
+          configProvider.getLong(
+              PROFILING_QUEUEING_TIME_THRESHOLD_MILLIS,
+              PROFILING_QUEUEING_TIME_THRESHOLD_MILLIS_DEFAULT);
+      recordingSettings.put("datadog.QueueTime#threshold", threshold + " ms");
+    }
+
     // Toggle settings from override file
 
     try {
@@ -186,6 +205,29 @@ public final class OpenJdkController implements Controller {
       }
     }
 
+    if (configProvider.getBoolean(
+        ProfilingConfig.PROFILING_SMAP_COLLECTION_ENABLED,
+        ProfilingConfig.PROFILING_SMAP_COLLECTION_ENABLED_DEFAULT)) {
+      enableEvent(
+          recordingSettings, "datadog.SmapEntry", "Smaps collection is enabled in the config");
+    } else {
+      disableEvent(
+          recordingSettings, "datadog.SmapEntry", "Smaps collection is disabled in the config");
+    }
+    if (configProvider.getBoolean(
+        ProfilingConfig.PROFILING_SMAP_AGGREGATION_ENABLED,
+        ProfilingConfig.PROFILING_SMAP_AGGREGATION_ENABLED_DEFAULT)) {
+      enableEvent(
+          recordingSettings,
+          "datadog.AggregatedSmapEntry",
+          "Aggregated smaps collection is enabled in the config");
+    } else {
+      disableEvent(
+          recordingSettings,
+          "datadog.AggregatedSmapEntry",
+          "Aggregated smaps collection is disabled in the config");
+    }
+
     // Warn users for expensive events
 
     if (!isOldObjectSampleAvailable()
@@ -209,8 +251,39 @@ public final class OpenJdkController implements Controller {
       ExceptionProfiling.getInstance().start();
     }
 
+    if (Config.get().isProfilingBackPressureSamplingEnabled()) {
+      BackpressureProfiling.getInstance().start();
+    }
+
     // Register periodic events
     AvailableProcessorCoresEvent.register();
+
+    log.debug("JFR Recording Settings: {}", recordingSettings);
+  }
+
+  private static String getJfrRepositoryBase(ConfigProvider configProvider) {
+    String legacy =
+        configProvider.getString(
+            ProfilingConfig.PROFILING_JFR_REPOSITORY_BASE,
+            ProfilingConfig.PROFILING_JFR_REPOSITORY_BASE_DEFAULT);
+    if (!legacy.equals(ProfilingConfig.PROFILING_JFR_REPOSITORY_BASE_DEFAULT)) {
+      log.warn(
+          "The configuration key {} is deprecated. Please use {} instead.",
+          ProfilingConfig.PROFILING_JFR_REPOSITORY_BASE,
+          ProfilingConfig.PROFILING_TEMP_DIR);
+    }
+    TempLocationManager tempLocationManager = TempLocationManager.getInstance();
+    Path repositoryPath = tempLocationManager.getTempDir().resolve("jfr");
+    if (!Files.exists(repositoryPath)) {
+      try {
+        Files.createDirectories(repositoryPath);
+      } catch (IOException e) {
+        log.error("Failed to create JFR repository directory: {}", repositoryPath, e);
+        throw new IllegalStateException(
+            "Failed to create JFR repository directory: " + repositoryPath, e);
+      }
+    }
+    return repositoryPath.toString();
   }
 
   int getMaxSize() {
@@ -221,10 +294,16 @@ public final class OpenJdkController implements Controller {
   }
 
   @Override
-  public OpenJdkOngoingRecording createRecording(final String recordingName)
-      throws UnsupportedEnvironmentException {
+  public OpenJdkOngoingRecording createRecording(
+      final String recordingName, ControllerContext.Snapshot context) {
     return new OpenJdkOngoingRecording(
-        recordingName, recordingSettings, getMaxSize(), RECORDING_MAX_AGE, configProvider);
+        recordingName,
+        recordingSettings,
+        getMaxSize(),
+        RECORDING_MAX_AGE,
+        configProvider,
+        context,
+        jfrStackDepthApplied);
   }
 
   private static void disableEvent(
@@ -245,5 +324,10 @@ public final class OpenJdkController implements Controller {
 
   private static boolean isEventEnabled(Map<String, String> recordingSettings, String event) {
     return Boolean.parseBoolean(recordingSettings.get(event + "#enabled"));
+  }
+
+  private int getConfiguredStackDepth(ConfigProvider configProvider) {
+    return configProvider.getInteger(
+        ProfilingConfig.PROFILING_STACKDEPTH, ProfilingConfig.PROFILING_STACKDEPTH_DEFAULT);
   }
 }

@@ -1,6 +1,6 @@
 package datadog.trace.core;
 
-import static datadog.trace.bootstrap.instrumentation.api.SpanLinkAttributes.EMPTY;
+import static datadog.trace.bootstrap.instrumentation.api.SpanAttributes.EMPTY;
 
 import com.squareup.moshi.FromJson;
 import com.squareup.moshi.JsonAdapter;
@@ -9,8 +9,8 @@ import com.squareup.moshi.ToJson;
 import datadog.trace.api.DDSpanId;
 import datadog.trace.api.DDTraceId;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpanLink;
+import datadog.trace.bootstrap.instrumentation.api.SpanAttributes;
 import datadog.trace.bootstrap.instrumentation.api.SpanLink;
-import datadog.trace.bootstrap.instrumentation.api.SpanLinkAttributes;
 import datadog.trace.core.propagation.ExtractedContext;
 import datadog.trace.core.propagation.PropagationTags;
 import java.util.List;
@@ -23,11 +23,13 @@ public class DDSpanLink extends SpanLink {
   private static final Logger LOGGER = LoggerFactory.getLogger(DDSpanLink.class);
   /** The maximum of characters a span tag value can hold. */
   private static final int TAG_MAX_LENGTH = 25_000;
-  /** JSON encoder (lazily initialized) */
-  private static JsonAdapter<AgentSpanLink> encoder;
 
   protected DDSpanLink(
-      DDTraceId traceId, long spanId, byte traceFlags, String traceState, Attributes attributes) {
+      DDTraceId traceId,
+      long spanId,
+      byte traceFlags,
+      String traceState,
+      SpanAttributes attributes) {
     super(traceId, spanId, traceFlags, traceState, attributes);
   }
 
@@ -50,7 +52,7 @@ public class DDSpanLink extends SpanLink {
    * @param attributes The span link attributes.
    * @return A span link to the given context with custom attributes.
    */
-  public static SpanLink from(ExtractedContext context, Attributes attributes) {
+  public static SpanLink from(ExtractedContext context, SpanAttributes attributes) {
     byte traceFlags = context.getSamplingPriority() > 0 ? SAMPLED_FLAG : DEFAULT_FLAGS;
     String traceState =
         context.getPropagationTags() == null
@@ -95,21 +97,30 @@ public class DDSpanLink extends SpanLink {
   }
 
   private static JsonAdapter<AgentSpanLink> getEncoder() {
-    if (encoder == null) {
+    return EncoderHolder.ENCODER;
+  }
+
+  /**
+   * JSON encoder (lazily initialized). This is not folded at native image build time, so it works
+   * as expected.
+   */
+  private static class EncoderHolder {
+    static final JsonAdapter<AgentSpanLink> ENCODER = createEncoder();
+
+    private static JsonAdapter<AgentSpanLink> createEncoder() {
       Moshi moshi = new Moshi.Builder().add(new SpanLinkAdapter()).build();
-      encoder = moshi.adapter(AgentSpanLink.class);
+      return moshi.adapter(AgentSpanLink.class);
     }
-    return encoder;
   }
 
   private static class SpanLinkAdapter {
     @ToJson
     SpanLinkJson toSpanLinkJson(AgentSpanLink link) {
       SpanLinkJson json = new SpanLinkJson();
-      json.traceId = link.traceId().toHexString();
-      json.spanId = DDSpanId.toHexString(link.spanId());
-      json.traceFlags = link.traceFlags() == 0 ? null : link.traceFlags();
-      json.traceState = link.traceState().isEmpty() ? null : link.traceState();
+      json.trace_id = link.traceId().toHexString();
+      json.span_id = DDSpanId.toHexString(link.spanId());
+      json.flags = link.traceFlags() == 0 ? null : link.traceFlags();
+      json.tracestate = link.traceState().isEmpty() ? null : link.traceState();
       if (!link.attributes().isEmpty()) {
         json.attributes = link.attributes().asMap();
       }
@@ -119,19 +130,19 @@ public class DDSpanLink extends SpanLink {
     @FromJson
     AgentSpanLink fromSpanLinkJson(SpanLinkJson json) {
       return new DDSpanLink(
-          DDTraceId.fromHex(json.traceId),
-          DDSpanId.fromHex(json.spanId),
-          json.traceFlags,
-          json.traceState,
-          SpanLinkAttributes.fromMap(json.attributes));
+          DDTraceId.fromHex(json.trace_id),
+          DDSpanId.fromHex(json.span_id),
+          json.flags,
+          json.tracestate,
+          SpanAttributes.fromMap(json.attributes));
     }
   }
 
   private static class SpanLinkJson {
-    String traceId;
-    String spanId;
-    Byte traceFlags;
-    String traceState;
+    String trace_id;
+    String span_id;
+    Byte flags;
+    String tracestate;
     Map<String, String> attributes;
   }
 }

@@ -5,6 +5,7 @@ import static datadog.trace.agent.tooling.bytebuddy.TypeInfoCache.UNKNOWN_CLASS_
 import static datadog.trace.bootstrap.AgentClassLoading.LOCATING_CLASS;
 import static net.bytebuddy.dynamic.loading.ClassLoadingStrategy.BOOTSTRAP_LOADER;
 
+import datadog.trace.agent.tooling.InstrumenterMetrics;
 import datadog.trace.agent.tooling.bytebuddy.ClassFileLocators;
 import datadog.trace.agent.tooling.bytebuddy.TypeInfoCache;
 import datadog.trace.agent.tooling.bytebuddy.TypeInfoCache.SharedTypeInfo;
@@ -69,6 +70,9 @@ final class TypeFactory {
   private static final boolean OUTLINING_ENABLED =
       InstrumenterConfig.get().isResolverOutliningEnabled();
 
+  private static final boolean MEMOIZING_ENABLED =
+      InstrumenterConfig.get().isResolverMemoizingEnabled();
+
   private static final TypeParser outlineTypeParser = new OutlineTypeParser();
 
   private static final TypeParser fullTypeParser = new FullTypeParser();
@@ -81,6 +85,8 @@ final class TypeFactory {
 
   private static final TypeInfoCache<TypeDescription> fullTypes =
       new TypeInfoCache<>(InstrumenterConfig.get().getResolverTypePoolSize());
+
+  static final IsPublicFilter isPublicFilter = new IsPublicFilter();
 
   /** Small local cache to help deduplicate lookups when matching/transforming. */
   private final DDCache<String, LazyType> deferredTypes = DDCaches.newFixedSizeCache(16);
@@ -241,11 +247,14 @@ final class TypeFactory {
   private TypeDescription lookupType(
       LazyType request, TypeInfoCache<TypeDescription> types, TypeParser typeParser) {
     String name = request.name;
+    boolean isOutline = typeParser == outlineTypeParser;
+    long fromTick = InstrumenterMetrics.tick();
 
     // existing type description from same classloader?
     SharedTypeInfo<TypeDescription> sharedType = types.find(name);
     if (null != sharedType
         && (name.startsWith("java.") || sharedType.sameClassLoader(classLoader))) {
+      InstrumenterMetrics.reuseTypeDescription(fromTick, isOutline);
       return sharedType.get();
     }
 
@@ -253,6 +262,7 @@ final class TypeFactory {
 
     // existing type description from same class file?
     if (null != sharedType && sharedType.sameClassFile(classFile)) {
+      InstrumenterMetrics.reuseTypeDescription(fromTick, isOutline);
       return sharedType.get();
     }
 
@@ -264,6 +274,14 @@ final class TypeFactory {
       type = typeParser.parse(bytecode);
     } else if (fallBackToLoadClass) {
       type = loadType(name, typeParser);
+    }
+
+    InstrumenterMetrics.buildTypeDescription(fromTick, isOutline);
+
+    if (MEMOIZING_ENABLED && null != type) {
+      if (type.isPublic()) {
+        isPublicFilter.add(name);
+      }
     }
 
     // share result, whether we found it or not
@@ -368,6 +386,11 @@ final class TypeFactory {
     @Override
     public TypeDescription getDeclaringType() {
       return outline().getDeclaringType();
+    }
+
+    @Override
+    public boolean isPublic() {
+      return isPublicFilter.contains(name) || super.isPublic();
     }
 
     private TypeDescription outline() {

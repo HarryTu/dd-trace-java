@@ -1,20 +1,25 @@
 package datadog.trace.agent.tooling;
 
-import com.datadog.crashtracking.CrashUploader;
+import datadog.crashtracking.CrashUploader;
+import datadog.crashtracking.OOMENotifier;
 import datadog.trace.agent.tooling.bytebuddy.SharedTypePools;
 import datadog.trace.agent.tooling.bytebuddy.matcher.HierarchyMatchers;
+import datadog.trace.agent.tooling.profiler.EnvironmentChecker;
 import datadog.trace.bootstrap.Agent;
+import datadog.trace.bootstrap.InitializationTelemetry;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
+import de.thetaphi.forbiddenapis.SuppressForbidden;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -35,12 +40,11 @@ public final class AgentCLI {
   }
 
   /** Prints all known integrations in alphabetical order. */
+  @SuppressForbidden
   public static void printIntegrationNames() {
     Set<String> names = new TreeSet<>();
-    for (Instrumenter instrumenter : Instrumenters.load(Instrumenter.class.getClassLoader())) {
-      if (instrumenter instanceof Instrumenter.Default) {
-        names.add(((Instrumenter.Default) instrumenter).name());
-      }
+    for (InstrumenterModule module : InstrumenterIndex.readIndex().modules()) {
+      names.add(module.name());
     }
     for (String name : names) {
       System.out.println(name);
@@ -53,8 +57,9 @@ public final class AgentCLI {
    * @param count how many traces to send, negative means send forever
    * @param interval the interval (in seconds) to wait for each trace
    */
+  @SuppressForbidden
   public static void sendSampleTraces(final int count, final double interval) throws Exception {
-    Agent.startDatadogTracer();
+    Agent.startDatadogTracer(InitializationTelemetry.noOpInstance());
 
     int numTraces = 0;
     while (++numTraces <= count || count < 0) {
@@ -74,18 +79,24 @@ public final class AgentCLI {
   }
 
   public static void uploadCrash(final String[] args) throws Exception {
-    List<InputStream> files = new ArrayList<>();
+    CrashUploader uploader = new CrashUploader();
+    List<Path> files = new ArrayList<>(args.length);
     for (String arg : args) {
-      try {
-        files.add(new FileInputStream(arg));
-        new CrashUploader().upload(files);
-      } catch (FileNotFoundException | SecurityException e) {
-        log.error("Failed to open {}", arg, e);
+      Path path = Paths.get(arg);
+      if (!Files.exists(path)) {
+        log.error("Crash log {} does not exist", arg);
         System.exit(1);
       }
+      files.add(Paths.get(arg));
     }
+    uploader.upload(files);
   }
 
+  public static void sendOomeEvent(String taglist) throws Exception {
+    OOMENotifier.sendOomeEvent(taglist);
+  }
+
+  @SuppressForbidden
   public static void scanDependencies(final String[] args) throws Exception {
     Class depClass =
         Class.forName(
@@ -118,6 +129,12 @@ public final class AgentCLI {
     }
 
     System.out.println("Scan finished");
+  }
+
+  public static void checkProfilerEnv(String temp) {
+    if (!EnvironmentChecker.checkEnvironment(temp)) {
+      System.exit(1);
+    }
   }
 
   private static void recursiveDependencySearch(Consumer<File> invoker, File origin)

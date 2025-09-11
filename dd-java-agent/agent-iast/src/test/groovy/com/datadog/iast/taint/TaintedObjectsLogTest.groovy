@@ -8,6 +8,8 @@ import datadog.trace.api.iast.SourceTypes
 import datadog.trace.test.util.DDSpecification
 import groovy.transform.CompileDynamic
 
+import static com.datadog.iast.test.TaintedObjectsUtils.taintedObjects
+
 @CompileDynamic
 class TaintedObjectsLogTest extends DDSpecification {
 
@@ -30,7 +32,7 @@ class TaintedObjectsLogTest extends DDSpecification {
     given:
     IastSystem.DEBUG = true
     logger.setLevel(Level.ALL)
-    TaintedObjects taintedObjects = TaintedObjects.acquire()
+    TaintedObjects taintedObjects = taintedObjects()
     final value = "A"
 
     when:
@@ -52,12 +54,12 @@ class TaintedObjectsLogTest extends DDSpecification {
     given:
     IastSystem.DEBUG = true
     logger.level = Level.ALL
-    TaintedObjects taintedObjects = TaintedObjects.acquire()
+    TaintedObjects taintedObjects = taintedObjects()
     final obj = 'A'
     taintedObjects.taint(obj, Ranges.forCharSequence(obj, new Source(SourceTypes.NONE, null, null)))
 
     when:
-    taintedObjects.release()
+    taintedObjects.clear()
 
     then:
     noExceptionThrown()
@@ -67,7 +69,7 @@ class TaintedObjectsLogTest extends DDSpecification {
     given:
     IastSystem.DEBUG = true
     logger.level = Level.ALL
-    TaintedObjects taintedObjects = TaintedObjects.acquire()
+    TaintedObjects taintedObjects = taintedObjects()
     final obj = 'A'
 
     when:
@@ -76,7 +78,20 @@ class TaintedObjectsLogTest extends DDSpecification {
     then:
     taintedObjects.size() == 1
     taintedObjects.iterator().size() == 1
-    !taintedObjects.flat
+  }
+
+  void 'should not taint null ranges'() {
+    given:
+    IastSystem.DEBUG = true
+    logger.level = Level.ALL
+    TaintedObjects taintedObjects = taintedObjects()
+    final obj = 'A'
+
+    when:
+    taintedObjects.taint(obj, null)
+
+    then:
+    taintedObjects.empty
   }
 }
 

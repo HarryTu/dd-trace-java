@@ -1,7 +1,8 @@
 package datadog.trace.agent.test.server.http
 
 import datadog.trace.agent.test.asserts.ListWriterAssert
-import datadog.trace.bootstrap.instrumentation.api.AgentSpan
+import datadog.trace.agent.test.base.HttpServer
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext
 import datadog.trace.bootstrap.instrumentation.api.Tags
 import datadog.trace.core.DDSpan
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
@@ -18,6 +19,7 @@ import org.eclipse.jetty.server.SslConnectionFactory
 import org.eclipse.jetty.server.handler.AbstractHandler
 import org.eclipse.jetty.server.handler.HandlerList
 import org.eclipse.jetty.util.ssl.SslContextFactory
+import org.eclipse.jetty.util.thread.QueuedThreadPool
 
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLContext
@@ -33,7 +35,7 @@ import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
 
 import static datadog.trace.agent.test.server.http.HttpServletRequestExtractAdapter.GETTER
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.propagate
+import static datadog.trace.bootstrap.instrumentation.api.AgentPropagation.extractContextAndGetSpanContext
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan
 import static org.eclipse.jetty.http.HttpMethod.CONNECT
 import static org.eclipse.jetty.http.HttpMethod.GET
@@ -81,7 +83,10 @@ class TestHttpServer implements AutoCloseable {
   }
 
   private TestHttpServer() {
-    internalServer = new Server()
+    // In some versions, Jetty requires max threads > than some arbitrary calculated value
+    // The calculated value can be high in CI
+    // There is no easy way to override the configuration in a version-neutral way
+    internalServer = new Server(new QueuedThreadPool(400))
 
     TrustManager[] trustManagers = new TrustManager[1]
     trustManagers[0] = trustManager
@@ -123,7 +128,6 @@ class TestHttpServer implements AutoCloseable {
         internalServer.addConnector(https)
 
         customizer.call(internalServer)
-
         internalServer.start()
         // set after starting, otherwise two callbacks get added.
         internalServer.stopAtShutdown = true
@@ -211,6 +215,10 @@ class TestHttpServer implements AutoCloseable {
     clone(handlers)
   }
 
+  HttpServer asHttpServer(boolean secure = false) {
+    return new HttpServerAdapter(this, secure)
+  }
+
   static distributedRequestTrace(ListWriterAssert traces, DDSpan parentSpan = null, Map<String, Serializable> extraTags = null) {
     traces.trace(1) {
       span {
@@ -276,7 +284,7 @@ class TestHttpServer implements AutoCloseable {
 
     @Override
     void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException {
-      if (request.method == method) {
+      if (request.method.equalsIgnoreCase(method)) {
         super.handle(target, baseRequest, request, response)
       }
     }
@@ -374,13 +382,13 @@ class TestHttpServer implements AutoCloseable {
         isDDServer = Boolean.parseBoolean(request.getHeader("is-dd-server"))
       }
       if (isDDServer) {
-        final AgentSpan.Context extractedContext = propagate().extract(req.orig, GETTER)
+        final AgentSpanContext extractedContext = extractContextAndGetSpanContext(req.orig, GETTER)
         if (extractedContext != null) {
-          startSpan("test-http-server", extractedContext)
+          startSpan("test", "test-http-server", extractedContext)
             .setTag("path", request.path)
             .setTag(Tags.SPAN_KIND, Tags.SPAN_KIND_SERVER).finish()
         } else {
-          startSpan("test-http-server")
+          startSpan("test", "test-http-server")
             .setTag("path", request.path)
             .setTag(Tags.SPAN_KIND, Tags.SPAN_KIND_SERVER).finish()
         }
@@ -478,6 +486,18 @@ class TestHttpServer implements AutoCloseable {
         resp.setContentLength(body.bytes.length)
         resp.writer.print(body)
       }
+
+      void send(byte[] body) {
+        sendWithType(DEFAULT_TYPE, body)
+      }
+
+      void sendWithType(String contentType, byte[] body) {
+        assert body != null
+
+        sendWithType(contentType)
+        resp.setContentLength(body.length)
+        resp.outputStream.write(body)
+      }
     }
   }
 
@@ -493,6 +513,36 @@ class TestHttpServer implements AutoCloseable {
 
     def get(String header) {
       return headers[header]
+    }
+  }
+
+  static class HttpServerAdapter implements HttpServer {
+    final TestHttpServer server
+    final boolean secure
+    URI address
+
+    HttpServerAdapter(TestHttpServer server, boolean secure = false) {
+      this.server = server
+      this.secure = secure
+    }
+
+    @Override
+    void start() throws TimeoutException {
+      server.start()
+      address = secure ? server.secureAddress : server.address
+      if (!address.path.endsWith('/')) {
+        address = new URI(address.toString() + '/')
+      }
+    }
+
+    @Override
+    void stop() {
+      server.stop()
+    }
+
+    @Override
+    URI address() {
+      return address
     }
   }
 }

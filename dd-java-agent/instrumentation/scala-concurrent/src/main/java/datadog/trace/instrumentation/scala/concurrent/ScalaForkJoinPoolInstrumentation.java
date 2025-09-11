@@ -12,15 +12,16 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.State;
 import java.util.Map;
 import net.bytebuddy.asm.Advice;
 import scala.concurrent.forkjoin.ForkJoinTask;
 
-@AutoService(Instrumenter.class)
-public final class ScalaForkJoinPoolInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class ScalaForkJoinPoolInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public ScalaForkJoinPoolInstrumentation() {
     super("java_concurrent", "scala_concurrent");
@@ -37,8 +38,8 @@ public final class ScalaForkJoinPoolInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(namedOneOf("doSubmit", "externalPush"))
             .and(takesArgument(0, named("scala.concurrent.forkjoin.ForkJoinTask"))),
@@ -49,7 +50,7 @@ public final class ScalaForkJoinPoolInstrumentation extends Instrumenter.Tracing
     @Advice.OnMethodEnter
     public static <T> void before(@Advice.Argument(0) ForkJoinTask<T> task) {
       if (!exclude(FORK_JOIN_TASK, task)) {
-        capture(InstrumentationContext.get(ForkJoinTask.class, State.class), task, true);
+        capture(InstrumentationContext.get(ForkJoinTask.class, State.class), task);
       }
     }
 

@@ -5,11 +5,11 @@ import static datadog.trace.util.AgentThreadFactory.AgentThread.STATSD_CLIENT;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
-import com.timgroup.statsd.NoOpStatsDClient;
+import com.timgroup.statsd.NoOpDirectStatsDClient;
 import com.timgroup.statsd.NonBlockingStatsDClientBuilder;
 import com.timgroup.statsd.StatsDClientErrorHandler;
+import datadog.environment.OperatingSystem;
 import datadog.trace.api.Config;
-import datadog.trace.api.Platform;
 import datadog.trace.relocate.api.IOLogger;
 import datadog.trace.util.AgentTaskScheduler;
 import datadog.trace.util.AgentThreadFactory;
@@ -23,7 +23,7 @@ final class DDAgentStatsDConnection implements StatsDClientErrorHandler {
   private static final Logger log = LoggerFactory.getLogger(DDAgentStatsDConnection.class);
   private static final IOLogger ioLogger = new IOLogger(log);
 
-  private static final com.timgroup.statsd.StatsDClient NO_OP = new NoOpStatsDClient();
+  private static final com.timgroup.statsd.StatsDClient NO_OP = new NoOpDirectStatsDClient();
 
   private static final String UNIX_DOMAIN_SOCKET_PREFIX = "unix://";
 
@@ -136,7 +136,7 @@ final class DDAgentStatsDConnection implements StatsDClientErrorHandler {
           if (bufferSize != null) {
             clientBuilder.socketBufferSize(bufferSize);
           }
-          int packetSize = Platform.isMac() ? 2048 : 8192;
+          int packetSize = OperatingSystem.isMacOs() ? 2048 : 8192;
           if (bufferSize != null && bufferSize < packetSize) {
             packetSize = bufferSize;
           }
@@ -185,7 +185,7 @@ final class DDAgentStatsDConnection implements StatsDClientErrorHandler {
     }
 
     if (null == host) {
-      if (!Platform.isWindows() && new File(DEFAULT_DOGSTATSD_SOCKET_PATH).exists()) {
+      if (!OperatingSystem.isWindows() && new File(DEFAULT_DOGSTATSD_SOCKET_PATH).exists()) {
         log.info("Detected {}.  Using it to send StatsD data.", DEFAULT_DOGSTATSD_SOCKET_PATH);
         host = DEFAULT_DOGSTATSD_SOCKET_PATH;
         port = 0; // tells dogstatsd client to treat host as a socket path

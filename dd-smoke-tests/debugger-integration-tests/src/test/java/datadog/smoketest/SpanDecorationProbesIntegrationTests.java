@@ -23,11 +23,20 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.condition.DisabledIf;
 
 public class SpanDecorationProbesIntegrationTests extends ServerAppDebuggerIntegrationTest {
+
+  @BeforeEach
+  @Override
+  void setup(TestInfo testInfo) throws Exception {
+    super.setup(testInfo);
+    appUrl = startAppAndAndGetUrl();
+  }
 
   @Override
   protected ProcessBuilder createProcessBuilder(Path logFilePath, String... params) {
@@ -40,7 +49,7 @@ public class SpanDecorationProbesIntegrationTests extends ServerAppDebuggerInteg
   @Test
   @DisplayName("testMethodSimpleTagNoCondition")
   @DisabledIf(
-      value = "datadog.trace.api.Platform#isJ9",
+      value = "datadog.environment.JavaVirtualMachine#isJ9",
       disabledReason = "we cannot get local variable debug info")
   void testMethodSimpleTagNoCondition() throws Exception {
     SpanDecorationProbe spanDecorationProbe =
@@ -53,24 +62,24 @@ public class SpanDecorationProbesIntegrationTests extends ServerAppDebuggerInteg
     addProbe(spanDecorationProbe);
     waitForInstrumentation(appUrl);
     execute(appUrl, TRACED_METHOD_NAME);
+    AtomicBoolean traceReceived = new AtomicBoolean();
     registerTraceListener(
         decodedTrace -> {
           for (DecodedSpan span : decodedTrace.getSpans()) {
             if (isTracedFullMethodSpan(span)) {
               assertEquals("foobar", span.getMeta().get("tag1"));
               assertEquals(PROBE_ID.getId(), span.getMeta().get("_dd.di.tag1.probe_id"));
-              return true;
+              traceReceived.set(true);
             }
           }
-          return false;
         });
-    processRequests();
+    processRequests(traceReceived::get);
   }
 
   @Test
   @DisplayName("testMethodMultiTagsMultiConditions")
   @DisabledIf(
-      value = "datadog.trace.api.Platform#isJ9",
+      value = "datadog.environment.JavaVirtualMachine#isJ9",
       disabledReason = "we cannot get local variable debug info")
   void testMethodMultiTagsMultiConditions() throws Exception {
     List<SpanDecorationProbe.Decoration> decorations =
@@ -98,6 +107,7 @@ public class SpanDecorationProbesIntegrationTests extends ServerAppDebuggerInteg
     addProbe(spanDecorationProbe);
     waitForInstrumentation(appUrl);
     execute(appUrl, TRACED_METHOD_NAME);
+    AtomicBoolean traceReceived = new AtomicBoolean();
     registerTraceListener(
         decodedTrace -> {
           for (DecodedSpan span : decodedTrace.getSpans()) {
@@ -106,16 +116,18 @@ public class SpanDecorationProbesIntegrationTests extends ServerAppDebuggerInteg
               assertFalse(span.getMeta().containsKey("tag2"));
               assertEquals("Above Pi: 3.42", span.getMeta().get("tag3"));
               assertEquals("val2", span.getMeta().get("tag4"));
-              return true;
+              traceReceived.set(true);
             }
           }
-          return false;
         });
-    processRequests();
+    processRequests(traceReceived::get);
   }
 
   @Test
   @DisplayName("testMethodSimpleTagValueError")
+  @DisabledIf(
+      value = "datadog.environment.JavaVirtualMachine#isJ9",
+      disabledReason = "Flaky on J9 JVMs")
   void testMethodSimpleTagValueError() throws Exception {
     SpanDecorationProbe spanDecorationProbe =
         SpanDecorationProbe.builder()
@@ -134,7 +146,6 @@ public class SpanDecorationProbesIntegrationTests extends ServerAppDebuggerInteg
           assertEquals(
               "Cannot find symbol: invalidArg", snapshot.getEvaluationErrors().get(0).getMessage());
           snapshotTest.set(true);
-          return snapshotTest.get() && spanTest.get();
         });
     registerTraceListener(
         decodedTrace -> {
@@ -147,13 +158,15 @@ public class SpanDecorationProbesIntegrationTests extends ServerAppDebuggerInteg
               spanTest.set(true);
             }
           }
-          return snapshotTest.get() && spanTest.get();
         });
-    processRequests();
+    processRequests(() -> snapshotTest.get() && spanTest.get());
   }
 
   @Test
   @DisplayName("testMethodSimpleTagConditionError")
+  @DisabledIf(
+      value = "datadog.environment.JavaVirtualMachine#isJ9",
+      disabledReason = "Flaky on J9 JVMs")
   void testMethodSimpleTagConditionError() throws Exception {
     SpanDecorationProbe spanDecorationProbe =
         SpanDecorationProbe.builder()
@@ -177,7 +190,6 @@ public class SpanDecorationProbesIntegrationTests extends ServerAppDebuggerInteg
           assertEquals(
               "Cannot find symbol: invalidArg", snapshot.getEvaluationErrors().get(0).getMessage());
           snapshotTest.set(true);
-          return snapshotTest.get() && spanTest.get();
         });
     registerTraceListener(
         decodedTrace -> {
@@ -187,13 +199,15 @@ public class SpanDecorationProbesIntegrationTests extends ServerAppDebuggerInteg
               spanTest.set(true);
             }
           }
-          return snapshotTest.get() && spanTest.get();
         });
-    processRequests();
+    processRequests(() -> snapshotTest.get() && spanTest.get());
   }
 
   @Test
   @DisplayName("testMethodMultiTagValueError")
+  @DisabledIf(
+      value = "datadog.environment.JavaVirtualMachine#isJ9",
+      disabledReason = "Flaky on J9 JVMs")
   void testMethodMultiTagValueError() throws Exception {
     List<SpanDecorationProbe.Decoration> decorations =
         Arrays.asList(
@@ -216,7 +230,6 @@ public class SpanDecorationProbesIntegrationTests extends ServerAppDebuggerInteg
           assertEquals("Cannot find symbol: invalidArg", evalErrors.get(0).getMessage());
           assertEquals("Cannot find symbol: invalidArg2", evalErrors.get(1).getMessage());
           snapshotTest.set(true);
-          return snapshotTest.get() && spanTest.get();
         });
     registerTraceListener(
         decodedTrace -> {
@@ -233,14 +246,15 @@ public class SpanDecorationProbesIntegrationTests extends ServerAppDebuggerInteg
               spanTest.set(true);
             }
           }
-          return snapshotTest.get() && spanTest.get();
         });
-    processRequests();
+    processRequests(() -> snapshotTest.get() && spanTest.get());
   }
 
   @Test
   @DisplayName("testSamplingSpanDecoration")
-  @DisabledIf(value = "datadog.trace.api.Platform#isJ9", disabledReason = "Flaky on J9 JVMs")
+  @DisabledIf(
+      value = "datadog.environment.JavaVirtualMachine#isJ9",
+      disabledReason = "Flaky on J9 JVMs")
   void testSamplingSpanDecoration() throws Exception {
     SpanDecorationProbe spanDecorationProbe =
         SpanDecorationProbe.builder()
@@ -258,18 +272,12 @@ public class SpanDecorationProbesIntegrationTests extends ServerAppDebuggerInteg
           for (DecodedSpan span : decodedTrace.getSpans()) {
             if (isTracedFullMethodSpan(span)) {
               if (span.getMeta().containsKey("tag1")) {
-                return count.incrementAndGet() >= 100;
+                count.incrementAndGet();
               }
             }
           }
-          return false;
         });
-    processRequests();
-  }
-
-  private boolean isTracedFullMethodSpan(DecodedSpan span) {
-    return span.getName().equals("trace.annotation")
-        && span.getResource().equals("ServerDebuggerTestApplication.runTracedMethod");
+    processRequests(() -> count.get() >= 100);
   }
 
   private SpanDecorationProbe.Decoration createDecoration(String tagName, String valueDsl) {

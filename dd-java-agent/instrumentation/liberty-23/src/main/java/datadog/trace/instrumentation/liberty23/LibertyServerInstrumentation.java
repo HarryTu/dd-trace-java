@@ -1,9 +1,9 @@
 package datadog.trace.instrumentation.liberty23;
 
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
+import static datadog.trace.bootstrap.instrumentation.api.AgentSpan.fromContext;
 import static datadog.trace.instrumentation.liberty23.HttpInboundServiceContextImplInstrumentation.REQUEST_MSG_TYPE;
-import static datadog.trace.instrumentation.liberty23.LibertyDecorator.DD_EXTRACTED_CONTEXT_ATTRIBUTE;
+import static datadog.trace.instrumentation.liberty23.LibertyDecorator.DD_PARENT_CONTEXT_ATTRIBUTE;
 import static datadog.trace.instrumentation.liberty23.LibertyDecorator.DD_SPAN_ATTRIBUTE;
 import static datadog.trace.instrumentation.liberty23.LibertyDecorator.DECORATE;
 import static net.bytebuddy.matcher.ElementMatchers.isMethod;
@@ -12,14 +12,19 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 import com.google.auto.service.AutoService;
 import com.ibm.ws.webcontainer.srt.SRTServletRequest;
 import com.ibm.ws.webcontainer.srt.SRTServletResponse;
+import com.ibm.ws.webcontainer.webapp.WebApp;
+import com.ibm.wsspi.webcontainer.webapp.IWebAppDispatcherContext;
+import datadog.context.Context;
+import datadog.context.ContextScope;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
+import datadog.trace.api.ClassloaderConfigurationOverrides;
+import datadog.trace.api.Config;
 import datadog.trace.api.CorrelationIdentifier;
-import datadog.trace.api.GlobalTracer;
 import datadog.trace.api.gateway.Flow;
 import datadog.trace.bootstrap.ActiveSubsystems;
 import datadog.trace.bootstrap.ContextStore;
 import datadog.trace.bootstrap.InstrumentationContext;
-import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import datadog.trace.instrumentation.servlet5.JakartaServletBlockingHelper;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
@@ -30,9 +35,9 @@ import java.util.EnumSet;
 import java.util.Map;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public final class LibertyServerInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class LibertyServerInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public LibertyServerInstrumentation() {
     super("liberty");
@@ -64,8 +69,8 @@ public final class LibertyServerInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("invokeFilters"))
             .and(takesArgument(0, named("jakarta.servlet.ServletRequest")))
@@ -82,7 +87,7 @@ public final class LibertyServerInstrumentation extends Instrumenter.Tracing
 
     @Advice.OnMethodEnter(suppress = Throwable.class, skipOn = Advice.OnNonDefaultValue.class)
     public static boolean /* skip */ onEnter(
-        @Advice.Local("agentScope") AgentScope scope,
+        @Advice.Local("contextScope") ContextScope scope,
         @Advice.Argument(0) ServletRequest req,
         @Advice.Argument(1) ServletResponse resp) {
       if (!(req instanceof SRTServletRequest)) {
@@ -95,23 +100,35 @@ public final class LibertyServerInstrumentation extends Instrumenter.Tracing
       try {
         Object existingSpan = request.getAttribute(DD_SPAN_ATTRIBUTE);
         if (existingSpan instanceof AgentSpan) {
-          scope = activateSpan((AgentSpan) existingSpan);
+          scope = ((AgentSpan) existingSpan).attach();
           return false;
         }
       } catch (NullPointerException e) {
       }
 
-      final AgentSpan.Context.Extracted extractedContext = DECORATE.extract(request);
-      request.setAttribute(DD_EXTRACTED_CONTEXT_ATTRIBUTE, extractedContext);
-      final AgentSpan span = DECORATE.startSpan(request, extractedContext);
-      scope = activateSpan(span);
-      scope.setAsyncPropagation(true);
-
+      final Context parentContext = DECORATE.extract(request);
+      request.setAttribute(DD_PARENT_CONTEXT_ATTRIBUTE, parentContext);
+      final Context context = DECORATE.startSpan(request, parentContext);
+      scope = context.attach();
+      final AgentSpan span = fromContext(context);
+      if (Config.get().isJeeSplitByDeployment()) {
+        final IWebAppDispatcherContext dispatcherContext = request.getWebAppDispatcherContext();
+        if (dispatcherContext != null) {
+          final WebApp webapp = dispatcherContext.getWebApp();
+          if (webapp != null) {
+            final ClassLoader cl = webapp.getClassLoader();
+            if (cl != null) {
+              ClassloaderConfigurationOverrides.maybeEnrichSpan(span, cl);
+            }
+          }
+        }
+      }
       DECORATE.afterStart(span);
-      DECORATE.onRequest(span, request, request, extractedContext);
+      DECORATE.onRequest(span, request, request, parentContext);
       request.setAttribute(DD_SPAN_ATTRIBUTE, span);
-      request.setAttribute(CorrelationIdentifier.getTraceIdKey(), GlobalTracer.get().getTraceId());
-      request.setAttribute(CorrelationIdentifier.getSpanIdKey(), GlobalTracer.get().getSpanId());
+      request.setAttribute(
+          CorrelationIdentifier.getTraceIdKey(), CorrelationIdentifier.getTraceId());
+      request.setAttribute(CorrelationIdentifier.getSpanIdKey(), CorrelationIdentifier.getSpanId());
       if (ActiveSubsystems.APPSEC_ACTIVE) {
         ContextStore store =
             InstrumentationContext.get(
@@ -136,7 +153,7 @@ public final class LibertyServerInstrumentation extends Instrumenter.Tracing
 
     @Advice.OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
     public static void closeScope(
-        @Advice.Local("agentScope") final AgentScope scope,
+        @Advice.Local("contextScope") final ContextScope scope,
         @Advice.Argument(value = 0) ServletRequest req) {
       if (!(req instanceof SRTServletRequest)) {
         return;
@@ -149,7 +166,7 @@ public final class LibertyServerInstrumentation extends Instrumenter.Tracing
         // this has the unfortunate consequence that service name (as set via the tag interceptor)
         // of the top span won't match that of its child spans, because it's instead the original
         // one that will propagate
-        DECORATE.getPath(scope.span(), request);
+        DECORATE.getPath(fromContext(scope.context()), request);
         scope.close();
       }
     }

@@ -14,8 +14,8 @@ import com.datadog.debugger.el.expressions.HasAnyExpression;
 import com.datadog.debugger.el.expressions.IfElseExpression;
 import com.datadog.debugger.el.expressions.IfExpression;
 import com.datadog.debugger.el.expressions.IndexExpression;
+import com.datadog.debugger.el.expressions.IsDefinedExpression;
 import com.datadog.debugger.el.expressions.IsEmptyExpression;
-import com.datadog.debugger.el.expressions.IsUndefinedExpression;
 import com.datadog.debugger.el.expressions.LenExpression;
 import com.datadog.debugger.el.expressions.MatchesExpression;
 import com.datadog.debugger.el.expressions.NotExpression;
@@ -29,6 +29,7 @@ import com.datadog.debugger.el.values.MapValue;
 import com.datadog.debugger.el.values.NullValue;
 import com.datadog.debugger.el.values.NumericValue;
 import com.datadog.debugger.el.values.ObjectValue;
+import com.datadog.debugger.el.values.SetValue;
 import com.datadog.debugger.el.values.StringValue;
 
 public interface Visitor<R> {
@@ -56,7 +57,7 @@ public interface Visitor<R> {
 
   R visit(IsEmptyExpression isEmptyExpression);
 
-  R visit(IsUndefinedExpression isUndefinedExpression);
+  R visit(IsDefinedExpression isDefinedExpression);
 
   R visit(LenExpression lenExpression);
 
@@ -91,4 +92,6 @@ public interface Visitor<R> {
   R visit(ListValue listValue);
 
   R visit(MapValue mapValue);
+
+  R visit(SetValue setValue);
 }

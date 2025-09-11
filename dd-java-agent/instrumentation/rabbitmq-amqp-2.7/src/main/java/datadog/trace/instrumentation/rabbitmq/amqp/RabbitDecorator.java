@@ -1,35 +1,36 @@
 package datadog.trace.instrumentation.rabbitmq.amqp;
 
+import static datadog.trace.api.datastreams.DataStreamsContext.create;
+import static datadog.trace.api.datastreams.DataStreamsTags.Direction.INBOUND;
+import static datadog.trace.api.datastreams.DataStreamsTags.create;
+import static datadog.trace.bootstrap.instrumentation.api.AgentPropagation.extractContextAndGetSpanContext;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.propagate;
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan;
 import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.AMQP_COMMAND;
 import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.AMQP_EXCHANGE;
 import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.AMQP_QUEUE;
 import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.AMQP_ROUTING_KEY;
 import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.RECORD_QUEUE_TIME_MS;
-import static datadog.trace.core.datastreams.TagsProcessor.DIRECTION_IN;
-import static datadog.trace.core.datastreams.TagsProcessor.DIRECTION_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.TOPIC_TAG;
-import static datadog.trace.core.datastreams.TagsProcessor.TYPE_TAG;
 
 import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.Command;
 import com.rabbitmq.client.Consumer;
 import com.rabbitmq.client.Envelope;
 import datadog.trace.api.Config;
+import datadog.trace.api.datastreams.DataStreamsTags;
 import datadog.trace.api.naming.SpanNaming;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import datadog.trace.bootstrap.instrumentation.api.ContextVisitors;
 import datadog.trace.bootstrap.instrumentation.api.InternalSpanTypes;
 import datadog.trace.bootstrap.instrumentation.api.Tags;
 import datadog.trace.bootstrap.instrumentation.api.UTF8BytesString;
 import datadog.trace.bootstrap.instrumentation.decorator.MessagingClientDecorator;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 public class RabbitDecorator extends MessagingClientDecorator {
 
@@ -46,7 +47,8 @@ public class RabbitDecorator extends MessagingClientDecorator {
   public static final CharSequence RABBITMQ_AMQP = UTF8BytesString.create("rabbitmq-amqp");
 
   public static final boolean RABBITMQ_LEGACY_TRACING =
-      Config.get().isLegacyTracingEnabled(true, "rabbit", "rabbitmq");
+      SpanNaming.instance().namingSchema().allowInferredServices()
+          && Config.get().isLegacyTracingEnabled(true, "rabbit", "rabbitmq");
 
   public static final boolean TIME_IN_QUEUE_ENABLED =
       Config.get().isTimeInQueueEnabled(!RABBITMQ_LEGACY_TRACING, "rabbit", "rabbitmq");
@@ -83,12 +85,13 @@ public class RabbitDecorator extends MessagingClientDecorator {
 
   private final String spanKind;
   private final CharSequence spanType;
-  private final String serviceName;
+  private final Supplier<String> serviceNameSupplier;
 
-  public RabbitDecorator(String spanKind, CharSequence spanType, String serviceName) {
+  public RabbitDecorator(
+      String spanKind, CharSequence spanType, Supplier<String> serviceNameSupplier) {
     this.spanKind = spanKind;
     this.spanType = spanType;
-    this.serviceName = serviceName;
+    this.serviceNameSupplier = serviceNameSupplier;
   }
 
   @Override
@@ -98,7 +101,7 @@ public class RabbitDecorator extends MessagingClientDecorator {
 
   @Override
   protected String service() {
-    return serviceName;
+    return serviceNameSupplier.get();
   }
 
   @Override
@@ -180,7 +183,7 @@ public class RabbitDecorator extends MessagingClientDecorator {
     final StringBuilder prefix =
         new StringBuilder(opName.length() + exchangeName.length() + routingKey.length() + 5)
             .append(opName)
-            .append(" ")
+            .append(' ')
             .append(exchangeName);
     if (Config.get().isRabbitIncludeRoutingKeyInResource()) {
       prefix.append(" -> ").append(routingKey);
@@ -200,8 +203,10 @@ public class RabbitDecorator extends MessagingClientDecorator {
       String queue) {
     final Map<String, Object> headers =
         propagate && null != properties ? properties.getHeaders() : null;
-    AgentSpan.Context parentContext =
-        null != headers ? propagate().extract(headers, ContextVisitors.objectValuesMap()) : null;
+    AgentSpanContext parentContext =
+        null != headers
+            ? extractContextAndGetSpanContext(headers, ContextVisitors.objectValuesMap())
+            : null;
     // TODO: check dynamically bound queues -
     // https://github.com/DataDog/dd-trace-java/pull/2955#discussion_r677787875
 
@@ -243,13 +248,10 @@ public class RabbitDecorator extends MessagingClientDecorator {
     }
 
     if (null != headers) {
-      LinkedHashMap<String, String> sortedTags = new LinkedHashMap<>();
-      sortedTags.put(DIRECTION_TAG, DIRECTION_IN);
-      sortedTags.put(TOPIC_TAG, queue);
-      sortedTags.put(TYPE_TAG, "rabbitmq");
+      DataStreamsTags tags = create("rabbitmq", INBOUND, queue);
       AgentTracer.get()
           .getDataStreamsMonitoring()
-          .setCheckpoint(span, sortedTags, produceMillis, 0);
+          .setCheckpoint(span, create(tags, produceMillis, 0));
     }
 
     CONSUMER_DECORATE.afterStart(span);

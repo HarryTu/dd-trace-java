@@ -16,15 +16,17 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
+import datadog.trace.bootstrap.instrumentation.api.AgentSpanContext;
 import java.util.Map;
 import net.bytebuddy.asm.Advice;
 import org.apache.log4j.spi.LoggingEvent;
 
-@AutoService(Instrumenter.class)
-public class CategoryInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class CategoryInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public CategoryInstrumentation() {
     super("log4j", "log4j-1");
   }
@@ -36,12 +38,12 @@ public class CategoryInstrumentation extends Instrumenter.Tracing
 
   @Override
   public Map<String, String> contextStore() {
-    return singletonMap("org.apache.log4j.spi.LoggingEvent", AgentSpan.Context.class.getName());
+    return singletonMap("org.apache.log4j.spi.LoggingEvent", AgentSpanContext.class.getName());
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(isPublic())
             .and(named("callAppenders"))
@@ -56,7 +58,7 @@ public class CategoryInstrumentation extends Instrumenter.Tracing
       AgentSpan span = activeSpan();
 
       if (span != null && traceConfig(span).isLogsInjectionEnabled()) {
-        InstrumentationContext.get(LoggingEvent.class, AgentSpan.Context.class)
+        InstrumentationContext.get(LoggingEvent.class, AgentSpanContext.class)
             .put(event, span.context());
       }
     }

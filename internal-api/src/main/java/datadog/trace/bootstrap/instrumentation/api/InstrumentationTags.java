@@ -14,6 +14,7 @@ public class InstrumentationTags {
   public static final String PROCESSOR_NAME = "processor.name";
   public static final String RECORD_QUEUE_TIME_MS = "record.queue_time_ms";
   public static final String RECORD_END_TO_END_DURATION_MS = "record.e2e_duration_ms";
+  public static final String KAFKA_RECORDS_COUNT = "kafka.records_count";
   public static final String TOMBSTONE = "tombstone";
   public static final String AWS_AGENT = "aws.agent";
   public static final String AWS_SERVICE = "aws.service";
@@ -22,6 +23,7 @@ public class InstrumentationTags {
   public static final String AWS_ENDPOINT = "aws.endpoint";
   public static final String AWS_BUCKET_NAME = "aws.bucket.name";
   public static final String BUCKET_NAME = "bucketname";
+  public static final String AWS_OBJECT_KEY = "aws.object.key";
   public static final String AWS_QUEUE_URL = "aws.queue.url";
 
   public static final String AWS_QUEUE_NAME = "aws.queue.name";
@@ -34,6 +36,13 @@ public class InstrumentationTags {
   public static final String TABLE_NAME = "tablename";
   public static final String AWS_REQUEST_ID = "aws.requestId";
   public static final String AWS_STORAGE_CLASS = "aws.storage.class";
+
+  // These are temporary keys used for span pointer hash calculation
+  public static final String S3_ETAG = "s3.eTag";
+  public static final String DYNAMO_PRIMARY_KEY_1 = "dynamodb.primary_key_1";
+  public static final String DYNAMO_PRIMARY_KEY_1_VALUE = "dynamodb.primary_key_1_value";
+  public static final String DYNAMO_PRIMARY_KEY_2 = "dynamodb.primary_key_2";
+  public static final String DYNAMO_PRIMARY_KEY_2_VALUE = "dynamodb.primary_key_2_value";
 
   public static final String BUCKET = "bucket";
   public static final String CASSANDRA_CONTACT_POINTS = "db.cassandra.contact.points";
@@ -92,6 +101,7 @@ public class InstrumentationTags {
   public static final String MESSAGE = "message";
   public static final String HANDLER_TYPE = "handler.type";
   public static final String KAFKA_BOOTSTRAP_SERVERS = "messaging.kafka.bootstrap.servers";
+  public static final String MESSAGING_DESTINATION_NAME = "messaging.destination.name";
   public static final String QUARTZ_JOB_NAME = "quartz.job.name";
   public static final String QUARTZ_JOB_GROUP = "quartz.job.group";
   public static final String QUARTZ_TRIGGER_NAME = "quartz.trigger.name";
@@ -105,10 +115,25 @@ public class InstrumentationTags {
   public static final String TWILIO_STATUS = "twilio.status";
   public static final String TWILIO_PARENT_SID = "twilio.parentSid";
   public static final String DBM_TRACE_INJECTED = "_dd.dbm_trace_injected";
+  public static final String INSTRUMENTATION_TIME_MS = "_dd.instrumentation.time_ms";
   public static final UTF8BytesString DD_MEASURED = UTF8BytesString.create("_dd.measured");
   public static final UTF8BytesString DD_TOP_LEVEL = UTF8BytesString.create("_dd.top_level");
   public static final UTF8BytesString DD_PARTIAL_VERSION =
       UTF8BytesString.create("_dd.partial_version");
   public static final UTF8BytesString DD_WAS_LONG_RUNNING =
       UTF8BytesString.create("_dd.was_long_running");
+
+  public static final String TIBCO_NODE = "tibco.node";
+  public static final String TIBCO_VERSION = "tibco.version";
+
+  public static final String MULE_CORRELATION_ID = "mule.correlation_id";
+  public static final String MULE_LOCATION = "mule.location";
+
+  public static final String WEBSOCKET_SESSION_ID = "websocket.session.id";
+  public static final String WEBSOCKET_MESSAGE_TYPE = "websocket.message.type";
+  public static final String WEBSOCKET_MESSAGE_LENGTH = "websocket.message.length";
+  public static final String WEBSOCKET_MESSAGE_FRAMES = "websocket.message.frames";
+  public static final String WEBSOCKET_MESSAGE_RECEIVE_TIME = "websocket.message.receive_time";
+  public static final String WEBSOCKET_CLOSE_CODE = "websocket.close.code";
+  public static final String WEBSOCKET_CLOSE_REASON = "websocket.close.reason";
 }

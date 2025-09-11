@@ -1,31 +1,34 @@
 package datadog.trace.bootstrap.instrumentation.api;
 
+import datadog.context.Context;
+import datadog.context.ContextScope;
 import datadog.trace.context.TraceScope;
 import java.io.Closeable;
 
-public interface AgentScope extends TraceScope, Closeable {
+public interface AgentScope extends ContextScope, TraceScope, Closeable {
   AgentSpan span();
 
-  byte source();
-
   @Override
-  Continuation capture();
-
-  @Override
-  Continuation captureConcurrent();
-
-  @Override
-  void setAsyncPropagation(boolean value);
+  default Context context() {
+    return span();
+  }
 
   @Override
   void close();
 
   interface Continuation extends TraceScope.Continuation {
+    @Override
+    Continuation hold();
 
     @Override
     AgentScope activate();
 
     /** Provide access to the captured span */
-    AgentSpan getSpan();
+    AgentSpan span();
+
+    /** Provide access to the captured context */
+    default Context context() {
+      return span();
+    }
   }
 }

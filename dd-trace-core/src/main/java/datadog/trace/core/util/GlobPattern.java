@@ -6,7 +6,7 @@ public final class GlobPattern {
 
   public static Pattern globToRegexPattern(String globPattern) {
     String regex = globToRegex(globPattern);
-    return Pattern.compile(regex);
+    return Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
   }
 
   private static String globToRegex(String globPattern) {
@@ -32,7 +32,7 @@ public final class GlobPattern {
         case ']':
         case '{':
         case '}':
-          sb.append("\\").append(ch);
+          sb.append('\\').append(ch);
           break;
         default:
           sb.append(ch);

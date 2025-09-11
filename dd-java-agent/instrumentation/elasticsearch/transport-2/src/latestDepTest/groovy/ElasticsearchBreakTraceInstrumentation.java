@@ -2,7 +2,7 @@ import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.test.base.TestInstrumentation;
-import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.instrumentation.elasticsearch.ShadowExistingScopeAdvice;
 
 /**
@@ -11,7 +11,7 @@ import datadog.trace.instrumentation.elasticsearch.ShadowExistingScopeAdvice;
  * behavior that happens inside Elasticsearch (eg IndexAction). It is duplicated several times to
  * each elasticsearch project
  */
-@AutoService(Instrumenter.class)
+@AutoService(InstrumenterModule.class)
 public class ElasticsearchBreakTraceInstrumentation extends TestInstrumentation {
   @Override
   public String instrumentedType() {
@@ -19,8 +19,8 @@ public class ElasticsearchBreakTraceInstrumentation extends TestInstrumentation 
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
+  public void methodAdvice(MethodTransformer transformer) {
     // this method changed to executeLocally in 5+
-    transformation.applyAdvice(named("doExecute"), ShadowExistingScopeAdvice.class.getName());
+    transformer.applyAdvice(named("doExecute"), ShadowExistingScopeAdvice.class.getName());
   }
 }

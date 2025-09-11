@@ -2,6 +2,7 @@ package datadog.trace.instrumentation.kafka_clients;
 
 import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.CONSUMER_GROUP;
 import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.KAFKA_BOOTSTRAP_SERVERS;
+import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.MESSAGING_DESTINATION_NAME;
 import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.OFFSET;
 import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.PARTITION;
 import static datadog.trace.bootstrap.instrumentation.api.InstrumentationTags.RECORD_QUEUE_TIME_MS;
@@ -18,6 +19,7 @@ import datadog.trace.bootstrap.instrumentation.api.Tags;
 import datadog.trace.bootstrap.instrumentation.api.UTF8BytesString;
 import datadog.trace.bootstrap.instrumentation.decorator.MessagingClientDecorator;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -29,18 +31,19 @@ public class KafkaDecorator extends MessagingClientDecorator {
   public static final CharSequence KAFKA_CONSUME =
       UTF8BytesString.create(
           SpanNaming.instance().namingSchema().messaging().inboundOperation(KAFKA));
+
+  public static final CharSequence KAFKA_POLL = UTF8BytesString.create("kafka.poll");
   public static final CharSequence KAFKA_PRODUCE =
       UTF8BytesString.create(
           SpanNaming.instance().namingSchema().messaging().outboundOperation(KAFKA));
   public static final CharSequence KAFKA_DELIVER = UTF8BytesString.create("kafka.deliver");
-  public static final boolean KAFKA_LEGACY_TRACING =
-      Config.get().isLegacyTracingEnabled(true, KAFKA);
+  public static final boolean KAFKA_LEGACY_TRACING = Config.get().isKafkaLegacyTracingEnabled();
   public static final boolean TIME_IN_QUEUE_ENABLED =
       Config.get().isTimeInQueueEnabled(!KAFKA_LEGACY_TRACING, KAFKA);
   public static final String KAFKA_PRODUCED_KEY = "x_datadog_kafka_produced";
   private final String spanKind;
   private final CharSequence spanType;
-  private final String serviceName;
+  private final Supplier<String> serviceNameSupplier;
 
   private static final DDCache<CharSequence, CharSequence> PRODUCER_RESOURCE_NAME_CACHE =
       DDCaches.newFixedSizeCache(32);
@@ -77,10 +80,11 @@ public class KafkaDecorator extends MessagingClientDecorator {
           InternalSpanTypes.MESSAGE_BROKER,
           SpanNaming.instance().namingSchema().messaging().timeInQueueService(KAFKA));
 
-  protected KafkaDecorator(String spanKind, CharSequence spanType, String serviceName) {
+  protected KafkaDecorator(
+      String spanKind, CharSequence spanType, Supplier<String> serviceNameSupplier) {
     this.spanKind = spanKind;
     this.spanType = spanType;
-    this.serviceName = serviceName;
+    this.serviceNameSupplier = serviceNameSupplier;
   }
 
   @Override
@@ -95,7 +99,7 @@ public class KafkaDecorator extends MessagingClientDecorator {
 
   @Override
   protected String service() {
-    return serviceName;
+    return serviceNameSupplier.get();
   }
 
   @Override
@@ -108,14 +112,23 @@ public class KafkaDecorator extends MessagingClientDecorator {
     return spanKind;
   }
 
-  public void onConsume(final AgentSpan span, final ConsumerRecord record, String consumerGroup) {
+  public void onConsume(
+      final AgentSpan span,
+      final ConsumerRecord record,
+      String consumerGroup,
+      String bootstrapServers) {
     if (record != null) {
       final String topic = record.topic() == null ? "kafka" : record.topic();
       span.setResourceName(CONSUMER_RESOURCE_NAME_CACHE.computeIfAbsent(topic, CONSUMER_PREFIX));
       span.setTag(PARTITION, record.partition());
       span.setTag(OFFSET, record.offset());
+      span.setTag(MESSAGING_DESTINATION_NAME, topic);
       if (consumerGroup != null) {
         span.setTag(CONSUMER_GROUP, consumerGroup);
+      }
+
+      if (bootstrapServers != null) {
+        span.setTag(KAFKA_BOOTSTRAP_SERVERS, bootstrapServers);
       }
       // TODO - do we really need both? This mechanism already adds a lot of... baggage.
       // check to not record a duration if the message was sent from an old Kafka client
@@ -151,6 +164,7 @@ public class KafkaDecorator extends MessagingClientDecorator {
       }
       final String topic = record.topic() == null ? "kafka" : record.topic();
       span.setResourceName(PRODUCER_RESOURCE_NAME_CACHE.computeIfAbsent(topic, PRODUCER_PREFIX));
+      span.setTag(MESSAGING_DESTINATION_NAME, topic);
     }
   }
 }

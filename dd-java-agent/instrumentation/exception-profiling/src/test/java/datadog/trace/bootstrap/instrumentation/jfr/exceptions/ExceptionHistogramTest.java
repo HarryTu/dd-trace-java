@@ -5,9 +5,11 @@ import static datadog.trace.api.config.ProfilingConfig.PROFILING_EXCEPTION_HISTO
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSortedMap;
+import datadog.environment.JavaVirtualMachine;
 import datadog.trace.api.Config;
 import java.io.IOException;
 import java.time.Instant;
@@ -15,10 +17,10 @@ import java.util.Comparator;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Phaser;
-import java.util.stream.Stream;
 import jdk.jfr.FlightRecorder;
 import jdk.jfr.Recording;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.Aggregators;
@@ -58,6 +60,11 @@ public class ExceptionHistogramTest {
   private Recording snapshot;
   private ExceptionHistogram instance;
 
+  @BeforeAll
+  public static void precheck() {
+    assumeFalse(JavaVirtualMachine.isJ9());
+  }
+
   @BeforeEach
   public void setup() {
     recording = new Recording();
@@ -67,7 +74,7 @@ public class ExceptionHistogramTest {
     final Properties properties = new Properties();
     properties.setProperty(PROFILING_EXCEPTION_HISTOGRAM_TOP_ITEMS, Integer.toString(MAX_ITEMS));
 
-    instance = new ExceptionHistogram(Config.get(properties));
+    instance = ExceptionHistogramTestBridge.create(Config.get(properties));
   }
 
   @AfterEach
@@ -76,7 +83,7 @@ public class ExceptionHistogramTest {
       snapshot.close();
     }
     recording.close();
-    instance.deregister();
+    ExceptionHistogramTestBridge.deregister(instance);
   }
 
   @Test
@@ -84,25 +91,24 @@ public class ExceptionHistogramTest {
     Phaser phaser = new Phaser(2);
 
     ExceptionHistogram histogram =
-        new ExceptionHistogram(Config.get()) {
-          @Override
-          void emitEvents(Stream<ExceptionHistogram.Pair<String, Long>> items) {
-            super.emitEvents(items);
-            // #1 - histo sums are reset but 0 entries not removed yet
-            phaser.arriveAndAwaitAdvance();
-            // #2 - safe to leave the emit() method
-            phaser.arriveAndAwaitAdvance();
-          }
-        };
+        ExceptionHistogramTestBridge.create(
+            Config.get(),
+            () -> {
+              // below code is executed after emitEvents() returns:
+              // #1 - histo sums are reset but 0 entries not removed yet
+              phaser.arriveAndAwaitAdvance();
+              // #2 - safe to leave the emit() method
+              phaser.arriveAndAwaitAdvance();
+            });
     // don't want the JFR integration active here
-    histogram.deregister();
+    ExceptionHistogramTestBridge.deregister(histogram);
     for (int i = 0; i < 5; i++) {
       boolean firstHit = histogram.record(new NullPointerException());
       assertEquals(i == 0, firstHit);
     }
 
     // start emitting in a separate thread
-    new Thread(histogram::doEmit).start();
+    new Thread(() -> ExceptionHistogramTestBridge.doEmit(histogram)).start();
     // wait for #1 - this is the point where data race can happen if new exceptions are recording
     // during 'emit()'
     phaser.arriveAndAwaitAdvance();
@@ -181,12 +187,12 @@ public class ExceptionHistogramTest {
   @Test
   public void testHistogramSizeIsLimited()
       throws IOException, CouldNotLoadRecordingException, InterruptedException {
-    instance.deregister();
+    ExceptionHistogramTestBridge.deregister(instance);
     final Properties properties = new Properties();
     properties.setProperty(
         PROFILING_EXCEPTION_HISTOGRAM_MAX_COLLECTION_SIZE, Integer.toString(MAX_SIZE));
 
-    instance = new ExceptionHistogram(Config.get(properties));
+    instance = ExceptionHistogramTestBridge.create(Config.get(properties));
 
     // Exceptions are written in alphabetical order
     writeExceptions(

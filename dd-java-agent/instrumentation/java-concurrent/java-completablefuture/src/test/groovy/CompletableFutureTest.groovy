@@ -1,4 +1,4 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.Trace
 import datadog.trace.core.DDSpan
 
@@ -11,13 +11,12 @@ import java.util.function.Supplier
 
 import static datadog.trace.agent.test.utils.TraceUtils.basicSpan
 import static datadog.trace.agent.test.utils.TraceUtils.runUnderTrace
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeScope
 
 /**
  * Note: ideally this should live with the rest of ExecutorInstrumentationTest,
  * but this code needs java8 so we put it here for now.
  */
-class CompletableFutureTest extends AgentTestRunner {
+class CompletableFutureTest extends InstrumentationSpecification {
 
   def "CompletableFuture test"() {
     setup:
@@ -45,7 +44,6 @@ class CompletableFutureTest extends AgentTestRunner {
         @Trace(operationName = "parent")
         CompletableFuture<String> get() {
           try {
-            activeScope().setAsyncPropagation(true)
             return CompletableFuture.supplyAsync(supplier, pool)
               .thenCompose({ s -> CompletableFuture.supplyAsync(new AppendingSupplier(s), differentPool) })
               .thenApply(function)

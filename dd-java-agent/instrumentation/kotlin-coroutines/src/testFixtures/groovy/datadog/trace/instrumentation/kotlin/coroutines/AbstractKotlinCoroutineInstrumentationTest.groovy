@@ -1,35 +1,26 @@
 package datadog.trace.instrumentation.kotlin.coroutines
 
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.core.DDSpan
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ThreadPoolDispatcherKt
 import spock.lang.Shared
-import spock.lang.Unroll
 
-@Unroll
-abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCoroutineTests> extends AgentTestRunner {
+abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCoroutineTests> extends InstrumentationSpecification {
 
   protected abstract T getCoreKotlinCoroutineTestsInstance(CoroutineDispatcher dispatcher)
 
   @Shared
   static dispatchersToTest = [
-    Dispatchers.Default,
-    Dispatchers.IO,
-    Dispatchers.Unconfined,
-    ThreadPoolDispatcherKt.newFixedThreadPoolContext(2, "Fixed-Thread-Pool"),
-    ThreadPoolDispatcherKt.newSingleThreadContext("Single-Thread"),
+    ['default', Dispatchers.Default],
+    ['io', Dispatchers.IO],
+    ['unconfined', Dispatchers.Unconfined],
+    ['fixed thread pool', ThreadPoolDispatcherKt.newFixedThreadPoolContext(2, "Fixed-Thread-Pool")],
+    ['single thread pool', ThreadPoolDispatcherKt.newSingleThreadContext("Single-Thread")],
   ]
 
-  @Override
-  void configurePreAgent() {
-    super.configurePreAgent()
-
-    injectSysConfig("dd.integration.kotlin_coroutine.experimental.enabled", "true")
-  }
-
-  def "kotlin cancellation prevents trace"() {
+  def "kotlin cancellation prevents trace #dispatcherName"() {
     setup:
     CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
     int expectedNumberOfSpans = kotlinTest.tracePreventedByCancellation()
@@ -43,10 +34,10 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
     findSpan(trace, "postLaunch") == null
 
     where:
-    dispatcher << dispatchersToTest
+    [dispatcherName, dispatcher] << dispatchersToTest
   }
 
-  def "kotlin propagates across nested jobs"() {
+  def "kotlin propagates across nested jobs #dispatcherName"() {
     setup:
     CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
     int expectedNumberOfSpans = kotlinTest.tracedAcrossThreadsWithNested()
@@ -59,10 +50,10 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
     findSpan(trace, "nested").context().getParentId() == trace[0].context().getSpanId()
 
     where:
-    dispatcher << dispatchersToTest
+    [dispatcherName, dispatcher] << dispatchersToTest
   }
 
-  def "kotlin either deferred completion"() {
+  def "kotlin either deferred completion #dispatcherName"() {
     setup:
     CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
     int expectedNumberOfSpans = kotlinTest.traceWithDeferred()
@@ -78,10 +69,10 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
     findSpan(trace, "brokenPromise").context().getParentId() == trace[0].context().getSpanId()
 
     where:
-    dispatcher << dispatchersToTest
+    [dispatcherName, dispatcher] << dispatchersToTest
   }
 
-  def "kotlin first completed deferred"() {
+  def "kotlin first completed deferred #dispatcherName"() {
     setup:
     CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
     int expectedNumberOfSpans = kotlinTest.tracedWithDeferredFirstCompletions()
@@ -96,7 +87,7 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
     findSpan(trace, "timeout3").context().getParentId() == trace[0].context().getSpanId()
 
     where:
-    dispatcher << dispatchersToTest
+    [dispatcherName, dispatcher] << dispatchersToTest
   }
 
   def "coroutine suspension should not mess up traces"() {
@@ -134,7 +125,7 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
     }
   }
 
-  def "lazily started coroutines should inherit the span active at start time"() {
+  def "lazily started coroutines should inherit the span active at start time #dispatcherName"() {
     setup:
     CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
     int expectedNumberOfSpans = kotlinTest.tracedWithLazyStarting()
@@ -166,10 +157,10 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
     }
 
     where:
-    dispatcher << dispatchersToTest
+    [dispatcherName, dispatcher] << dispatchersToTest
   }
 
-  def "coroutine instrumentation should work without an enclosing trace span"() {
+  def "coroutine instrumentation should work without an enclosing trace span #dispatcherName"() {
     setup:
     CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
     int expectedNumberOfSpans = kotlinTest.withNoTraceParentSpan(false, false)
@@ -178,10 +169,10 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
     assertTopLevelSpanWithTwoSubSpans(expectedNumberOfSpans)
 
     where:
-    dispatcher << dispatchersToTest
+    [dispatcherName, dispatcher] << dispatchersToTest
   }
 
-  def "coroutine instrumentation should work when started lazily without an enclosing trace span"() {
+  def "coroutine instrumentation should work when started lazily without an enclosing trace span #dispatcherName"() {
     setup:
     CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
     kotlinTest.withNoTraceParentSpan(true, false)
@@ -209,10 +200,10 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
     }
 
     where:
-    dispatcher << dispatchersToTest
+    [dispatcherName, dispatcher] << dispatchersToTest
   }
 
-  def "coroutine instrumentation should work without an enclosing trace span and throwing exceptions"() {
+  def "coroutine instrumentation should work without an enclosing trace span and throwing exceptions #dispatcherName"() {
     setup:
     CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
     int expectedNumberOfSpans = kotlinTest.withNoTraceParentSpan(false, true)
@@ -221,10 +212,10 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
     assertTopLevelSpanWithTwoSubSpans(expectedNumberOfSpans, true)
 
     where:
-    dispatcher << dispatchersToTest
+    [dispatcherName, dispatcher] << dispatchersToTest
   }
 
-  def "coroutine instrumentation should work when started lazily without an enclosing trace span and throwing exceptions"() {
+  def "coroutine instrumentation should work when started lazily without an enclosing trace span and throwing exceptions #dispatcherName"() {
     setup:
     CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
     int expectedTraces = kotlinTest.withNoTraceParentSpan(true, true)
@@ -264,7 +255,7 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
     }
 
     where:
-    dispatcher << dispatchersToTest
+    [dispatcherName, dispatcher] << dispatchersToTest
   }
 
   protected void assertTopLevelSpanWithTwoSubSpans(int expectedNumberOfSpans, boolean threw = false) {
@@ -298,7 +289,7 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
   }
 
 
-  def "coroutine instrumentation should work without any parent span"() {
+  def "coroutine instrumentation should work without any parent span #dispatcherName"() {
     setup:
     CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
     int expectedNumberOfTraces = kotlinTest.withNoParentSpan(false)
@@ -320,10 +311,10 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
     }
 
     where:
-    dispatcher << dispatchersToTest
+    [dispatcherName, dispatcher] << dispatchersToTest
   }
 
-  def "coroutine instrumentation should work when started lazily without any parent span"() {
+  def "coroutine instrumentation should work when started lazily without any parent span #dispatcherName"() {
     setup:
     CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
     int expectedNumberOfTraces = kotlinTest.withNoParentSpan(true)
@@ -345,10 +336,10 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
     }
 
     where:
-    dispatcher << dispatchersToTest
+    [dispatcherName, dispatcher] << dispatchersToTest
   }
 
-  def "coroutine instrumentation should work when started lazily and canceled"() {
+  def "coroutine instrumentation should work when started lazily and canceled #dispatcherName"() {
     setup:
     CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
     int expectedNumberOfSpans = kotlinTest.withParentSpanAndOnlyCanceled()
@@ -364,7 +355,85 @@ abstract class AbstractKotlinCoroutineInstrumentationTest<T extends CoreKotlinCo
     }
 
     where:
-    dispatcher << dispatchersToTest
+    [dispatcherName, dispatcher] << dispatchersToTest
+  }
+
+  def "kotlin trace consistent with timeout"() {
+    setup:
+    CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
+    int expectedNumberOfSpans = kotlinTest.traceAfterTimeout()
+
+    expect:
+    assertTraces(1) {
+      trace(expectedNumberOfSpans, true) {
+        span(5) {
+          operationName "trace.annotation"
+          parent()
+        }
+        span(0) {
+          operationName "1-before-timeout"
+          childOf span(5)
+        }
+        span(1) {
+          operationName "2-inside-timeout"
+          childOf span(5)
+        }
+        span(2) {
+          operationName "3-after-timeout"
+          childOf span(5)
+        }
+        span(3) {
+          operationName "4-after-timeout-2"
+          childOf span(5)
+        }
+        span(4) {
+          operationName "5-after-timeout-3"
+          childOf span(5)
+        }
+      }
+    }
+
+    where:
+    [dispatcherName, dispatcher] << dispatchersToTest
+  }
+
+  def "kotlin trace consistent after delay"() {
+    setup:
+    CoreKotlinCoroutineTests kotlinTest = getCoreKotlinCoroutineTestsInstance(dispatcher)
+    int expectedNumberOfSpans = kotlinTest.traceAfterDelay()
+
+    expect:
+    assertTraces(1) {
+      trace(expectedNumberOfSpans, true) {
+        span(5) {
+          operationName "trace.annotation"
+          parent()
+        }
+        span(1) {
+          operationName "before-process"
+          childOf span(5)
+        }
+        span(2) {
+          operationName "process-url-a"
+          childOf span(5)
+        }
+        span(3) {
+          operationName "process-url-b"
+          childOf span(5)
+        }
+        span(4) {
+          operationName "process-url-c"
+          childOf span(5)
+        }
+        span(0) {
+          operationName "after-process"
+          childOf span(5)
+        }
+      }
+    }
+
+    where:
+    [dispatcherName, dispatcher] << dispatchersToTest
   }
 
   protected static DDSpan findSpan(List<DDSpan> trace, String opName) {

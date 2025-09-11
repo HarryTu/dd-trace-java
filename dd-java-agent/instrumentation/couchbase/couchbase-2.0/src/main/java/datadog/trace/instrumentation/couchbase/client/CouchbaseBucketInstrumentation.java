@@ -8,14 +8,15 @@ import static net.bytebuddy.matcher.ElementMatchers.returns;
 import com.couchbase.client.java.CouchbaseCluster;
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.CallDepthThreadLocalMap;
 import java.lang.reflect.Method;
 import net.bytebuddy.asm.Advice;
 import rx.Observable;
 
-@AutoService(Instrumenter.class)
-public class CouchbaseBucketInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForKnownTypes {
+@AutoService(InstrumenterModule.class)
+public class CouchbaseBucketInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForKnownTypes, Instrumenter.HasMethodAdvice {
 
   public CouchbaseBucketInstrumentation() {
     super("couchbase");
@@ -43,8 +44,8 @@ public class CouchbaseBucketInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(isPublic()).and(returns(named("rx.Observable"))),
         CouchbaseBucketInstrumentation.class.getName() + "$CouchbaseClientAdvice");
   }

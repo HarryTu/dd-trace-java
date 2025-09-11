@@ -6,10 +6,11 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 
-@AutoService(Instrumenter.class)
-public class FormParamInjectorInstrumentation extends Instrumenter.Iast
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class FormParamInjectorInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public FormParamInjectorInstrumentation() {
     super("resteasy");
@@ -21,8 +22,8 @@ public class FormParamInjectorInstrumentation extends Instrumenter.Iast
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("inject").and(isPublic()).and(takesArguments(2)),
         packageName + ".FormParamInjectorAdvice");
   }

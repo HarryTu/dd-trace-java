@@ -17,6 +17,7 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.twilio.Twilio;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.CallDepthThreadLocalMap;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
@@ -25,16 +26,16 @@ import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
 /** Instrument the Twilio SDK to identify calls as a seperate service. */
-@AutoService(Instrumenter.class)
-public class TwilioAsyncInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class TwilioAsyncInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   public TwilioAsyncInstrumentation() {
     super("twilio-sdk");
   }
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     // Only apply instrumentation when guava's ListenableFuture is also deployed.
     return hasClassNamed("com.google.common.util.concurrent.ListenableFuture");
   }
@@ -68,14 +69,14 @@ public class TwilioAsyncInstrumentation extends Instrumenter.Tracing
 
   /** Return bytebuddy transformers for instrumenting the Twilio SDK. */
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
+  public void methodAdvice(MethodTransformer transformer) {
     /*
        We are listing out the main service calls on the Creator, Deleter, Fetcher, Reader, and
        Updater abstract classes. The isDeclaredBy() matcher did not work in the unit tests and
        we found that there were certain methods declared on the base class (particularly Reader),
        which we weren't interested in annotating.
     */
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(namedOneOf("createAsync", "deleteAsync", "readAsync", "fetchAsync", "updateAsync"))
             .and(isPublic())
@@ -105,11 +106,9 @@ public class TwilioAsyncInstrumentation extends Instrumenter.Tracing
       DECORATE.afterStart(span);
       DECORATE.onServiceExecution(span, that, methodName);
 
-      final AgentScope scope = activateSpan(span);
       // Enable async propagation, so the newly spawned task will be associated back with this
       // original trace.
-      scope.setAsyncPropagation(true);
-      return scope;
+      return activateSpan(span);
     }
 
     /** Method exit instrumentation. */

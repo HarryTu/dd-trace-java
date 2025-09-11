@@ -1,45 +1,41 @@
 plugins {
-  id "com.github.johnrengelman.shadow"
+  id 'com.gradleup.shadow'
 }
 
 apply from: "$rootDir/gradle/java.gradle"
 
 excludedClassesCoverage += [
-  // ControllerFactory gets better tested in actual controller implementations
-  'com.datadog.profiling.agent.ControllerFactory',
+  'com.datadog.profiling.agent.CompositeController',
+  'com.datadog.profiling.agent.CompositeController.CompositeRecordingData',
+  'com.datadog.profiling.agent.CompositeController.CompositeOngoingRecording',
   'com.datadog.profiling.agent.ProfilingAgent',
   'com.datadog.profiling.agent.ProfilingAgent.ShutdownHook',
-  'com.datadog.profiling.agent.ProfilingAgent.DataDumper'
+  'com.datadog.profiling.agent.ProfilingAgent.DataDumper',
+  'com.datadog.profiling.agent.ProfilerFlare'
 ]
 
 dependencies {
-  api deps.slf4j
+  api libs.slf4j
   api project(':internal-api')
 
-  implementation project(path: ':dd-java-agent:agent-profiling:profiling-ddprof', configuration: 'shadow')
-  api project(':dd-java-agent:agent-profiling:profiling-auxiliary')
-  api project(':dd-java-agent:agent-profiling:profiling-auxiliary-ddprof')
+  api project(':dd-java-agent:agent-profiling:profiling-ddprof')
   api project(':dd-java-agent:agent-profiling:profiling-uploader')
   api project(':dd-java-agent:agent-profiling:profiling-controller')
+  api project(':dd-java-agent:agent-profiling:profiling-controller-jfr')
+  api project(':dd-java-agent:agent-profiling:profiling-controller-jfr:implementation')
   api project(':dd-java-agent:agent-profiling:profiling-controller-ddprof')
   api project(':dd-java-agent:agent-profiling:profiling-controller-openjdk')
   api project(':dd-java-agent:agent-profiling:profiling-controller-oracle')
 
-  testImplementation deps.junit5
-  testImplementation deps.mockito
-}
-
-Project parent_project = project
-subprojects { Project subProj ->
-  subProj.tasks.withType(Test).configureEach { subTask ->
-    onlyIf { !project.rootProject.hasProperty("skipProfilingTests") }
-  }
+  testImplementation libs.bundles.junit5
+  testImplementation libs.bundles.mockito
 }
 
 configurations {
   // exclude bootstrap dependencies from shadowJar
-  runtime.exclude module: deps.slf4j
-  runtime.exclude group: 'org.slf4j'
+  runtime {
+    exclude(group: 'org.slf4j', module: 'slf4j-api')
+  }
 }
 
 shadowJar {

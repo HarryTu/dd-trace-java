@@ -3,17 +3,17 @@ package datadog.trace.bootstrap.instrumentation.api
 
 import datadog.trace.api.DDSpanId
 import datadog.trace.api.DDTraceId
-import datadog.trace.test.util.DDSpecification
+import spock.lang.Specification
 
 import static datadog.trace.bootstrap.instrumentation.api.AgentSpanLink.DEFAULT_FLAGS
 import static datadog.trace.bootstrap.instrumentation.api.AgentSpanLink.SAMPLED_FLAG
 
-class SpanLinkTest extends DDSpecification {
+class SpanLinkTest extends Specification {
   def "test span link from context"() {
     setup:
     def traceId = DDTraceId.fromHex("11223344556677889900aabbccddeeff")
     def spanId = DDSpanId.fromHex("123456789abcdef0")
-    AgentSpan.Context context = Stub {
+    AgentSpanContext context = Stub {
       getTraceId() >> traceId
       getSpanId() >> spanId
       getSamplingPriority() >> (sampled ? 1 : 0)
@@ -27,7 +27,7 @@ class SpanLinkTest extends DDSpecification {
     link.spanId() == spanId
     link.traceFlags() == (sampled ? SAMPLED_FLAG : DEFAULT_FLAGS)
     link.traceState() == ""
-    link.attributes() == SpanLinkAttributes.EMPTY
+    link.attributes() == SpanAttributes.EMPTY
 
     when:
     link.toString()
@@ -39,15 +39,27 @@ class SpanLinkTest extends DDSpecification {
     sampled << [true, false]
   }
 
+  def "test span links api"() {
+    when:
+    def link = new SpanLink(null, 0L, 0 as byte, null, null)
+
+    then:
+    link.traceId() == DDTraceId.ZERO
+    link.traceState() != null
+    link.traceState().isEmpty()
+    link.attributes() != null
+    link.attributes().isEmpty()
+  }
+
   def "test span link attributes api"() {
     when:
-    def attributes = SpanLinkAttributes.builder().build()
+    def attributes = SpanAttributes.builder().build()
 
     then:
     attributes.isEmpty()
 
     when:
-    attributes = SpanLinkAttributes.builder().put('key', 'value').build()
+    attributes = SpanAttributes.builder().put('key', 'value').build()
 
     then:
     !attributes.isEmpty()
@@ -55,7 +67,7 @@ class SpanLinkTest extends DDSpecification {
 
   def "test span link attributes encoding"() {
     setup:
-    def builder = SpanLinkAttributes.builder()
+    def builder = SpanAttributes.builder()
 
     when:
     builder.put('string', 'value')
@@ -117,7 +129,7 @@ class SpanLinkTest extends DDSpecification {
     !map.containsKey('double-array-null')
 
     when:
-    def attributes = SpanLinkAttributes.fromMap(map)
+    def attributes = SpanAttributes.fromMap(map)
 
     then:
     attributes.asMap() == map
@@ -125,9 +137,23 @@ class SpanLinkTest extends DDSpecification {
 
   def "test span link attributes toString"() {
     when:
-    SpanLinkAttributes.builder().build().toString()
+    SpanAttributes.builder().build().toString()
 
     then:
     notThrown(NullPointerException)
+  }
+
+  def "test span link attributes equals and hashcode"() {
+    when:
+    def a = SpanAttributes.builder().put("test", "value").build()
+    def b = SpanAttributes.builder().put("test", "value").build()
+    def c = SpanAttributes.builder().build()
+
+    then:
+    assert a == b
+    assert a != c
+    assert !c.equals(null)
+    assert a.hashCode() == b.hashCode()
+    assert a.hashCode() !=  c.hashCode()
   }
 }

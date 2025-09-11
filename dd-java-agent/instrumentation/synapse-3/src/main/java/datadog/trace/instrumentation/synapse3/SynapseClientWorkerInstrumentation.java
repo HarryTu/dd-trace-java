@@ -1,7 +1,8 @@
 package datadog.trace.instrumentation.synapse3;
 
 import static datadog.trace.agent.tooling.bytebuddy.matcher.NameMatchers.named;
-import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activeScope;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.captureActiveSpan;
+import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.noopContinuation;
 import static datadog.trace.instrumentation.synapse3.SynapseClientDecorator.DECORATE;
 import static datadog.trace.instrumentation.synapse3.SynapseClientDecorator.SYNAPSE_CONTINUATION_KEY;
 import static net.bytebuddy.matcher.ElementMatchers.isConstructor;
@@ -11,14 +12,15 @@ import static net.bytebuddy.matcher.ElementMatchers.takesNoArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import net.bytebuddy.asm.Advice;
 import org.apache.http.HttpResponse;
 import org.apache.synapse.transport.passthru.TargetResponse;
 
-@AutoService(Instrumenter.class)
-public final class SynapseClientWorkerInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class SynapseClientWorkerInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public SynapseClientWorkerInstrumentation() {
     super("synapse3-client", "synapse3");
@@ -37,12 +39,12 @@ public final class SynapseClientWorkerInstrumentation extends Instrumenter.Traci
   }
 
   @Override
-  public void adviceTransformations(final AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(final MethodTransformer transformer) {
+    transformer.applyAdvice(
         isConstructor()
             .and(takesArgument(2, named("org.apache.synapse.transport.passthru.TargetResponse"))),
         getClass().getName() + "$NewClientWorkerAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod().and(named("run")).and(takesNoArguments()),
         getClass().getName() + "$ClientWorkerResponseAdvice");
   }
@@ -50,12 +52,9 @@ public final class SynapseClientWorkerInstrumentation extends Instrumenter.Traci
   public static final class NewClientWorkerAdvice {
     @Advice.OnMethodEnter(suppress = Throwable.class)
     public static void createWorker(@Advice.Argument(2) final TargetResponse response) {
-      AgentScope scope = activeScope();
-      if (null != scope) {
-        response
-            .getConnection()
-            .getContext()
-            .setAttribute(SYNAPSE_CONTINUATION_KEY, scope.capture());
+      AgentScope.Continuation continuation = captureActiveSpan();
+      if (continuation != noopContinuation()) {
+        response.getConnection().getContext().setAttribute(SYNAPSE_CONTINUATION_KEY, continuation);
       }
     }
   }

@@ -1,10 +1,34 @@
 package datadog.trace.api.naming.v0;
 
+import datadog.trace.api.ClassloaderConfigurationOverrides;
 import datadog.trace.api.Config;
 import datadog.trace.api.naming.NamingSchema;
+import datadog.trace.api.remoteconfig.ServiceNameCollector;
+import java.util.function.Supplier;
 import javax.annotation.Nonnull;
 
-public class MessagingNamingV0 implements NamingSchema.ForMessaging {
+class MessagingNamingV0 implements NamingSchema.ForMessaging {
+
+  private static class ClassloaderDependentNamingSupplier implements Supplier<String> {
+    private static final ClassloaderDependentNamingSupplier INSTANCE =
+        new ClassloaderDependentNamingSupplier();
+    private final String configServiceName = Config.get().getServiceName();
+
+    @Override
+    public String get() {
+      final ClassloaderConfigurationOverrides.ContextualInfo contextual =
+          ClassloaderConfigurationOverrides.maybeGetContextualInfo();
+      if (contextual != null && contextual.getServiceName() != null) {
+        final String serviceName = contextual.getServiceName();
+        ServiceNameCollector.get().addService(serviceName);
+        return serviceName;
+      }
+      return configServiceName;
+    }
+  }
+
+  private static final Supplier<String> NULL_SUPPLIER = () -> null;
+
   private final boolean allowInferredServices;
 
   public MessagingNamingV0(final boolean allowInferredServices) {
@@ -21,7 +45,8 @@ public class MessagingNamingV0 implements NamingSchema.ForMessaging {
   }
 
   @Override
-  public String outboundService(@Nonnull final String messagingSystem, boolean useLegacyTracing) {
+  public Supplier<String> outboundService(
+      @Nonnull final String messagingSystem, boolean useLegacyTracing) {
     return inboundService(messagingSystem, useLegacyTracing);
   }
 
@@ -39,18 +64,27 @@ public class MessagingNamingV0 implements NamingSchema.ForMessaging {
   }
 
   @Override
-  public String inboundService(@Nonnull final String messagingSystem, boolean useLegacyTracing) {
+  public Supplier<String> inboundService(
+      @Nonnull final String messagingSystem, boolean useLegacyTracing) {
     if (allowInferredServices) {
-      return useLegacyTracing ? messagingSystem : Config.get().getServiceName();
-    } else {
-      return null;
+      if (useLegacyTracing) {
+        ServiceNameCollector.get().addService(messagingSystem);
+        return messagingSystem::toString;
+      } else if (Config.get().isJeeSplitByDeployment()) {
+        // in this particular case we're narrowing the service name from the context classloader.
+        // this is more expensive so we're doing only if that feature is enabled.
+        return ClassloaderDependentNamingSupplier.INSTANCE;
+      }
+      return Config.get()::getServiceName;
     }
+    return NULL_SUPPLIER;
   }
 
   @Override
   @Nonnull
-  public String timeInQueueService(@Nonnull final String messagingSystem) {
-    return messagingSystem;
+  public Supplier<String> timeInQueueService(@Nonnull final String messagingSystem) {
+    ServiceNameCollector.get().addService(messagingSystem);
+    return () -> messagingSystem;
   }
 
   @Nonnull

@@ -4,10 +4,13 @@ import static datadog.trace.api.iast.VulnerabilityMarks.NOT_MARKED;
 
 import com.datadog.iast.model.json.SourceIndex;
 import com.datadog.iast.util.Ranged;
+import java.util.HashSet;
 import java.util.Objects;
+import java.util.Set;
 import java.util.StringJoiner;
 import javax.annotation.Nonnegative;
 import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 
 public final class Range implements Ranged {
 
@@ -16,7 +19,7 @@ public final class Range implements Ranged {
   private final @Nonnull @SourceIndex Source source;
   private final int marks;
 
-  public Range(final int start, final int length, final Source source, final int marks) {
+  public Range(final int start, final int length, @Nonnull final Source source, final int marks) {
     this.start = start;
     this.length = length;
     this.source = source;
@@ -33,6 +36,7 @@ public final class Range implements Ranged {
     return length;
   }
 
+  @Nonnull
   public Source getSource() {
     return source;
   }
@@ -80,5 +84,27 @@ public final class Range implements Ranged {
 
   public boolean isMarked(final int mark) {
     return (marks & mark) != NOT_MARKED;
+  }
+
+  /** Creates a version of the range without weak references to be used in vulnerabilities */
+  public Range consolidate() {
+    if (!source.isReference()) {
+      return this;
+    }
+    return new Range(
+        start, length, new Source(source.getOrigin(), source.getName(), source.getValue()), marks);
+  }
+
+  public @Nullable Set<VulnerabilityType> getMarkedVulnerabilities() {
+    if (marks == NOT_MARKED) {
+      return null;
+    }
+    Set<VulnerabilityType> vulnerabilities = new HashSet<>();
+    for (VulnerabilityType type : VulnerabilityType.MARKED_VULNERABILITIES) {
+      if ((marks & type.mark()) != 0) {
+        vulnerabilities.add(type);
+      }
+    }
+    return vulnerabilities;
   }
 }

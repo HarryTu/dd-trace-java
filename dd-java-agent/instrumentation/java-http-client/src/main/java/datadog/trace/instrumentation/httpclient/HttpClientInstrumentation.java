@@ -11,27 +11,30 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
+import datadog.environment.JavaVirtualMachine;
 import datadog.trace.agent.tooling.Instrumenter;
-import datadog.trace.api.Platform;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public class HttpClientInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForBootstrap, Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class HttpClientInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForBootstrap,
+        Instrumenter.ForTypeHierarchy,
+        Instrumenter.HasMethodAdvice {
 
   public HttpClientInstrumentation() {
     super("java-http-client");
   }
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     return hasClassNamed("java.net.http.HttpClient");
   }
 
   @Override
   public boolean isEnabled() {
-    return Platform.isJavaVersionAtLeast(11) && super.isEnabled();
+    return JavaVirtualMachine.isJavaVersionAtLeast(11) && super.isEnabled();
   }
 
   @Override
@@ -59,8 +62,8 @@ public class HttpClientInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(named("send"))
             .and(isPublic())
@@ -68,7 +71,7 @@ public class HttpClientInstrumentation extends Instrumenter.Tracing
             .and(takesArgument(0, named("java.net.http.HttpRequest"))),
         packageName + ".SendAdvice");
 
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         isMethod()
             .and(named("sendAsync"))
             .and(isPublic())

@@ -8,6 +8,8 @@ import datadog.communication.monitor.Monitoring
 import datadog.communication.serialization.ByteBufferConsumer
 import datadog.communication.serialization.FlushingBuffer
 import datadog.communication.serialization.msgpack.MsgPackWriter
+import datadog.trace.api.Config
+import datadog.trace.api.ProcessTags
 import datadog.trace.api.StatsDClient
 import datadog.trace.bootstrap.instrumentation.api.InstrumentationTags
 import datadog.trace.common.sampling.RateByServiceTraceSampler
@@ -137,7 +139,8 @@ class DDAgentApiTest extends DDCoreSpecification {
     [[buildSpan(1L, "service.name", "my-service", PropagationTags.factory().fromHeaderValue(PropagationTags.HeaderType.DATADOG, "_dd.p.usr=123"))]] | [[new TreeMap<>([
       "duration" : 10,
       "error"    : 0,
-      "meta"     : ["thread.name": Thread.currentThread().getName(), "_dd.p.usr": "123", "_dd.p.dm": "-1"],
+      "meta"     : ["thread.name": Thread.currentThread().getName(), "_dd.p.usr": "123", "_dd.p.dm": "-1"] +
+        (Config.get().isExperimentalPropagateProcessTagsEnabled() ? ["_dd.tags.process" : ProcessTags.getTagsForSerialization().toString()] : []),
       "metrics"  : [
         (DDSpanContext.PRIORITY_SAMPLING_KEY)          : 1,
         (InstrumentationTags.DD_TOP_LEVEL as String)   : 1,
@@ -157,7 +160,8 @@ class DDAgentApiTest extends DDCoreSpecification {
     [[buildSpan(100L, "resource.name", "my-resource", PropagationTags.factory().fromHeaderValue(PropagationTags.HeaderType.DATADOG, "_dd.p.usr=123"))]] | [[new TreeMap<>([
       "duration" : 10,
       "error"    : 0,
-      "meta"     : ["thread.name": Thread.currentThread().getName(), "_dd.p.usr": "123", "_dd.p.dm": "-1"],
+      "meta"     : ["thread.name": Thread.currentThread().getName(), "_dd.p.usr": "123", "_dd.p.dm": "-1"] +
+        (Config.get().isExperimentalPropagateProcessTagsEnabled() ? ["_dd.tags.process" : ProcessTags.getTagsForSerialization().toString()] : []),
       "metrics"  : [
         (DDSpanContext.PRIORITY_SAMPLING_KEY)          : 1,
         (InstrumentationTags.DD_TOP_LEVEL as String)   : 1,
@@ -336,6 +340,36 @@ class DDAgentApiTest extends DDCoreSpecification {
     thrown RejectedExecutionException
     and:
     httpExecutorService.isShutdown()
+    cleanup:
+    agent.close()
+  }
+
+  void 'test metaStruct support on the encoded spans'() {
+    setup:
+    def agentVersion = 'v0.4/traces'
+    def meta1 = 'Hello World!'
+    def meta2 = [Hello: ' World!']
+    def agent = httpServer {
+      handlers {
+        put(agentVersion) {
+          response.send()
+        }
+      }
+    }
+    def client = createAgentApi(agent.address.toString())[1]
+    def span = buildSpan(1L, "fakeType", [:])
+    .setMetaStruct('meta_1', meta1)
+    .setMetaStruct('meta_2', meta2)
+    def payload = prepareTraces(agentVersion, [[span]])
+
+    expect:
+    client.sendSerializedTraces(payload).success()
+    def body = convertList(agentVersion, agent.lastRequest.body)[0][0]
+    def metaStruct = body['meta_struct'] as Map<String, byte[]>
+    assert metaStruct.size() == 2
+    assert mapper.readValue(metaStruct['meta_1'], String) == meta1
+    assert mapper.readValue(metaStruct['meta_2'], Map) == meta2
+
     cleanup:
     agent.close()
   }

@@ -2,10 +2,14 @@ package datadog.smoketest
 
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
+import datadog.trace.api.config.GeneralConfig
+import datadog.trace.test.util.Flaky
+import spock.lang.AutoCleanup
 import spock.lang.Shared
 
 import static datadog.trace.api.config.TraceInstrumentationConfig.TRACE_128_BIT_TRACEID_LOGGING_ENABLED
 import static datadog.trace.api.config.TracerConfig.TRACE_128_BIT_TRACEID_GENERATION_ENABLED
+import static datadog.trace.test.util.Predicates.IBM8
 import static java.util.concurrent.TimeUnit.SECONDS
 
 /**
@@ -23,6 +27,8 @@ abstract class LogInjectionSmokeTest extends AbstractSmokeTest {
   // Estimate for the amount of time instrumentation, plus request, plus some extra
   static final int TIMEOUT_SECS = 30
 
+  static final String LOG4J2_BACKEND = "Log4j2"
+
   @Shared
   File outputLogFile
 
@@ -35,7 +41,15 @@ abstract class LogInjectionSmokeTest extends AbstractSmokeTest {
   boolean noTags = false
 
   @Shared
-  boolean trace128bits = false
+  boolean trace128bits = true
+
+  @Shared
+  @AutoCleanup
+  MockBackend mockBackend = new MockBackend()
+
+  def setup() {
+    mockBackend.reset()
+  }
 
   @Override
   ProcessBuilder createProcessBuilder() {
@@ -74,9 +88,13 @@ abstract class LogInjectionSmokeTest extends AbstractSmokeTest {
       command.add("-Ddd.version=" as String)
       command.add("-Ddd.service.name=" as String)
     }
-    if (trace128bits) {
-      command.add("-Ddd.$TRACE_128_BIT_TRACEID_GENERATION_ENABLED=true" as String)
-      command.add("-Ddd.$TRACE_128_BIT_TRACEID_LOGGING_ENABLED=true" as String)
+    if (!trace128bits) {
+      command.add("-Ddd.$TRACE_128_BIT_TRACEID_GENERATION_ENABLED=false" as String)
+      command.add("-Ddd.$TRACE_128_BIT_TRACEID_LOGGING_ENABLED=false" as String)
+    }
+    if (supportsDirectLogSubmission()) {
+      command.add("-Ddd.$GeneralConfig.AGENTLESS_LOG_SUBMISSION_ENABLED=true" as String)
+      command.add("-Ddd.$GeneralConfig.AGENTLESS_LOG_SUBMISSION_URL=${mockBackend.intakeUrl}" as String)
     }
     command.addAll(additionalArguments())
     command.addAll((String[]) ["-jar", loggingJar])
@@ -86,6 +104,21 @@ abstract class LogInjectionSmokeTest extends AbstractSmokeTest {
     processBuilder.directory(new File(buildDirectory))
 
     return processBuilder
+  }
+
+  @Override
+  boolean isErrorLog(String log) {
+    // Exclude some errors that we consistently get because of the logging setups used here:
+    if (log.contains('no applicable action for [immediateFlush]')) {
+      return false
+    }
+    if (log.contains('JSONLayout contains an invalid element or attribute')) {
+      return false
+    }
+    if (log.contains('JSONLayout has no parameter that matches element')) {
+      return false
+    }
+    return super.isErrorLog(log)
   }
 
   @Override
@@ -103,6 +136,10 @@ abstract class LogInjectionSmokeTest extends AbstractSmokeTest {
 
   def supportsJson() {
     return true
+  }
+
+  def supportsDirectLogSubmission() {
+    return backend() == LOG4J2_BACKEND
   }
 
   abstract backend()
@@ -157,36 +194,40 @@ abstract class LogInjectionSmokeTest extends AbstractSmokeTest {
     if (!getClass().simpleName.contains("Log4j2Backend")) {
       assert logLines.every { it["backend"] == backend() }
     }
-    assert logLines.every { getFromContext(it, "dd.service") == noTags ? null : SERVICE_NAME }
-    assert logLines.every { getFromContext(it,"dd.version") == noTags ? null : VERSION }
-    assert logLines.every { getFromContext(it,"dd.env") == noTags ? null : ENV }
+    return assertParsedJsonLinesWithInjection(logLines, firstTraceId, firstSpanId, secondTraceId, secondSpanId, forthTraceId, forthSpanId)
+  }
 
-    assert getFromContext(logLines[0],"dd.trace_id") == null
-    assert getFromContext(logLines[0],"dd.span_id") == null
+  private assertParsedJsonLinesWithInjection(List<Map> logLines, String firstTraceId, String firstSpanId, String secondTraceId, String secondSpanId, String forthTraceId, String forthSpanId) {
+    assert logLines.every { getFromContext(it, "dd.service") == noTags ? null : SERVICE_NAME }
+    assert logLines.every { getFromContext(it, "dd.version") == noTags ? null : VERSION }
+    assert logLines.every { getFromContext(it, "dd.env") == noTags ? null : ENV }
+
+    assert getFromContext(logLines[0], "dd.trace_id") == null
+    assert getFromContext(logLines[0], "dd.span_id") == null
     assert logLines[0]["message"] == "BEFORE FIRST SPAN"
 
     assert getFromContext(logLines[1], "dd.trace_id") == firstTraceId
     assert getFromContext(logLines[1], "dd.span_id") == firstSpanId
     assert logLines[1]["message"] == "INSIDE FIRST SPAN"
 
-    assert getFromContext(logLines[2],"dd.trace_id") == null
-    assert getFromContext(logLines[2],"dd.span_id") == null
+    assert getFromContext(logLines[2], "dd.trace_id") == null
+    assert getFromContext(logLines[2], "dd.span_id") == null
     assert logLines[2]["message"] == "AFTER FIRST SPAN"
 
     assert getFromContext(logLines[3], "dd.trace_id") == secondTraceId
-    assert getFromContext(logLines[3], "dd.span_id")  == secondSpanId
+    assert getFromContext(logLines[3], "dd.span_id") == secondSpanId
     assert logLines[3]["message"] == "INSIDE SECOND SPAN"
 
     assert getFromContext(logLines[4], "dd.trace_id") == null
-    assert getFromContext(logLines[4], "dd.span_id")  == null
+    assert getFromContext(logLines[4], "dd.span_id") == null
     assert logLines[4]["message"] == "INSIDE THIRD SPAN"
 
     assert getFromContext(logLines[5], "dd.trace_id") == forthTraceId
-    assert getFromContext(logLines[5], "dd.span_id")  == forthSpanId
+    assert getFromContext(logLines[5], "dd.span_id") == forthSpanId
     assert logLines[5]["message"] == "INSIDE FORTH SPAN"
 
     assert getFromContext(logLines[6], "dd.trace_id") == null
-    assert getFromContext(logLines[6], "dd.span_id")  == null
+    assert getFromContext(logLines[6], "dd.span_id") == null
     assert logLines[6]["message"] == "AFTER FORTH SPAN"
 
     return true
@@ -215,6 +256,7 @@ abstract class LogInjectionSmokeTest extends AbstractSmokeTest {
     return unmangled.split(" ")[1..2]
   }
 
+  @Flaky(condition = IBM8)
   def "check raw file injection"() {
     when:
     def count = waitForTraceCount(2)
@@ -272,6 +314,10 @@ abstract class LogInjectionSmokeTest extends AbstractSmokeTest {
     if (supportsJson()) {
       assertJsonLinesWithInjection(jsonLogLines, firstTraceId, firstSpanId, secondTraceId, secondSpanId, thirdTraceId, thirdSpanId, forthTraceId, forthSpanId)
     }
+
+    if (supportsDirectLogSubmission()) {
+      assertParsedJsonLinesWithInjection(mockBackend.waitForLogs(7), firstTraceId, firstSpanId, secondTraceId, secondSpanId, forthTraceId, forthSpanId)
+    }
   }
 
   void checkTraceIdFormat(String traceId) {
@@ -323,7 +369,7 @@ class JULInterfaceJULBackend extends JULBackend {
 }
 
 class JULInterfaceLog4j2Backend extends LogInjectionSmokeTest {
-  def backend() { "Log4j2" }
+  def backend() { LOG4J2_BACKEND }
 
   List additionalArguments() {
     return ["-Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager"]
@@ -361,7 +407,7 @@ class JCLInterfaceLog4j1LatestBackend extends JCLInterfaceLog4j1Backend {}
 class JCLInterfaceLog4j1Backend128bTid extends JCLInterfaceLog4j1Backend {}
 
 class JCLInterfaceLog4j2Backend extends LogInjectionSmokeTest {
-  def backend() { "Log4j2" }
+  def backend() { LOG4J2_BACKEND }
 
   // workaround https://github.com/apache/logging-log4j2/issues/1865
   List additionalArguments() {
@@ -383,7 +429,7 @@ class Log4j1InterfaceLog4j1Backend128bTid extends Log4j1InterfaceLog4j1Backend {
 class Log4j1InterfaceLog4j1LatestBackend extends Log4j1InterfaceLog4j1Backend {}
 
 class Log4j1InterfaceLog4j2Backend extends LogInjectionSmokeTest {
-  def backend() { "Log4j2" }
+  def backend() { LOG4J2_BACKEND }
 }
 
 class Log4j1InterfaceLog4j2BackendNoTags extends Log4j1InterfaceLog4j2Backend {}
@@ -391,7 +437,7 @@ class Log4j1InterfaceLog4j2Backend128bTid extends Log4j1InterfaceLog4j2Backend {
 class Log4j1InterfaceLog4j2LatestBackend extends Log4j1InterfaceLog4j2Backend {}
 
 class Log4j2InterfaceLog4j2Backend extends LogInjectionSmokeTest {
-  def backend() { "Log4j2" }
+  def backend() { LOG4J2_BACKEND }
 }
 
 class Log4j2InterfaceLog4j2BackendNoTags extends Log4j2InterfaceLog4j2Backend {}
@@ -416,7 +462,7 @@ class Slf4jInterfaceLog4j1Backend128bTid extends Slf4jInterfaceLog4j1Backend {}
 class Slf4jInterfaceLog4j1LatestBackend extends Slf4jInterfaceLog4j1Backend {}
 
 class Slf4jInterfaceLog4j2Backend extends LogInjectionSmokeTest {
-  def backend() { "Log4j2" }
+  def backend() { LOG4J2_BACKEND }
 }
 
 class Slf4jInterfaceLog4j2BackendNoTags extends Slf4jInterfaceLog4j2Backend {}
@@ -446,7 +492,7 @@ class Slf4jInterfaceJCLToLog4j1Backend128bTid extends Slf4jInterfaceJCLToLog4j1B
 class Slf4jInterfaceJCLToLog4j1LatestBackend extends Slf4jInterfaceJCLToLog4j1Backend {}
 
 class Slf4jInterfaceJCLToLog4j2Backend extends LogInjectionSmokeTest {
-  def backend() { "Log4j2" }
+  def backend() { LOG4J2_BACKEND }
 
   // workaround https://github.com/apache/logging-log4j2/issues/1865
   List additionalArguments() {
@@ -533,7 +579,7 @@ class JBossInterfaceLog4j1Backend128bTid extends JBossInterfaceLog4j1Backend {}
 class JBossInterfaceLog4j1LatestBackend extends JBossInterfaceLog4j1Backend {}
 
 class JBossInterfaceLog4j2Backend extends LogInjectionSmokeTest {
-  def backend() { "Log4j2" }
+  def backend() { LOG4J2_BACKEND }
 }
 
 class JBossInterfaceLog4j2BackendNoTags extends JBossInterfaceLog4j2Backend {}

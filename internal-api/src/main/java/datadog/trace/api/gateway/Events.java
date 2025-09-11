@@ -3,9 +3,11 @@ package datadog.trace.api.gateway;
 import datadog.trace.api.function.TriConsumer;
 import datadog.trace.api.function.TriFunction;
 import datadog.trace.api.http.StoredBodySupplier;
+import datadog.trace.api.telemetry.LoginEvent;
 import datadog.trace.bootstrap.instrumentation.api.URIDataAdapter;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -187,6 +189,149 @@ public final class Events<D> {
   @SuppressWarnings("unchecked")
   public EventType<BiFunction<RequestContext, Object, Flow<Void>>> grpcServerRequestMessage() {
     return (EventType<BiFunction<RequestContext, Object, Flow<Void>>>) GRPC_SERVER_REQUEST_MESSAGE;
+  }
+
+  static final int GRAPHQL_SERVER_REQUEST_MESSAGE_ID = 15;
+
+  @SuppressWarnings("rawtypes")
+  private static final EventType GRAPHQL_SERVER_REQUEST_MESSAGE =
+      new ET<>("graphql.server.request.message", GRAPHQL_SERVER_REQUEST_MESSAGE_ID);
+  /** Before resolver execution */
+  @SuppressWarnings("unchecked")
+  public EventType<BiFunction<RequestContext, Map<String, ?>, Flow<Void>>>
+      graphqlServerRequestMessage() {
+    return (EventType<BiFunction<RequestContext, Map<String, ?>, Flow<Void>>>)
+        GRAPHQL_SERVER_REQUEST_MESSAGE;
+  }
+
+  static final int DATABASE_CONNECTION_ID = 16;
+
+  @SuppressWarnings("rawtypes")
+  private static final EventType DATABASE_CONNECTION =
+      new ET<>("database.connection", DATABASE_CONNECTION_ID);
+  /** A database connection */
+  @SuppressWarnings("unchecked")
+  public EventType<BiConsumer<RequestContext, String>> databaseConnection() {
+    return (EventType<BiConsumer<RequestContext, String>>) DATABASE_CONNECTION;
+  }
+
+  static final int DATABASE_SQL_QUERY_ID = 17;
+
+  @SuppressWarnings("rawtypes")
+  private static final EventType DATABASE_SQL_QUERY =
+      new ET<>("database.query", DATABASE_SQL_QUERY_ID);
+  /** A database sql query */
+  @SuppressWarnings("unchecked")
+  public EventType<BiFunction<RequestContext, String, Flow<Void>>> databaseSqlQuery() {
+    return (EventType<BiFunction<RequestContext, String, Flow<Void>>>) DATABASE_SQL_QUERY;
+  }
+
+  static final int GRPC_SERVER_METHOD_ID = 18;
+
+  @SuppressWarnings("rawtypes")
+  private static final EventType GRPC_SERVER_METHOD =
+      new ET<>("grpc.server.method", GRPC_SERVER_METHOD_ID);
+
+  @SuppressWarnings("unchecked")
+  public EventType<BiFunction<RequestContext, String, Flow<Void>>> grpcServerMethod() {
+    return (EventType<BiFunction<RequestContext, String, Flow<Void>>>) GRPC_SERVER_METHOD;
+  }
+
+  static final int NETWORK_CONNECTION_ID = 19;
+
+  @SuppressWarnings("rawtypes")
+  private static final EventType NETWORK_CONNECTION =
+      new ET<>("network.connection", NETWORK_CONNECTION_ID);
+
+  /** A I/O network URL */
+  @SuppressWarnings("unchecked")
+  public EventType<BiFunction<RequestContext, String, Flow<Void>>> networkConnection() {
+    return (EventType<BiFunction<RequestContext, String, Flow<Void>>>) NETWORK_CONNECTION;
+  }
+
+  static final int FILE_LOADED_ID = 20;
+
+  @SuppressWarnings("rawtypes")
+  private static final EventType FILE_LOADED = new ET<>("file.loaded", FILE_LOADED_ID);
+
+  /** A I/O file loaded */
+  @SuppressWarnings("unchecked")
+  public EventType<BiFunction<RequestContext, String, Flow<Void>>> fileLoaded() {
+    return (EventType<BiFunction<RequestContext, String, Flow<Void>>>) FILE_LOADED;
+  }
+
+  static final int REQUEST_SESSION_ID = 21;
+
+  @SuppressWarnings("rawtypes")
+  private static final EventType REQUEST_SESSION = new ET<>("request.session", REQUEST_SESSION_ID);
+
+  /** The session id of a request */
+  @SuppressWarnings("unchecked")
+  public EventType<BiFunction<RequestContext, String, Flow<Void>>> requestSession() {
+    return (EventType<BiFunction<RequestContext, String, Flow<Void>>>) REQUEST_SESSION;
+  }
+
+  static final int USER_ID = 22;
+
+  @SuppressWarnings("rawtypes")
+  private static final EventType USER = new ET<>("user", USER_ID);
+
+  /** Triggered in every authenticated request to the application */
+  @SuppressWarnings("unchecked")
+  public EventType<BiFunction<RequestContext, String, Flow<Void>>> user() {
+    return (EventType<BiFunction<RequestContext, String, Flow<Void>>>) USER;
+  }
+
+  static final int LOGIN_EVENT_ID = 23;
+
+  @SuppressWarnings("rawtypes")
+  private static final EventType LOGIN_EVENT = new ET<>("login.event", LOGIN_EVENT_ID);
+
+  @SuppressWarnings("unchecked")
+  public EventType<TriFunction<RequestContext, LoginEvent, String, Flow<Void>>> loginEvent() {
+    return (EventType<TriFunction<RequestContext, LoginEvent, String, Flow<Void>>>) LOGIN_EVENT;
+  }
+
+  static final int EXEC_CMD_ID = 24;
+
+  @SuppressWarnings("rawtypes")
+  private static final EventType EXEC_CMD = new ET<>("exec.cmd", EXEC_CMD_ID);
+
+  @SuppressWarnings("unchecked")
+  public EventType<BiFunction<RequestContext, String[], Flow<Void>>> execCmd() {
+    return (EventType<BiFunction<RequestContext, String[], Flow<Void>>>) EXEC_CMD;
+  }
+
+  static final int SHELL_CMD_ID = 25;
+
+  @SuppressWarnings("rawtypes")
+  private static final EventType SHELL_CMD = new ET<>("shell.cmd", SHELL_CMD_ID);
+
+  @SuppressWarnings("unchecked")
+  public EventType<BiFunction<RequestContext, String, Flow<Void>>> shellCmd() {
+    return (EventType<BiFunction<RequestContext, String, Flow<Void>>>) SHELL_CMD;
+  }
+
+  static final int HTTP_ROUTE_ID = 26;
+
+  @SuppressWarnings("rawtypes")
+  private static final EventType HTTP_ROUTE = new ET<>("http.route", HTTP_ROUTE_ID);
+
+  @SuppressWarnings("unchecked")
+  public EventType<BiConsumer<RequestContext, String>> httpRoute() {
+    return (EventType<BiConsumer<RequestContext, String>>) HTTP_ROUTE;
+  }
+
+  static final int RESPONSE_BODY_ID = 27;
+
+  @SuppressWarnings("rawtypes")
+  private static final EventType RESPONSE_BODY = new ET<>("response.body", RESPONSE_BODY_ID);
+  /**
+   * The original response body object used by the framework before being serialized to the response
+   */
+  @SuppressWarnings("unchecked")
+  public EventType<BiFunction<RequestContext, Object, Flow<Void>>> responseBody() {
+    return (EventType<BiFunction<RequestContext, Object, Flow<Void>>>) RESPONSE_BODY;
   }
 
   static final int MAX_EVENTS = nextId.get();

@@ -8,6 +8,7 @@ import static datadog.trace.core.propagation.PropagationTags.HeaderType.W3C;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
+import datadog.context.propagation.CarrierSetter;
 import datadog.trace.api.Config;
 import datadog.trace.api.DD128bTraceId;
 import datadog.trace.api.DDSpanId;
@@ -18,7 +19,6 @@ import datadog.trace.api.TracePropagationStyle;
 import datadog.trace.api.internal.util.LongStringUtils;
 import datadog.trace.api.sampling.PrioritySampling;
 import datadog.trace.api.sampling.SamplingMechanism;
-import datadog.trace.bootstrap.instrumentation.api.AgentPropagation;
 import datadog.trace.bootstrap.instrumentation.api.TagContext;
 import datadog.trace.core.DDSpanContext;
 import java.util.Map;
@@ -63,34 +63,32 @@ class W3CHttpCodec {
 
     @Override
     public <C> void inject(
-        final DDSpanContext context, final C carrier, final AgentPropagation.Setter<C> setter) {
+        final DDSpanContext context, final C carrier, final CarrierSetter<C> setter) {
       injectTraceParent(context, carrier, setter);
       injectTraceState(context, carrier, setter);
       injectBaggage(context, carrier, setter);
     }
 
-    private <C> void injectTraceParent(
-        DDSpanContext context, C carrier, AgentPropagation.Setter<C> setter) {
+    private <C> void injectTraceParent(DDSpanContext context, C carrier, CarrierSetter<C> setter) {
       StringBuilder sb = new StringBuilder(TRACE_PARENT_LENGTH);
       sb.append("00-");
       sb.append(context.getTraceId().toHexString());
-      sb.append("-");
+      sb.append('-');
       sb.append(DDSpanId.toHexStringPadded(context.getSpanId()));
       sb.append(context.getSamplingPriority() > 0 ? "-01" : "-00");
       setter.set(carrier, TRACE_PARENT_KEY, sb.toString());
     }
 
-    private <C> void injectTraceState(
-        DDSpanContext context, C carrier, AgentPropagation.Setter<C> setter) {
+    private <C> void injectTraceState(DDSpanContext context, C carrier, CarrierSetter<C> setter) {
       PropagationTags propagationTags = context.getPropagationTags();
+      propagationTags.updateLastParentId(DDSpanId.toHexStringPadded(context.getSpanId()));
       String tracestate = propagationTags.headerValue(W3C);
       if (tracestate != null && !tracestate.isEmpty()) {
         setter.set(carrier, TRACE_STATE_KEY, tracestate);
       }
     }
 
-    private <C> void injectBaggage(
-        DDSpanContext context, C carrier, AgentPropagation.Setter<C> setter) {
+    private <C> void injectBaggage(DDSpanContext context, C carrier, CarrierSetter<C> setter) {
       long e2eStart = context.getEndToEndStartTime();
       if (e2eStart > 0) {
         setter.set(carrier, E2E_START_KEY, Long.toString(NANOSECONDS.toMillis(e2eStart)));
@@ -323,6 +321,7 @@ class W3CHttpCodec {
       } else {
         this.propagationTags = this.propagationTagsFactory.fromHeaderValue(W3C, tracestate);
       }
+      this.lastParentId = this.propagationTags.getLastParentId();
       int ptagsPriority = this.propagationTags.getSamplingPriority();
       int contextPriority = this.samplingPriority;
       if ((contextPriority == SAMPLER_DROP && ptagsPriority > 0)

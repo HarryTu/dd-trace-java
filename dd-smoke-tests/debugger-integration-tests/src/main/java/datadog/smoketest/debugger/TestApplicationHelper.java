@@ -17,6 +17,8 @@ public class TestApplicationHelper {
       "[main] DEBUG com.datadog.debugger.agent.DebuggerTransformer - Generating bytecode for class: %s";
   private static final String INSTRUMENTATION_DONE_BCKG_THREAD =
       "[dd-remote-config] DEBUG com.datadog.debugger.agent.DebuggerTransformer - Generating bytecode for class: %s";
+  private static final String INSTRUMENTATION_DONE_TASK_THREAD =
+      "[dd-task-scheduler] DEBUG com.datadog.debugger.agent.DebuggerTransformer - Generating bytecode for class: %s";
   private static final String RENTRANSFORMATION_CLASS =
       "[dd-remote-config] INFO com.datadog.debugger.agent.ConfigurationUpdater - Re-transforming class: %s";
   private static final String RETRANSFORMATION_DONE =
@@ -57,6 +59,9 @@ public class TestApplicationHelper {
             if (line.contains(String.format(INSTRUMENTATION_DONE_BCKG_THREAD, className))) {
               generatingByteCode.set(true);
             }
+            if (line.contains(String.format(INSTRUMENTATION_DONE_TASK_THREAD, className))) {
+              generatingByteCode.set(true);
+            }
           } else {
             return line.contains(RETRANSFORMATION_DONE);
           }
@@ -80,6 +85,17 @@ public class TestApplicationHelper {
           }
           return line.contains(RETRANSFORMATION_DONE);
         },
+        () -> {},
+        Duration.ofMillis(SLEEP_MS),
+        Duration.ofSeconds(TIMEOUT_S));
+  }
+
+  public static String waitForSpecificLine(String logFileName, String specificLine, String fromLine)
+      throws IOException {
+    return waitForSpecificLogLine(
+        Paths.get(logFileName),
+        fromLine != null ? line -> line.contains(fromLine) : null,
+        line -> line.contains(specificLine),
         () -> {},
         Duration.ofMillis(SLEEP_MS),
         Duration.ofSeconds(TIMEOUT_S));

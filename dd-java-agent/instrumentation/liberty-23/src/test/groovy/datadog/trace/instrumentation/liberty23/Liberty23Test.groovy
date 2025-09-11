@@ -9,7 +9,6 @@ import datadog.trace.core.DDSpan
 import spock.lang.IgnoreIf
 
 import static datadog.trace.agent.test.base.HttpServerTest.ServerEndpoint.SUCCESS
-import static org.junit.Assume.assumeTrue
 
 abstract class Liberty23Test extends HttpServerTest<Server> {
 
@@ -113,18 +112,13 @@ abstract class Liberty23Test extends HttpServerTest<Server> {
   }
 
   @Override
-  String expectedResourceName(ServerEndpoint endpoint, String method, URI address) {
-    if (endpoint.path == '/not-found') {
-      'GET /testapp/not-found'
-    } else {
-      super.expectedResourceName(endpoint, method, address)
-    }
+  boolean testSessionId() {
+    true
   }
 
+  @IgnoreIf({ !instance.testBlockingOnResponse() })
   def 'test blocking on response with commit during the response'() {
     setup:
-    assumeTrue(testBlockingOnResponse())
-
     def request = request(SUCCESS, 'GET', null)
       .header(IG_BLOCK_RESPONSE_HEADER, 'json')
       .header('x-commit-during-response', 'true')
@@ -164,4 +158,18 @@ class Liberty23V0ForkedTest extends Liberty23Test implements TestingGenericHttpN
   System.getProperty('java.vm.name') == 'IBM J9 VM' &&
   System.getProperty('java.specification.version') == '1.8' })
 class Liberty23V1ForkedTest extends Liberty23Test implements TestingGenericHttpNamingConventions.ServerV1 {
+}
+
+@IgnoreIf({
+  // failing because org.apache.xalan.transformer.TransformerImpl is
+  // instrumented while on the the global ignores list
+  System.getProperty('java.vm.name') == 'IBM J9 VM' &&
+  System.getProperty('java.specification.version') == '1.8' })
+class LibertyServletClassloaderNamingForkedTest extends Liberty23V0ForkedTest {
+  @Override
+  protected void configurePreAgent() {
+    super.configurePreAgent()
+    // will not set the service name according to the servlet context value
+    injectSysConfig("trace.experimental.jee.split-by-deployment", "true")
+  }
 }

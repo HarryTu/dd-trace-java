@@ -1,8 +1,8 @@
 package datadog.smoketest;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadog.debugger.agent.JsonSnapshotSerializer;
 import com.datadog.debugger.probe.LogProbe;
@@ -19,7 +19,7 @@ public class AgentDebuggerIntegrationTest extends SimpleAppDebuggerIntegrationTe
   @Test
   @DisplayName("testLatestJdk")
   void testLatestJdk() throws Exception {
-    final String EXPECTED_UPLOADS = "3";
+    final String EXPECTED_UPLOADS = "4"; // 3 statuses + 1 snapshot
     LogProbe probe = LogProbe.builder().where("App", "getGreeting").build();
     setCurrentConfiguration(createConfig(probe));
     String classpath = System.getProperty("datadog.smoketest.shadowJar.external.path");
@@ -45,7 +45,7 @@ public class AgentDebuggerIntegrationTest extends SimpleAppDebuggerIntegrationTe
   @DisplayName("testShutdown")
   void testShutdown() throws Exception {
     final String METHOD_NAME = "emptyMethod";
-    final String EXPECTED_UPLOADS = "3";
+    final String EXPECTED_UPLOADS = "4"; // 3 statuses + 1 snapshot
     LogProbe probe =
         LogProbe.builder().probeId(PROBE_ID).where(MAIN_CLASS_NAME, METHOD_NAME).build();
     setCurrentConfiguration(createConfig(probe));
@@ -65,7 +65,7 @@ public class AgentDebuggerIntegrationTest extends SimpleAppDebuggerIntegrationTe
   @DisplayName("testDestroy")
   void testDestroy() throws Exception {
     final String METHOD_NAME = "fullMethod";
-    final String EXPECTED_UPLOADS = "3";
+    final String EXPECTED_UPLOADS = "4"; // 3 statuses + 1 snapshot
     LogProbe probe =
         LogProbe.builder().probeId(PROBE_ID).where(MAIN_CLASS_NAME, METHOD_NAME).build();
     setCurrentConfiguration(createConfig(probe));

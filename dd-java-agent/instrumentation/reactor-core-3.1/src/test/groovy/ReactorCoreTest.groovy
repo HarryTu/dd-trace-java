@@ -1,32 +1,31 @@
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.Trace
 import datadog.trace.bootstrap.instrumentation.api.AgentScope
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan
 import datadog.trace.bootstrap.instrumentation.api.Tags
+import io.opentelemetry.api.GlobalOpenTelemetry
+import io.opentelemetry.api.trace.Span
+import io.opentracing.util.GlobalTracer
 import org.reactivestreams.Publisher
 import org.reactivestreams.Subscriber
 import org.reactivestreams.Subscription
 import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
 import reactor.core.scheduler.Schedulers
+import reactor.util.context.Context
 import spock.lang.Shared
 
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
 
 import static datadog.trace.agent.test.utils.TraceUtils.basicSpan
 import static datadog.trace.agent.test.utils.TraceUtils.runUnderTrace
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.activateSpan
 import static datadog.trace.bootstrap.instrumentation.api.AgentTracer.startSpan
 
-class ReactorCoreTest extends AgentTestRunner {
+class ReactorCoreTest extends InstrumentationSpecification {
 
   public static final String EXCEPTION_MESSAGE = "test exception"
-
-  @Override
-  boolean useStrictTraceWrites() {
-    // TODO fix this by making sure that spans get closed properly
-    return false
-  }
 
   @Shared
   def addOne = { i ->
@@ -41,6 +40,12 @@ class ReactorCoreTest extends AgentTestRunner {
   @Shared
   def throwException = {
     throw new RuntimeException(EXCEPTION_MESSAGE)
+  }
+
+  @Override
+  void configurePreAgent() {
+    super.configurePreAgent()
+    injectSysConfig("dd.trace.otel.enabled", "true")
   }
 
   def "Publisher '#name' test"() {
@@ -357,7 +362,7 @@ class ReactorCoreTest extends AgentTestRunner {
     "basic flux" | 2         | { -> Flux.fromIterable([1, 2]).map(addOne) }
   }
 
-  def "Fluxes produce the right number of results '#scheduler'"() {
+  def "Fluxes produce the right number of results on '#schedulerName' scheduler"() {
     when:
     List<String> values = Flux.fromIterable(Arrays.asList(1, 2, 3, 4))
       .parallel()
@@ -371,12 +376,107 @@ class ReactorCoreTest extends AgentTestRunner {
     values.size() == 4
 
     where:
-    scheduler << [
-      Schedulers.parallel(),
-      Schedulers.elastic(),
-      Schedulers.single(),
-      Schedulers.immediate()
-    ]
+    schedulerName | scheduler
+    "parallel"    | Schedulers.parallel()
+    "elastic"     | (isLatestDepTest ? Schedulers."boundedElastic"() : Schedulers."elastic"())
+    "single"      | Schedulers.single()
+    "immediate"   | Schedulers.immediate()
+  }
+
+  def "Context propagation through reactor context with span #spanType"() {
+    when:
+    runUnderTrace("parent", {
+      Mono.defer {
+        def span = buildSpan()
+        Mono.just(0)
+        .subscriberContext(Context.of("dd.span", span))
+        .doFinally { ignored -> finishSpan(span) }
+      }
+      .map(this::addOneFunc)
+      .block()
+    })
+    then:
+    assertTraces(1, {
+      trace(3) {
+        basicSpan(it, "parent")
+        basicSpan(it, "contextual", span(0), null, ['span.kind': { true }]) // otel spans sets span.kind
+        span {
+          operationName "addOne"
+          childOfPrevious()
+          tags {
+            "$Tags.COMPONENT" "trace"
+            defaultTags()
+          }
+        }
+      }
+    })
+    where:
+    spanType      | buildSpan                                                                                                                      | finishSpan
+    "datadog"     | { TEST_TRACER.buildSpan("contextual").start() }                                                                                | { AgentSpan span -> span.finish() }
+    "opentracing" | { GlobalTracer.get().buildSpan("contextual").start() }                                                                         | { io.opentracing.Span span -> span.finish() }
+    "otel"        | { GlobalOpenTelemetry.get().getTracer("").spanBuilder("contextual").setAttribute("operation.name", "contextual").startSpan() } | { Span span -> span.end() }
+  }
+
+  def "Bad values for dd.span are tolerated"() {
+    when:
+    runUnderTrace("parent", {
+      Mono.just(1)
+      .subscriberContext(Context.of("dd.span", "Hello world"))
+      .map(this::addOneFunc)
+      .block()
+    })
+    then:
+    assertTraces(1, {
+      trace(2) {
+        basicSpan(it, "parent")
+        span {
+          operationName "addOne"
+          childOfPrevious()
+          tags {
+            "$Tags.COMPONENT" "trace"
+            defaultTags()
+          }
+        }
+      }
+    })
+  }
+
+  def "test currentContext() calls on inner operator is not throwing a NPE on the advice"() {
+    when:
+    def mono = Flux.range(1, 100).windowUntil { it % 10 == 0 }.count()
+    then:
+    // we are not interested into asserting a trace structure but only that the instrumentation error count is 0
+    assert mono.block() == 11
+  }
+
+
+  def "span in the context has to be activated when the publisher subscribes"() {
+    when:
+    // the mono is subscribed (block) when first is active.
+    // However we expect that the span third will have second as parent and not first
+    // because we set the parent explicitly in the reactor context (dd.span key)
+    def result = runUnderTrace("first", {
+      runUnderTrace("second", {
+        def mono = Mono.defer {
+          Mono.fromCompletionStage(CompletableFuture.supplyAsync {
+            runUnderTrace("third", {
+              "hello world"
+            })
+          })
+        }.subscriberContext(Context.of("dd.span", TEST_TRACER.activeSpan()))
+        mono
+      })
+      .block()
+    })
+    then:
+    assert result == "hello world"
+    assertTraces(1, {
+      trace(3, true) {
+        basicSpan(it, "first")
+        basicSpan(it, "second", span(0))
+        basicSpan(it, "third", span(1))
+      }
+    })
   }
 
   @Trace(operationName = "trace-parent", resourceName = "trace-parent")
@@ -387,8 +487,6 @@ class ReactorCoreTest extends AgentTestRunner {
 
     Publisher<Integer> publisher = publisherSupplier()
     try {
-      scope.setAsyncPropagation(true)
-
       // Read all data from publisher
       if (publisher instanceof Mono) {
         return publisher.block()
@@ -407,7 +505,6 @@ class ReactorCoreTest extends AgentTestRunner {
   def cancelUnderTrace(def publisherSupplier) {
     final AgentSpan span = startSpan("publisher-parent")
     AgentScope scope = activateSpan(span)
-    scope.setAsyncPropagation(true)
 
     def publisher = publisherSupplier()
     publisher.subscribe(new Subscriber<Integer>() {

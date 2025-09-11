@@ -14,6 +14,7 @@ import java.util.BitSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import net.bytebuddy.matcher.ElementMatcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,12 +22,14 @@ import org.slf4j.LoggerFactory;
 public final class ClassLoaderMatchers {
   private static final Logger log = LoggerFactory.getLogger(ClassLoaderMatchers.class);
 
-  public static final ElementMatcher<ClassLoader> ANY_CLASS_LOADER = any();
+  public static final ElementMatcher.Junction<ClassLoader> ANY_CLASS_LOADER = any();
 
   private static final ClassLoader BOOTSTRAP_CLASSLOADER = null;
 
-  private static final boolean HAS_CLASSLOADER_EXCLUDES =
-      !InstrumenterConfig.get().getExcludedClassLoaders().isEmpty();
+  private static final Set<String> EXCLUDED_CLASSLOADER_NAMES =
+      InstrumenterConfig.get().getExcludedClassLoaders();
+
+  private static final boolean CHECK_EXCLUDES = !EXCLUDED_CLASSLOADER_NAMES.isEmpty();
 
   /** A private constructor that must not be invoked. */
   private ClassLoaderMatchers() {
@@ -39,14 +42,23 @@ public final class ClassLoaderMatchers {
       case "org.codehaus.groovy.runtime.callsite.CallSiteClassLoader":
       case "sun.reflect.DelegatingClassLoader":
       case "jdk.internal.reflect.DelegatingClassLoader":
+      case "org.jvnet.hk2.internal.DelegatingClassLoader":
       case "clojure.lang.DynamicClassLoader":
       case "org.apache.cxf.common.util.ASMHelper$TypeHelperClassLoader":
+      case "com.ibm.xml.xlxp2.jaxb.codegen.AbstractGeneratedStubFactory$RootStubClassLoader":
       case "sun.misc.Launcher$ExtClassLoader":
+      case "org.springframework.context.support.ContextTypeMatchClassLoader$ContextOverridingClassLoader":
+      case "org.openjdk.nashorn.internal.runtime.ScriptLoader":
+      case "jdk.nashorn.internal.runtime.ScriptLoader":
+      case "org.codehaus.janino.ByteArrayClassLoader":
+      case "org.eclipse.persistence.internal.jaxb.JaxbClassLoader":
+      case "com.alibaba.fastjson.util.ASMClassLoader":
       case "datadog.trace.bootstrap.DatadogClassLoader":
+      case "datadog.trace.bootstrap.InstrumentationClassLoader":
         return true;
     }
-    if (HAS_CLASSLOADER_EXCLUDES) {
-      return InstrumenterConfig.get().getExcludedClassLoaders().contains(classLoaderName);
+    if (CHECK_EXCLUDES) {
+      return EXCLUDED_CLASSLOADER_NAMES.contains(classLoaderName);
     }
     return false;
   }

@@ -10,6 +10,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.State;
@@ -22,9 +23,9 @@ import net.bytebuddy.asm.Advice;
  * treatment and can't be handled generically despite being a subclass of
  * org.apache.pekko.dispatch.ForkJoinTask, because of its error handling.
  */
-@AutoService(Instrumenter.class)
-public final class PekkoForkJoinExecutorTaskInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class PekkoForkJoinExecutorTaskInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public PekkoForkJoinExecutorTaskInstrumentation() {
     super("java_concurrent", "pekko_concurrent");
   }
@@ -40,17 +41,17 @@ public final class PekkoForkJoinExecutorTaskInstrumentation extends Instrumenter
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isConstructor().and(takesArgument(0, named(Runnable.class.getName()))),
         getClass().getName() + "$Construct");
-    transformation.applyAdvice(isMethod().and(named("run")), getClass().getName() + "$Run");
+    transformer.applyAdvice(isMethod().and(named("run")), getClass().getName() + "$Run");
   }
 
   public static final class Construct {
     @Advice.OnMethodExit
     public static void construct(@Advice.Argument(0) Runnable wrapped) {
-      capture(InstrumentationContext.get(Runnable.class, State.class), wrapped, true);
+      capture(InstrumentationContext.get(Runnable.class, State.class), wrapped);
     }
   }
 

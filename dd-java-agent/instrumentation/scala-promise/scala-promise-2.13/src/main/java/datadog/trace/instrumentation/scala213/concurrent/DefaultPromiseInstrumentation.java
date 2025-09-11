@@ -7,6 +7,7 @@ import static scala.concurrent.impl.Promise.Transformation;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.InstrumenterConfig;
 import datadog.trace.bootstrap.ContextStore;
 import datadog.trace.bootstrap.InstrumentationContext;
@@ -23,9 +24,9 @@ import scala.util.Try;
  * only pick up the completing span if the resolved {@code Try} doesn't have a an existing span set
  * from the {@code resolve} method.
  */
-@AutoService(Instrumenter.class)
-public class DefaultPromiseInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class DefaultPromiseInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public DefaultPromiseInstrumentation() {
     super("scala_promise_complete", "scala_concurrent");
@@ -42,8 +43,8 @@ public class DefaultPromiseInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(named("tryComplete0")), getClass().getName() + "$TryComplete");
   }
 

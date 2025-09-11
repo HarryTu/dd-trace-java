@@ -1,34 +1,32 @@
 # GitHub Actions Documentation
 
-This lists and describes the repository GitHub actions.
+This lists and describes the repository GitHub actions, how to maintain and test them.
 
 ## Release Management
 
-### add-assets-to-release [🔗](add-assets-to-release.yaml)
-
-_Trigger:_ When a release is published.
-
-_Actions:_
-* Ensure the release name is properly formatted (using `x.y.z` format),
-* Download `dd-java-agent`, `dd-trace-api` and `dd-trace-ot` artifacts from Sonatype (aka _Maven Central_ and upload them to the release (`dd-java-agent` will also be uploaded without version number).
-
-_Recovery:_ Download artifacts and upload them manually to the release.
-
 ### add-milestone-to-pull-requests [🔗](add-milestone-to-pull-requests.yaml)
 
-_Trigger:_ When a PR to `master` is closed.
+_Trigger:_ When a PR targeting `master` or a patch release (`release/vM.N.x`) branch is closed.
 
-_Action:_ Get the last (by name) opened milestone and affect it to the closed pull request.
+_Action:_ Attach the corresponding milestone to the closed pull request (if not set).
 
 _Recovery:_ Attach the milestone by hand to the PR.
 
-### create-next-milestone [🔗](create-next-milestone.yaml)
+### add-release-to-cloudfoundry [🔗](add-release-to-cloudfoundry.yaml)
 
-_Trigger:_ When closing a milestone.
+_Trigger:_ When a release is published.
 
-_Action:_ Create a new milestone by incrementing minor version.
+_Action:_ Append the new release to the Cloud Foundry repository.
 
-_Comment:_ Already done when closing a tag. To delete?
+_Recovery:_ Manually edit and push the `index.yml` file from [the cloudfoundry branch](https://github.com/DataDog/dd-trace-java/tree/cloudfoundry).
+
+### check-pull-requests [🔗](check-pull-requests.yaml)
+
+_Trigger:_ When creating or updating a pull request.
+
+_Action:_ Check the pull request complies with [the contribution guidelines](https://github.com/DataDog/dd-trace-java/blob/master/CONTRIBUTING.md).
+
+_Recovery:_ Manually verify the guideline compliance.
 
 ### draft-release-notes-on-tag [🔗](draft-release-notes-on-tag.yaml)
 
@@ -42,20 +40,30 @@ _Actions:_
 
 _Recovery:_ Manually trigger the action again on the relevant tag.
 
-## increment-milestones-on-tag [🔗](increment-milestones-on-tag.yaml)
+### increment-milestone-on-tag [🔗](increment-milestone-on-tag.yaml)
 
-_Trigger:_ When creating a tag.
+_Trigger:_ When creating a minor or major version tag.
 
 _Actions:_
+
 * Close the milestone related to the tag,
 * Create a new milestone by incrementing minor version.
 
-_Recovery:_ Manually close the related milestone and create a new one.
+_Recovery:_ Manually [close the related milestone and create a new one](https://github.com/DataDog/dd-trace-java/milestones).
 
-_Notes:_ This actions will handle _minor_ releases only.
-As there is no milestone for _patch_ releases, it won't close and create _patch_ releated milestone.
+_Notes:_ This action will not apply to release candidate versions using `-RC` tags.
 
-## update-download-releases [🔗](update-download-releases.yaml)
+### update-docker-build-image [🔗](update-docker-build-image.yaml)
+
+_Trigger:_ Quarterly released, loosely [a day after the new image tag is created](https://github.com/DataDog/dd-trace-java-docker-build/blob/master/.github/workflows/docker-tag.yml).
+
+_Action:_ Update the Docker build image used in GitLab CI with the latest tag.
+
+_Recovery:_ Download artifacts and upload them manually to the related _download release_.
+
+_Notes:_  Manually trigger the action again given the desired image tag as input.
+
+### update-download-releases [🔗](update-download-releases.yaml)
 
 _Trigger:_ When a release is published.
 
@@ -65,18 +73,40 @@ _Recovery:_ Download artifacts and upload them manually to the related _download
 
 _Notes:_ _Download releases_ are special GitHub releases with fixed URL and tags, but rolling artifacts to provided stable download links (ex [latest](https://github.com/DataDog/dd-trace-java/releases/tag/download-latest) and [latest-v1](https://github.com/DataDog/dd-trace-java/releases/tag/download-latest-v1)).
 
-## update-issues-on-release [🔗](update-issues-on-release.yaml)
+### update-issues-on-release [🔗](update-issues-on-release.yaml)
 
-_Trigger:_ When a release is published.
+_Trigger:_ When a release is published. Releases of type `prereleased` should skip this.
 
 _Action:_
+
 * Find all issues related to the release by checking the related milestone,
 * Add a comment to let know the issue was addressed by the newly published release,
 * Close all those issues.
 
 _Recovery:_ Check at the milestone for the related issues and update them manually.
 
+
+### prune-old-pull-requests [🔗](prune-old-pull-requests.yaml)
+
+_Trigger:_ Every month or manually.
+
+_Action:_ Mark as stale and comment on pull requests with no update during the last quarter.
+Close them if no following update within a week.
+
+_Recovery:_ Manually trigger the action again.
+
 ## Code Quality and Security
+
+### analyze-changes [🔗](analyze-changes.yaml)
+
+_Trigger:_ When pushing commits to `master`.
+
+_Action:_
+
+* Run [GitHub CodeQL](https://codeql.github.com/) action, upload result to GitHub security tab -- do not apply to pull request, only when pushing to `master`,
+* Run [Trivy security scanner](https://github.com/aquasecurity/trivy) on built artifacts and upload result to GitHub security tab and Datadog Code Analysis.
+
+_Notes:_ Results are sent on both production and staging environments.
 
 ### comment-on-submodule-update [🔗](comment-on-submodule-update.yaml)
 
@@ -84,44 +114,46 @@ _Trigger:_ When creating a PR commits to `master` or a `release/*` branch with a
 
 _Action:_ Notify the PR author through comments that about the Git Submodule update.
 
-### codeql-analysis [🔗](codeql-analysis.yml)
-
-_Trigger:_ When pushing commits to `master` or any pull request to `master`.
-
-_Action:_ Run GitHub CodeQL action and upload result to GitHub security tab.
-
-### trivy-analysis [🔗](trivy-analysis.yml)
-
-_Trigger:_ When pushing commits to `master` or any pull request to `master`.
-
-_Action:_ Run Trivy security scanner on built artifacts and upload result to GitHub security tab.
-
-### gradle-wrapper-validation [🔗](gradle-wrapper-validation.yaml.disabled)
-
-**DISABLED** - GitHub provides a way to disable actions rather than changing their extensions.
-
-_Comment:_ To delete?
-
-## Lib Injection
-
-### lib-injection [🔗](lib-injection.yaml)
-
-_Trigger:_ When pushing commits to `master`, release branches or any PR targetting `master`, and when creating tags.
-
-_Actions:_
-* Build and publish to GHCR a Docker image with the Java tracer agent,
-* Build lib-injection and run its system tests with the build Java agent.
-
-### lib-injection-manual-release [🔗](lib-injection-manual-release.yaml)
-
-_Trigger:_ When manually triggered.
-
-_Action:_ Build and publish to GHCR a Docker image with the given Java tracer version.
-
-### lib-injection-prune-registry [🔗](lib-injection-prune-registry.yaml)
+### update-gradle-dependencies [🔗](update-gradle-dependencies.yaml)
 
 _Trigger:_ Every week or manually.
 
-_Action:_ Clean up old lib-injection Docker images from GHCR.
+_Action:_ Create a PR updating the Grade dependencies and their locking files.
 
 _Recovery:_ Manually trigger the action again.
+
+### run-system-tests [🔗](run-system-tests.yaml)
+
+_Trigger:_ When pushing commits to `master` or manually.
+
+_Action:_ Build the Java Client Library and runs [the system tests](https://github.com/DataDog/system-tests) against.
+
+_Recovery:_ Manually trigger the action on the desired branch.
+
+### update-jmxfetch-submodule [🔗](update-jmxfetch-submodule.yaml)
+
+_Trigger:_ Monthly or manually
+
+_Action:_ Creates a PR updating the git submodule at dd-java-agent/agent-jmxfetch/integrations-core
+
+_Recovery:_ Manually trigger the action again.
+
+## Maintenance
+
+GitHub actions should be part of the [repository allowed actions to run](https://github.com/DataDog/dd-trace-java/settings/actions).
+While GitHub owned actions are allowed by default, the other ones must be declared.
+
+Run the following script to get the list of actions to declare according the state of your working copy:
+```bash
+find .github/workflows -name "*.yaml" -exec  awk '/uses:/{print $2 ","}' {} \; | grep -vE '^(actions|github)/' | sed 's/@.*/@*/' | sort | uniq
+```
+
+## Testing
+
+Workflows can be locally tested using the [`act` CLI](https://github.com/nektos/act/).
+Docker and [GiHub CLI](https://cli.github.com/) need also to be installed.
+The [.github/workflows/tests/](./tests) folder contains test scripts and event payloads to locally trigger workflows.
+
+> [!WARNING]
+> Local workflow tests run against the repository and will potentially alter existing issues, milestones and releases.  
+> Pay extra attention to the workflow jobs you trigger to not create development disruption.

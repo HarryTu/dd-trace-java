@@ -1,16 +1,11 @@
 package datadog.trace.instrumentation.java.lang;
 
-import static datadog.trace.api.iast.VulnerabilityMarks.NOT_MARKED;
-
 import datadog.trace.agent.tooling.csi.CallSite;
 import datadog.trace.api.iast.IastCallSites;
 import datadog.trace.api.iast.InstrumentationBridge;
 import datadog.trace.api.iast.Propagation;
-import datadog.trace.api.iast.propagation.CodecModule;
-import datadog.trace.api.iast.propagation.PropagationModule;
 import datadog.trace.api.iast.propagation.StringModule;
 import datadog.trace.util.stacktrace.StackUtils;
-import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -123,7 +118,7 @@ public class StringCallSite {
     final StringModule module = InstrumentationBridge.STRING;
     if (module != null) {
       try {
-        module.onStringJoin(result, delimiter, copy.toArray(new CharSequence[copy.size()]));
+        module.onStringJoin(result, delimiter, copy.toArray(new CharSequence[0]));
       } catch (final Throwable e) {
         module.onUnexpectedException("afterSubSequence threw", e);
       }
@@ -206,85 +201,18 @@ public class StringCallSite {
   }
 
   @CallSite.After("void java.lang.String.<init>(java.lang.String)")
+  @CallSite.After("void java.lang.String.<init>(java.lang.StringBuffer)")
+  @CallSite.After("void java.lang.String.<init>(java.lang.StringBuilder)")
   public static String afterStringConstructor(
       @CallSite.AllArguments @Nonnull final Object[] params,
       @CallSite.Return @Nonnull final String result) {
     final StringModule module = InstrumentationBridge.STRING;
     try {
       if (module != null) {
-        module.onStringConstructor((String) params[0], result);
+        module.onStringConstructor((CharSequence) params[0], result);
       }
     } catch (final Throwable e) {
       module.onUnexpectedException("afterStringConstructor threw", e);
-    }
-    return result;
-  }
-
-  // TODO include other constructors with offsets
-  @CallSite.After("void java.lang.String.<init>(byte[])")
-  @CallSite.After("void java.lang.String.<init>(byte[], java.lang.String)")
-  @CallSite.After("void java.lang.String.<init>(byte[], java.nio.charset.Charset)")
-  public static String afterByteArrayConstructor(
-      @CallSite.AllArguments @Nonnull final Object[] params,
-      @CallSite.Return @Nonnull final String result) {
-    final CodecModule module = InstrumentationBridge.CODEC;
-    try {
-      if (module != null) {
-        String charset = null;
-        if (params.length > 1) {
-          charset =
-              params[1] instanceof Charset ? ((Charset) params[1]).name() : (String) params[1];
-        }
-        module.onStringFromBytes((byte[]) params[0], charset, result);
-      }
-    } catch (final Throwable e) {
-      module.onUnexpectedException("afterByteArrayConstructor threw", e);
-    }
-    return result;
-  }
-
-  @CallSite.After("byte[] java.lang.String.getBytes()")
-  public static byte[] afterGetBytes(
-      @CallSite.This @Nonnull final String self, @CallSite.Return @Nonnull final byte[] result) {
-    final CodecModule module = InstrumentationBridge.CODEC;
-    try {
-      if (module != null) {
-        module.onStringGetBytes(self, null, result);
-      }
-    } catch (final Throwable e) {
-      module.onUnexpectedException("afterGetBytes threw", e);
-    }
-    return result;
-  }
-
-  @CallSite.After("byte[] java.lang.String.getBytes(java.lang.String)")
-  public static byte[] afterGetBytes(
-      @CallSite.This @Nonnull final String self,
-      @CallSite.Argument @Nullable final String encoding,
-      @CallSite.Return @Nonnull final byte[] result) {
-    final CodecModule module = InstrumentationBridge.CODEC;
-    try {
-      if (module != null) {
-        module.onStringGetBytes(self, encoding, result);
-      }
-    } catch (final Throwable e) {
-      module.onUnexpectedException("afterGetBytes threw", e);
-    }
-    return result;
-  }
-
-  @CallSite.After("byte[] java.lang.String.getBytes(java.nio.charset.Charset)")
-  public static byte[] afterGetBytes(
-      @CallSite.This @Nonnull final String self,
-      @CallSite.Argument @Nullable final Charset encoding,
-      @CallSite.Return @Nonnull final byte[] result) {
-    final CodecModule module = InstrumentationBridge.CODEC;
-    try {
-      if (module != null) {
-        module.onStringGetBytes(self, encoding == null ? null : encoding.name(), result);
-      }
-    } catch (final Throwable e) {
-      module.onUnexpectedException("afterGetBytes threw", e);
     }
     return result;
   }
@@ -323,20 +251,6 @@ public class StringCallSite {
     return result;
   }
 
-  @CallSite.After("char[] java.lang.String.toCharArray()")
-  public static char[] afterToCharArray(
-      @CallSite.This @Nonnull final String self, @CallSite.Return @Nonnull final char[] result) {
-    final PropagationModule module = InstrumentationBridge.PROPAGATION;
-    if (module != null) {
-      try {
-        module.taintIfTainted(result, self, true, NOT_MARKED);
-      } catch (final Throwable e) {
-        module.onUnexpectedException("afterToCharArray threw", e);
-      }
-    }
-    return result;
-  }
-
   @CallSite.After("java.lang.String[] java.lang.String.split(java.lang.String)")
   public static String[] afterSplit(
       @CallSite.This @Nonnull final String self,
@@ -357,7 +271,7 @@ public class StringCallSite {
   public static String[] afterSplitWithLimit(
       @CallSite.This @Nonnull final String self,
       @CallSite.Argument(0) @Nonnull final String regex,
-      @CallSite.Argument(1) @Nonnull final int pos,
+      @CallSite.Argument(1) final int pos,
       @CallSite.Return @Nonnull final String[] result) {
     final StringModule module = InstrumentationBridge.STRING;
     if (module != null) {
@@ -365,6 +279,37 @@ public class StringCallSite {
         module.onSplit(self, result);
       } catch (final Throwable e) {
         module.onUnexpectedException("afterSplit threw", e);
+      }
+    }
+    return result;
+  }
+
+  @CallSite.After("java.lang.String java.lang.String.replace(char, char)")
+  public static String afterReplaceChar(
+      @CallSite.This @Nonnull final String self,
+      @CallSite.Argument(0) final char oldChar,
+      @CallSite.Argument(1) final char newChar,
+      @CallSite.Return @Nonnull final String result) {
+    final StringModule module = InstrumentationBridge.STRING;
+    if (module != null) {
+      try {
+        module.onStringReplace(self, oldChar, newChar, result);
+      } catch (final Throwable e) {
+        module.onUnexpectedException("afterReplaceChar threw", e);
+      }
+    }
+    return result;
+  }
+
+  @CallSite.After("java.lang.String java.lang.String.valueOf(java.lang.Object)")
+  public static String afterValueOf(
+      @CallSite.Argument(0) final Object obj, @CallSite.Return final String result) {
+    final StringModule module = InstrumentationBridge.STRING;
+    if (module != null) {
+      try {
+        module.onStringValueOf(obj, result);
+      } catch (final Throwable e) {
+        module.onUnexpectedException("afterValueOf threw", e);
       }
     }
     return result;

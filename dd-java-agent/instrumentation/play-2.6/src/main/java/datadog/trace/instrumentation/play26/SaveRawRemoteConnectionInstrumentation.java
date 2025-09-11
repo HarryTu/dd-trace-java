@@ -9,12 +9,13 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import net.bytebuddy.asm.Advice;
 import play.api.mvc.request.RemoteConnection;
 
-@AutoService(Instrumenter.class)
-public class SaveRawRemoteConnectionInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class SaveRawRemoteConnectionInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public SaveRawRemoteConnectionInstrumentation() {
     super("play");
   }
@@ -35,8 +36,8 @@ public class SaveRawRemoteConnectionInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("forwardedConnection")
             .and(not(isStatic()))
             .and(takesArguments(2))

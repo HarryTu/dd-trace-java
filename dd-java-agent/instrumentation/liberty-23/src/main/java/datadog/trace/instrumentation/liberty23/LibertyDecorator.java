@@ -34,7 +34,7 @@ public class LibertyDecorator
   public static final LibertyDecorator DECORATE = new LibertyDecorator();
   public static final CharSequence SERVLET_REQUEST =
       UTF8BytesString.create(DECORATE.operationName());
-  public static final String DD_EXTRACTED_CONTEXT_ATTRIBUTE = "datadog.extracted-context";
+  public static final String DD_PARENT_CONTEXT_ATTRIBUTE = "datadog.parent-context";
   public static final String DD_CONTEXT_PATH_ATTRIBUTE = "datadog.context.path";
   public static final String DD_SERVLET_PATH_ATTRIBUTE = "datadog.servlet.path";
 
@@ -89,13 +89,18 @@ public class LibertyDecorator
   }
 
   @Override
+  protected String requestedSessionId(final HttpServletRequest request) {
+    return request.getRequestedSessionId();
+  }
+
+  @Override
   public AgentSpan onResponseStatus(AgentSpan span, int status) {
     Integer currentStatus = (Integer) span.getTag(Tags.HTTP_STATUS);
     // do not set status if the tag is already there and it's an error span
     // we may have the status during response blocking, but in that case
     // the status code is not propagated to the servlet layer
     if (currentStatus == null || !span.isError()) {
-      span.setHttpStatusCode(status);
+      super.onResponseStatus(span, status);
     }
     return span;
   }

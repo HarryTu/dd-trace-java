@@ -17,16 +17,21 @@ import static net.bytebuddy.matcher.ElementMatchers.not;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
+import datadog.trace.api.InstrumenterConfig;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import java.lang.reflect.Method;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Set;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
-@AutoService(Instrumenter.class)
-public final class JaxRsAnnotationsInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public final class JaxRsAnnotationsInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   private static final String JAX_ENDPOINT_OPERATION_NAME = "jax-rs.request";
 
@@ -34,8 +39,22 @@ public final class JaxRsAnnotationsInstrumentation extends Instrumenter.Tracing
     super("jax-rs", "jaxrs", "jax-rs-annotations");
   }
 
+  private Collection<String> getJaxRsAnnotations() {
+    final Set<String> ret = new HashSet<>();
+    ret.add("javax.ws.rs.Path");
+    ret.add("javax.ws.rs.DELETE");
+    ret.add("javax.ws.rs.GET");
+    ret.add("javax.ws.rs.HEAD");
+    ret.add("javax.ws.rs.OPTIONS");
+    ret.add("javax.ws.rs.POST");
+    ret.add("javax.ws.rs.PUT");
+    ret.add("io.dropwizard.jersey.PATCH");
+    ret.addAll(InstrumenterConfig.get().getAdditionalJaxRsAnnotations());
+    return ret;
+  }
+
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     // Avoid matching JAX-RS 2 which has its own instrumentation.
     return not(hasClassNamed("javax.ws.rs.container.AsyncResponse"));
   }
@@ -62,20 +81,9 @@ public final class JaxRsAnnotationsInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
-        isMethod()
-            .and(
-                hasSuperMethod(
-                    isAnnotatedWith(
-                        namedOneOf(
-                            "javax.ws.rs.Path",
-                            "javax.ws.rs.DELETE",
-                            "javax.ws.rs.GET",
-                            "javax.ws.rs.HEAD",
-                            "javax.ws.rs.OPTIONS",
-                            "javax.ws.rs.POST",
-                            "javax.ws.rs.PUT")))),
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
+        isMethod().and(hasSuperMethod(isAnnotatedWith(namedOneOf(getJaxRsAnnotations())))),
         JaxRsAnnotationsInstrumentation.class.getName() + "$JaxRsAnnotationsAdvice");
   }
 
@@ -92,9 +100,7 @@ public final class JaxRsAnnotationsInstrumentation extends Instrumenter.Tracing
       DECORATE.onJaxRsSpan(span, parent, target.getClass(), method);
       DECORATE.afterStart(span);
 
-      final AgentScope scope = activateSpan(span);
-      scope.setAsyncPropagation(true);
-      return scope;
+      return activateSpan(span);
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)

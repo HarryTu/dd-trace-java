@@ -7,8 +7,13 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
+import datadog.trace.advice.ActiveRequestContext;
+import datadog.trace.advice.RequiresRequestContext;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.agent.tooling.muzzle.Reference;
+import datadog.trace.api.gateway.RequestContext;
+import datadog.trace.api.gateway.RequestContextSlot;
 import datadog.trace.api.iast.IastContext;
 import datadog.trace.api.iast.InstrumentationBridge;
 import datadog.trace.api.iast.Sink;
@@ -20,9 +25,9 @@ import datadog.trace.api.iast.sink.UnvalidatedRedirectModule;
 import java.util.Set;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public class IastRoutingContextImplInstrumentation extends Instrumenter.Iast
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class IastRoutingContextImplInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   private final String className = IastRoutingContextImplInstrumentation.class.getName();
 
@@ -41,38 +46,42 @@ public class IastRoutingContextImplInstrumentation extends Instrumenter.Iast
   }
 
   @Override
-  public void adviceTransformations(final AdviceTransformation transformation) {
-    transformation.applyAdvice(
-        named("cookies").and(takesArguments(0)), className + "$CookiesAdvice");
-    transformation.applyAdvice(
+  public void methodAdvice(final MethodTransformer transformer) {
+    transformer.applyAdvice(named("cookies").and(takesArguments(0)), className + "$CookiesAdvice");
+    transformer.applyAdvice(
         named("getCookie").and(takesArguments(1)).and(takesArgument(0, String.class)),
         className + "$GetCookieAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         named("reroute").and(takesArguments(2)).and(takesArgument(1, String.class)),
         className + "$RerouteAdvice");
   }
 
+  @RequiresRequestContext(RequestContextSlot.IAST)
   public static class CookiesAdvice {
     @Advice.OnMethodExit(suppress = Throwable.class)
     @Source(SourceTypes.REQUEST_COOKIE_VALUE)
-    public static void onCookies(@Advice.Return final Set<Object> cookies) {
+    public static void onCookies(
+        @Advice.Return final Set<Object> cookies, @ActiveRequestContext RequestContext reqCtx) {
       final PropagationModule module = InstrumentationBridge.PROPAGATION;
       if (module != null && cookies != null && !cookies.isEmpty()) {
-        final IastContext ctx = IastContext.Provider.get();
+        final IastContext ctx = reqCtx.getData(RequestContextSlot.IAST);
         for (final Object cookie : cookies) {
-          module.taint(ctx, cookie, SourceTypes.REQUEST_COOKIE_VALUE);
+          module.taintObject(ctx, cookie, SourceTypes.REQUEST_COOKIE_VALUE);
         }
       }
     }
   }
 
+  @RequiresRequestContext(RequestContextSlot.IAST)
   public static class GetCookieAdvice {
     @Advice.OnMethodExit(suppress = Throwable.class)
     @Source(SourceTypes.REQUEST_COOKIE_VALUE)
-    public static void onGetCookie(@Advice.Return final Object cookie) {
+    public static void onGetCookie(
+        @Advice.Return final Object cookie, @ActiveRequestContext RequestContext reqCtx) {
       final PropagationModule module = InstrumentationBridge.PROPAGATION;
       if (module != null) {
-        module.taint(cookie, SourceTypes.REQUEST_COOKIE_VALUE);
+        final IastContext ctx = reqCtx.getData(RequestContextSlot.IAST);
+        module.taintObject(ctx, cookie, SourceTypes.REQUEST_COOKIE_VALUE);
       }
     }
   }

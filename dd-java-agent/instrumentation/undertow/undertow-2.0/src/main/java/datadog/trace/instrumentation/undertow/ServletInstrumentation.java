@@ -11,6 +11,7 @@ import static net.bytebuddy.matcher.ElementMatchers.isMethod;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
 import io.undertow.server.HttpServerExchange;
@@ -20,9 +21,9 @@ import javax.servlet.ServletRequest;
 import javax.servlet.http.MappingMatch;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public final class ServletInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public final class ServletInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public ServletInstrumentation() {
     super("undertow", "undertow-2.0");
@@ -34,8 +35,8 @@ public final class ServletInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod().and(named("dispatchRequest")), getClass().getName() + "$DispatchAdvice");
   }
 
@@ -53,6 +54,11 @@ public final class ServletInstrumentation extends Instrumenter.Tracing
     };
   }
 
+  @Override
+  public String muzzleDirective() {
+    return "javax.servlet";
+  }
+
   public static class DispatchAdvice {
     @Advice.OnMethodEnter(suppress = Throwable.class)
     public static void enter(
@@ -60,7 +66,7 @@ public final class ServletInstrumentation extends Instrumenter.Tracing
         @Advice.Argument(1) final ServletRequestContext servletRequestContext) {
       AgentScope.Continuation continuation = exchange.getAttachment(DD_UNDERTOW_CONTINUATION);
       if (continuation != null) {
-        AgentSpan undertowSpan = continuation.getSpan();
+        AgentSpan undertowSpan = continuation.span();
         ServletRequest request = servletRequestContext.getServletRequest();
         request.setAttribute(DD_SPAN_ATTRIBUTE, undertowSpan);
         undertowSpan.setSpanName(SERVLET_REQUEST);
@@ -69,7 +75,8 @@ public final class ServletInstrumentation extends Instrumenter.Tracing
         String relativePath = exchange.getRelativePath();
 
         ServletPathMatch servletPathMatch = servletRequestContext.getServletPathMatch();
-        if (servletPathMatch != null
+        if (UndertowDecorator.UNDERTOW_LEGACY_TRACING
+            && servletPathMatch != null
             && servletPathMatch.getMappingMatch() != MappingMatch.DEFAULT) {
           // Set the route unless the mapping match is default, this way we prevent setting route
           // for a non-existing resource. Otherwise, it'd set a non-existing resource name with

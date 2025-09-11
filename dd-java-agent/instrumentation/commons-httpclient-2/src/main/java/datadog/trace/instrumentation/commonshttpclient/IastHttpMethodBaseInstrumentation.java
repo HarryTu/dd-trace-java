@@ -6,15 +6,18 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.agent.tooling.bytebuddy.iast.TaintableVisitor;
 import datadog.trace.api.iast.InstrumentationBridge;
 import datadog.trace.api.iast.Propagation;
 import datadog.trace.api.iast.propagation.PropagationModule;
 import net.bytebuddy.asm.Advice;
 
-@AutoService(Instrumenter.class)
-public class IastHttpMethodBaseInstrumentation extends Instrumenter.Iast
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class IastHttpMethodBaseInstrumentation extends InstrumenterModule.Iast
+    implements Instrumenter.ForSingleType,
+        Instrumenter.HasTypeAdvice,
+        Instrumenter.HasMethodAdvice {
 
   private final String className = IastHttpMethodBaseInstrumentation.class.getName();
 
@@ -33,15 +36,15 @@ public class IastHttpMethodBaseInstrumentation extends Instrumenter.Iast
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
-        isConstructor().and(takesArguments(1)).and(takesArgument(0, String.class)),
-        className + "$CtorAdvice");
+  public void typeAdvice(TypeTransformer transformer) {
+    transformer.applyAdvice(new TaintableVisitor(instrumentedType()));
   }
 
   @Override
-  public AdviceTransformer transformer() {
-    return new VisitingTransformer(new TaintableVisitor(instrumentedType()));
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
+        isConstructor().and(takesArguments(1)).and(takesArgument(0, String.class)),
+        className + "$CtorAdvice");
   }
 
   public static class CtorAdvice {
@@ -51,7 +54,7 @@ public class IastHttpMethodBaseInstrumentation extends Instrumenter.Iast
         @Advice.This final Object self, @Advice.Argument(0) final Object argument) {
       final PropagationModule module = InstrumentationBridge.PROPAGATION;
       if (module != null) {
-        module.taintIfTainted(self, argument);
+        module.taintObjectIfTainted(self, argument);
       }
     }
   }

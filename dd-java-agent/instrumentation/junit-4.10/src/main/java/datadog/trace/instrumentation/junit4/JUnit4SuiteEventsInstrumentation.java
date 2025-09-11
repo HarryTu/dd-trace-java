@@ -8,6 +8,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import java.util.List;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
@@ -17,9 +18,9 @@ import org.junit.runner.notification.RunListener;
 import org.junit.runner.notification.RunNotifier;
 import org.junit.runners.ParentRunner;
 
-@AutoService(Instrumenter.class)
-public class JUnit4SuiteEventsInstrumentation extends Instrumenter.CiVisibility
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class JUnit4SuiteEventsInstrumentation extends InstrumenterModule.CiVisibility
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   public JUnit4SuiteEventsInstrumentation() {
     super("ci-visibility", "junit-4");
@@ -39,7 +40,7 @@ public class JUnit4SuiteEventsInstrumentation extends Instrumenter.CiVisibility
   public String[] helperClassNames() {
     return new String[] {
       packageName + ".TestEventsHandlerHolder",
-      packageName + ".SkippedByItr",
+      packageName + ".SkippedByDatadog",
       packageName + ".JUnit4Utils",
       packageName + ".TracingListener",
       packageName + ".JUnit4TracingListener",
@@ -47,8 +48,8 @@ public class JUnit4SuiteEventsInstrumentation extends Instrumenter.CiVisibility
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("run")
             .and(
                 takesArgument(

@@ -9,14 +9,15 @@ import akka.util.ByteString;
 import com.google.auto.service.AutoService;
 import datadog.appsec.api.blocking.BlockingException;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import java.util.Map;
 import net.bytebuddy.asm.Advice;
 import play.mvc.Http;
 
 /** @see play.mvc.BodyParser.FormUrlEncoded#parse(Http.RequestHeader, ByteString) */
-@AutoService(Instrumenter.class)
-public class FormUrlEncodedInstrumentation extends Instrumenter.AppSec
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class FormUrlEncodedInstrumentation extends InstrumenterModule.AppSec
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public FormUrlEncodedInstrumentation() {
     super("play");
   }
@@ -39,8 +40,8 @@ public class FormUrlEncodedInstrumentation extends Instrumenter.AppSec
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("parse")
             .and(takesArguments(2))
             .and(takesArgument(0, named("play.mvc.Http$RequestHeader")))

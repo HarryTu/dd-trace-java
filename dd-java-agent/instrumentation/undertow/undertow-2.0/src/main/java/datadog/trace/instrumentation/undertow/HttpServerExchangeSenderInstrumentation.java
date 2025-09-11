@@ -9,6 +9,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 import com.google.auto.service.AutoService;
 import datadog.appsec.api.blocking.BlockingException;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.gateway.Flow;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.api.AgentSpan;
@@ -16,9 +17,9 @@ import io.undertow.server.HttpServerExchange;
 import net.bytebuddy.asm.Advice;
 import org.xnio.channels.StreamSinkChannel;
 
-@AutoService(Instrumenter.class)
-public class HttpServerExchangeSenderInstrumentation extends Instrumenter.AppSec
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class HttpServerExchangeSenderInstrumentation extends InstrumenterModule.AppSec
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
   public HttpServerExchangeSenderInstrumentation() {
     super("undertow", "undertow-2.0");
   }
@@ -43,8 +44,8 @@ public class HttpServerExchangeSenderInstrumentation extends Instrumenter.AppSec
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         not(isPrivate()).and(named("getResponseChannel")).and(takesArguments(0)),
         HttpServerExchangeSenderInstrumentation.class.getName() + "$GetResponseChannelAdvice");
   }
@@ -68,7 +69,7 @@ public class HttpServerExchangeSenderInstrumentation extends Instrumenter.AppSec
       }
       xchg.putAttachment(IgnoreSendAttribute.IGNORE_SEND_KEY, IgnoreSendAttribute.INSTANCE);
 
-      AgentSpan span = continuation.getSpan();
+      AgentSpan span = continuation.span();
       Flow<Void> flow =
           UndertowDecorator.DECORATE.callIGCallbackResponseAndHeaders(
               span, xchg, xchg.getStatusCode(), UndertowExtractAdapter.Response.GETTER);

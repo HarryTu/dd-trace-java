@@ -1,8 +1,11 @@
 package datadog.trace.agent.tooling;
 
+import static datadog.trace.agent.tooling.ExtensionFinder.findExtensions;
+import static datadog.trace.agent.tooling.ExtensionLoader.loadExtensions;
 import static datadog.trace.agent.tooling.bytebuddy.matcher.GlobalIgnoresMatcher.globalIgnoresMatcher;
 import static net.bytebuddy.matcher.ElementMatchers.isDefaultFinalizer;
 
+import datadog.environment.SystemProperties;
 import datadog.trace.agent.tooling.bytebuddy.SharedTypePools;
 import datadog.trace.agent.tooling.bytebuddy.iast.TaintableRedefinitionStrategyListener;
 import datadog.trace.agent.tooling.bytebuddy.matcher.DDElementMatchers;
@@ -11,6 +14,7 @@ import datadog.trace.agent.tooling.bytebuddy.outline.TypePoolFacade;
 import datadog.trace.agent.tooling.usm.UsmExtractorImpl;
 import datadog.trace.agent.tooling.usm.UsmMessageFactoryImpl;
 import datadog.trace.api.InstrumenterConfig;
+import datadog.trace.api.Platform;
 import datadog.trace.api.ProductActivation;
 import datadog.trace.api.telemetry.IntegrationsCollector;
 import datadog.trace.bootstrap.FieldBackedContextAccessor;
@@ -20,9 +24,12 @@ import de.thetaphi.forbiddenapis.SuppressForbidden;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -31,6 +38,9 @@ import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.description.type.TypeDefinition;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.VisibilityBridgeStrategy;
+import net.bytebuddy.dynamic.scaffold.InstrumentedType;
+import net.bytebuddy.dynamic.scaffold.MethodGraph;
 import net.bytebuddy.matcher.LatentMatcher;
 import net.bytebuddy.utility.JavaModule;
 import org.slf4j.Logger;
@@ -65,7 +75,7 @@ public class AgentInstaller {
      * ByteBuddy agent is used by several systems which can be enabled independently;
      * we need to install the agent whenever any of them is active.
      */
-    Set<Instrumenter.TargetSystem> enabledSystems = getEnabledSystems();
+    Set<InstrumenterModule.TargetSystem> enabledSystems = getEnabledSystems();
     if (!enabledSystems.isEmpty()) {
       installBytebuddyAgent(inst, false, enabledSystems);
       if (DEBUG) {
@@ -85,14 +95,14 @@ public class AgentInstaller {
   }
 
   /**
-   * Install the core bytebuddy agent along with all implementations of {@link Instrumenter}.
+   * Install the core bytebuddy agent along with all registered {@link InstrumenterModule}s.
    *
    * @return the agent's class transformer
    */
   public static ClassFileTransformer installBytebuddyAgent(
       final Instrumentation inst,
       final boolean skipAdditionalLibraryMatcher,
-      final Set<Instrumenter.TargetSystem> enabledSystems,
+      final Set<InstrumenterModule.TargetSystem> enabledSystems,
       final AgentBuilder.Listener... listeners) {
     Utils.setInstrumentation(inst);
 
@@ -104,7 +114,7 @@ public class AgentInstaller {
       DDElementMatchers.registerAsSupplier();
     }
 
-    if (enabledSystems.contains(Instrumenter.TargetSystem.USM)) {
+    if (enabledSystems.contains(InstrumenterModule.TargetSystem.USM)) {
       UsmMessageFactoryImpl.registerAsSupplier();
       UsmExtractorImpl.registerAsSupplier();
     }
@@ -113,8 +123,25 @@ public class AgentInstaller {
     // but we need to instrument some synthetic methods in Scala, so change the ignore matcher
     ByteBuddy byteBuddy =
         new ByteBuddy().ignore(new LatentMatcher.Resolved<>(isDefaultFinalizer()));
-    AgentBuilder agentBuilder =
-        new AgentBuilder.Default(byteBuddy)
+
+    boolean simpleMethodGraph = InstrumenterConfig.get().isResolverSimpleMethodGraph();
+    if (simpleMethodGraph) {
+      // faster compiler that just considers visibility of locally declared methods
+      byteBuddy =
+          byteBuddy
+              .with(MethodGraph.Compiler.ForDeclaredMethods.INSTANCE)
+              .with(VisibilityBridgeStrategy.Default.NEVER)
+              .with(InstrumentedType.Factory.Default.FROZEN);
+    }
+
+    AgentBuilder agentBuilder = new AgentBuilder.Default(byteBuddy);
+    if (simpleMethodGraph) {
+      // faster strategy that assumes transformations use @Advice or AsmVisitorWrapper
+      agentBuilder = agentBuilder.with(AgentBuilder.TypeStrategy.Default.DECORATE);
+    }
+
+    agentBuilder =
+        agentBuilder
             .disableClassFormatChanges()
             .assureReadEdgeTo(inst, FieldBackedContextAccessor.class)
             .with(AgentStrategies.transformerDecorator())
@@ -146,56 +173,56 @@ public class AgentInstaller {
       agentBuilder = agentBuilder.with(listener);
     }
 
-    Instrumenters instrumenters = Instrumenters.load(AgentInstaller.class.getClassLoader());
-    int maxInstrumentationId = instrumenters.maxInstrumentationId();
+    InstrumenterIndex instrumenterIndex = InstrumenterIndex.readIndex();
 
     // pre-size state before registering instrumentations to reduce number of allocations
-    InstrumenterState.setMaxInstrumentationId(maxInstrumentationId);
+    InstrumenterState.initialize(instrumenterIndex.instrumentationCount());
 
-    // This needs to be a separate loop through all the instrumenters before we start adding
+    // combine known modules indexed at build-time with extensions contributed at run-time
+    Iterable<InstrumenterModule> instrumenterModules = withExtensions(instrumenterIndex.modules());
+
+    // This needs to be a separate loop through all instrumentations before we start adding
     // advice so that we can exclude field injection, since that will try to check exclusion
     // immediately and we don't have the ability to express dependencies between different
-    // instrumenters to control the load order.
-    for (Instrumenter instrumenter : instrumenters) {
-      if (instrumenter instanceof ExcludeFilterProvider) {
-        ExcludeFilterProvider provider = (ExcludeFilterProvider) instrumenter;
+    // instrumentations to control the load order.
+    for (InstrumenterModule module : instrumenterModules) {
+      if (module instanceof ExcludeFilterProvider) {
+        ExcludeFilterProvider provider = (ExcludeFilterProvider) module;
         ExcludeFilter.add(provider.excludedClasses());
         if (DEBUG) {
           log.debug(
-              "Adding filtered classes - instrumentation.class={}",
-              instrumenter.getClass().getName());
+              "Adding filtered classes - instrumentation.class={}", module.getClass().getName());
         }
       }
     }
 
-    Instrumenter.TransformerBuilder transformerBuilder;
-    if (InstrumenterConfig.get().isLegacyInstallerEnabled()) {
-      transformerBuilder = new LegacyTransformerBuilder(agentBuilder);
-    } else {
-      transformerBuilder = new CombiningTransformerBuilder(agentBuilder, maxInstrumentationId);
-    }
+    CombiningTransformerBuilder transformerBuilder =
+        new CombiningTransformerBuilder(agentBuilder, instrumenterIndex);
 
     int installedCount = 0;
-    for (Instrumenter instrumenter : instrumenters) {
-      if (!instrumenter.isApplicable(enabledSystems)) {
+    for (InstrumenterModule module : instrumenterModules) {
+      if (!module.isApplicable(enabledSystems)) {
         if (DEBUG) {
-          log.debug("Not applicable - instrumentation.class={}", instrumenter.getClass().getName());
+          log.debug("Not applicable - instrumentation.class={}", module.getClass().getName());
         }
         continue;
       }
       if (DEBUG) {
-        log.debug("Loading - instrumentation.class={}", instrumenter.getClass().getName());
+        log.debug("Loading - instrumentation.class={}", module.getClass().getName());
       }
       try {
-        instrumenter.instrument(transformerBuilder);
+        transformerBuilder.applyInstrumentation(module);
         installedCount++;
       } catch (Exception | LinkageError e) {
-        log.error(
-            "Failed to load - instrumentation.class={}", instrumenter.getClass().getName(), e);
+        log.error("Failed to load - instrumentation.class={}", module.getClass().getName(), e);
       }
     }
     if (DEBUG) {
       log.debug("Installed {} instrumenter(s)", installedCount);
+    }
+
+    if (!Platform.isNativeImageBuilder()) {
+      InstrumenterFlare.register();
     }
 
     if (InstrumenterConfig.get().isTelemetryEnabled()) {
@@ -216,51 +243,100 @@ public class AgentInstaller {
     }
   }
 
-  public static Set<Instrumenter.TargetSystem> getEnabledSystems() {
-    EnumSet<Instrumenter.TargetSystem> enabledSystems =
-        EnumSet.noneOf(Instrumenter.TargetSystem.class);
+  /** Returns an iterable that combines the original sequence with any discovered extensions. */
+  private static Iterable<InstrumenterModule> withExtensions(Iterable<InstrumenterModule> initial) {
+    String extensionsPath = InstrumenterConfig.get().getTraceExtensionsPath();
+    if (null != extensionsPath) {
+      if (findExtensions(extensionsPath, InstrumenterModule.class)) {
+        final List<InstrumenterModule> extensions = loadExtensions(InstrumenterModule.class);
+        extensions.sort(Comparator.comparingInt(InstrumenterModule::order));
+        return new Iterable<InstrumenterModule>() {
+          @Override
+          public Iterator<InstrumenterModule> iterator() {
+            return withExtensions(initial.iterator(), extensions);
+          }
+        };
+      }
+    }
+    return initial;
+  }
+
+  /** Returns an iterator that combines the original sequence with any discovered extensions. */
+  private static Iterator<InstrumenterModule> withExtensions(
+      final Iterator<InstrumenterModule> initial, final Iterable<InstrumenterModule> extensions) {
+    return new Iterator<InstrumenterModule>() {
+      private Iterator<InstrumenterModule> delegate = initial;
+
+      @Override
+      public boolean hasNext() {
+        if (delegate.hasNext()) {
+          return true;
+        } else if (delegate == initial) {
+          delegate = extensions.iterator();
+          return delegate.hasNext();
+        } else {
+          return false;
+        }
+      }
+
+      @Override
+      public InstrumenterModule next() {
+        if (hasNext()) {
+          return delegate.next();
+        } else {
+          throw new NoSuchElementException();
+        }
+      }
+    };
+  }
+
+  public static Set<InstrumenterModule.TargetSystem> getEnabledSystems() {
+    EnumSet<InstrumenterModule.TargetSystem> enabledSystems =
+        EnumSet.noneOf(InstrumenterModule.TargetSystem.class);
     InstrumenterConfig cfg = InstrumenterConfig.get();
     if (cfg.isTraceEnabled()) {
-      enabledSystems.add(Instrumenter.TargetSystem.TRACING);
+      enabledSystems.add(InstrumenterModule.TargetSystem.TRACING);
     }
     if (cfg.isProfilingEnabled()) {
-      enabledSystems.add(Instrumenter.TargetSystem.PROFILING);
+      enabledSystems.add(InstrumenterModule.TargetSystem.PROFILING);
     }
     if (cfg.getAppSecActivation() != ProductActivation.FULLY_DISABLED) {
-      enabledSystems.add(Instrumenter.TargetSystem.APPSEC);
+      enabledSystems.add(InstrumenterModule.TargetSystem.APPSEC);
     }
     if (cfg.getIastActivation() != ProductActivation.FULLY_DISABLED) {
-      enabledSystems.add(Instrumenter.TargetSystem.IAST);
+      enabledSystems.add(InstrumenterModule.TargetSystem.IAST);
     }
     if (cfg.isCiVisibilityEnabled()) {
-      enabledSystems.add(Instrumenter.TargetSystem.CIVISIBILITY);
+      enabledSystems.add(InstrumenterModule.TargetSystem.CIVISIBILITY);
     }
     if (cfg.isUsmEnabled()) {
-      enabledSystems.add(Instrumenter.TargetSystem.USM);
+      enabledSystems.add(InstrumenterModule.TargetSystem.USM);
+    }
+    if (cfg.isLlmObsEnabled()) {
+      enabledSystems.add(InstrumenterModule.TargetSystem.LLMOBS);
     }
     return enabledSystems;
   }
 
   private static void addByteBuddyRawSetting() {
-    final String savedPropertyValue = System.getProperty(TypeDefinition.RAW_TYPES_PROPERTY);
-    try {
-      System.setProperty(TypeDefinition.RAW_TYPES_PROPERTY, "true");
-      final boolean rawTypes = TypeDescription.AbstractBase.RAW_TYPES;
-      if (!rawTypes && DEBUG) {
-        log.debug("Too late to enable {}", TypeDefinition.RAW_TYPES_PROPERTY);
-      }
-    } finally {
+    final String savedPropertyValue = SystemProperties.get(TypeDefinition.RAW_TYPES_PROPERTY);
+    final boolean overridden = SystemProperties.set(TypeDefinition.RAW_TYPES_PROPERTY, "true");
+    final boolean rawTypes = TypeDescription.AbstractBase.RAW_TYPES;
+    if (!rawTypes && DEBUG) {
+      log.debug("Too late to enable {}", TypeDefinition.RAW_TYPES_PROPERTY);
+    }
+    if (overridden) {
       if (savedPropertyValue == null) {
-        System.clearProperty(TypeDefinition.RAW_TYPES_PROPERTY);
+        SystemProperties.clear(TypeDefinition.RAW_TYPES_PROPERTY);
       } else {
-        System.setProperty(TypeDefinition.RAW_TYPES_PROPERTY, savedPropertyValue);
+        SystemProperties.set(TypeDefinition.RAW_TYPES_PROPERTY, savedPropertyValue);
       }
     }
   }
 
   private static AgentBuilder.RedefinitionStrategy.Listener redefinitionStrategyListener(
-      final Set<Instrumenter.TargetSystem> enabledSystems) {
-    if (enabledSystems.contains(Instrumenter.TargetSystem.IAST)) {
+      final Set<InstrumenterModule.TargetSystem> enabledSystems) {
+    if (enabledSystems.contains(InstrumenterModule.TargetSystem.IAST)) {
       return TaintableRedefinitionStrategyListener.INSTANCE;
     } else {
       return AgentBuilder.RedefinitionStrategy.Listener.NoOp.INSTANCE;

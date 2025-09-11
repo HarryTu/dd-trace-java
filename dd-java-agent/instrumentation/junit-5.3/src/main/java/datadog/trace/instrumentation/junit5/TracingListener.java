@@ -1,6 +1,8 @@
 package datadog.trace.instrumentation.junit5;
 
-import java.lang.reflect.Method;
+import datadog.trace.api.civisibility.config.TestSourceData;
+import datadog.trace.api.civisibility.execution.TestExecutionHistory;
+import datadog.trace.api.civisibility.telemetry.tag.TestFrameworkInstrumentation;
 import java.util.List;
 import java.util.stream.Collectors;
 import org.junit.platform.engine.EngineExecutionListener;
@@ -20,8 +22,8 @@ public class TracingListener implements EngineExecutionListener {
 
   public TracingListener(TestEngine testEngine) {
     String engineId = testEngine.getId();
-    testFramework = engineId != null && engineId.startsWith("junit") ? "junit5" : engineId;
-    testFrameworkVersion = testEngine.getVersion().orElse(null);
+    testFramework = engineId == null || engineId.startsWith("junit") ? "junit5" : engineId;
+    testFrameworkVersion = JUnitPlatformUtils.getFrameworkVersion(testEngine);
   }
 
   @Override
@@ -35,68 +37,74 @@ public class TracingListener implements EngineExecutionListener {
   }
 
   @Override
-  public void executionStarted(final TestDescriptor testDescriptor) {
-    if (testDescriptor.isContainer()) {
-      containerExecutionStarted(testDescriptor);
-    } else if (testDescriptor.isTest()) {
-      testCaseExecutionStarted(testDescriptor);
+  public void executionStarted(final TestDescriptor descriptor) {
+    if (descriptor.isContainer()) {
+      containerExecutionStarted(descriptor);
+    } else if (descriptor.isTest()) {
+      testCaseExecutionStarted(descriptor);
     }
   }
 
   @Override
   public void executionFinished(
-      TestDescriptor testDescriptor, TestExecutionResult testExecutionResult) {
-    if (testDescriptor.isContainer()) {
-      containerExecutionFinished(testDescriptor, testExecutionResult);
-    } else if (testDescriptor.isTest()) {
-      testCaseExecutionFinished(testDescriptor, testExecutionResult);
+      TestDescriptor descriptor, TestExecutionResult testExecutionResult) {
+    if (descriptor.isContainer()) {
+      containerExecutionFinished(descriptor, testExecutionResult);
+    } else if (descriptor.isTest()) {
+      testCaseExecutionFinished(descriptor, testExecutionResult);
     }
   }
 
-  private void containerExecutionStarted(final TestDescriptor testDescriptor) {
-    if (!JUnitPlatformUtils.isSuite(testDescriptor)) {
+  private void containerExecutionStarted(final TestDescriptor suiteDescriptor) {
+    if (!JUnitPlatformUtils.isSuite(suiteDescriptor)) {
       return;
     }
 
-    Class<?> testClass = JUnitPlatformUtils.getJavaClass(testDescriptor);
+    Class<?> testClass = JUnitPlatformUtils.getJavaClass(suiteDescriptor);
     String testSuiteName =
-        testClass != null ? testClass.getName() : testDescriptor.getLegacyReportingName();
-
+        testClass != null ? testClass.getName() : suiteDescriptor.getLegacyReportingName();
     List<String> tags =
-        testDescriptor.getTags().stream().map(TestTag::getName).collect(Collectors.toList());
-    TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestSuiteStart(
-        testSuiteName, testFramework, testFrameworkVersion, testClass, tags, false);
+        suiteDescriptor.getTags().stream().map(TestTag::getName).collect(Collectors.toList());
+    TestEventsHandlerHolder.HANDLERS
+        .get(TestFrameworkInstrumentation.JUNIT5)
+        .onTestSuiteStart(
+            suiteDescriptor,
+            testSuiteName,
+            testFramework,
+            testFrameworkVersion,
+            testClass,
+            tags,
+            false,
+            TestFrameworkInstrumentation.JUNIT5,
+            null);
   }
 
   private void containerExecutionFinished(
-      final TestDescriptor testDescriptor, final TestExecutionResult testExecutionResult) {
-    if (!JUnitPlatformUtils.isSuite(testDescriptor)) {
+      final TestDescriptor suiteDescriptor, final TestExecutionResult testExecutionResult) {
+    if (!JUnitPlatformUtils.isSuite(suiteDescriptor)) {
       return;
     }
-
-    Class<?> testClass = JUnitPlatformUtils.getJavaClass(testDescriptor);
-    String testSuiteName =
-        testClass != null ? testClass.getName() : testDescriptor.getLegacyReportingName();
 
     Throwable throwable = testExecutionResult.getThrowable().orElse(null);
     if (throwable != null) {
       if (JUnitPlatformUtils.isAssumptionFailure(throwable)) {
-
         String reason = throwable.getMessage();
-        TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestSuiteSkip(
-            testSuiteName, testClass, reason);
+        TestEventsHandlerHolder.HANDLERS
+            .get(TestFrameworkInstrumentation.JUNIT5)
+            .onTestSuiteSkip(suiteDescriptor, reason);
 
-        for (TestDescriptor child : testDescriptor.getChildren()) {
+        for (TestDescriptor child : suiteDescriptor.getChildren()) {
           executionSkipped(child, reason);
         }
-
       } else {
-        TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestSuiteFailure(
-            testSuiteName, testClass, throwable);
+        TestEventsHandlerHolder.HANDLERS
+            .get(TestFrameworkInstrumentation.JUNIT5)
+            .onTestSuiteFailure(suiteDescriptor, throwable);
       }
     }
-
-    TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestSuiteFinish(testSuiteName, testClass);
+    TestEventsHandlerHolder.HANDLERS
+        .get(TestFrameworkInstrumentation.JUNIT5)
+        .onTestSuiteFinish(suiteDescriptor, null);
   }
 
   private void testCaseExecutionStarted(final TestDescriptor testDescriptor) {
@@ -107,166 +115,132 @@ public class TracingListener implements EngineExecutionListener {
   }
 
   private void testMethodExecutionStarted(TestDescriptor testDescriptor, MethodSource testSource) {
-    TestDescriptor suiteDescriptor = getSuiteDescriptor(testDescriptor);
-
-    Class<?> testClass;
-    String testSuiteName;
-    if (suiteDescriptor != null) {
-      testClass = JUnitPlatformUtils.getJavaClass(suiteDescriptor);
-      testSuiteName =
-          testClass != null ? testClass.getName() : suiteDescriptor.getLegacyReportingName();
-    } else {
-      testClass = JUnitPlatformUtils.getTestClass(testSource);
-      testSuiteName = testSource.getClassName();
-    }
+    TestDescriptor suiteDescriptor = JUnitPlatformUtils.getSuiteDescriptor(testDescriptor);
 
     String displayName = testDescriptor.getDisplayName();
     String testName = testSource.getMethodName();
-
     String testParameters = JUnitPlatformUtils.getParameters(testSource, displayName);
-    List<String> tags =
-        testDescriptor.getTags().stream().map(TestTag::getName).collect(Collectors.toList());
+    List<String> tags = JUnitPlatformUtils.getTags(testDescriptor);
+    TestSourceData testSourceData = JUnitPlatformUtils.toTestSourceData(testDescriptor);
 
-    Method testMethod = JUnitPlatformUtils.getTestMethod(testSource);
-    String testMethodName = testSource.getMethodName();
-
-    TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestStart(
-        testSuiteName,
-        testName,
-        null,
-        testFramework,
-        testFrameworkVersion,
-        testParameters,
-        tags,
-        testClass,
-        testMethodName,
-        testMethod);
+    TestEventsHandlerHolder.HANDLERS
+        .get(TestFrameworkInstrumentation.JUNIT5)
+        .onTestStart(
+            suiteDescriptor,
+            testDescriptor,
+            testName,
+            testFramework,
+            testFrameworkVersion,
+            testParameters,
+            tags,
+            testSourceData,
+            null,
+            TestEventsHandlerHolder.getExecutionHistory(testDescriptor));
   }
 
   private void testCaseExecutionFinished(
       final TestDescriptor testDescriptor, final TestExecutionResult testExecutionResult) {
     TestSource testSource = testDescriptor.getSource().orElse(null);
     if (testSource instanceof MethodSource) {
-      testMethodExecutionFinished(testDescriptor, testExecutionResult, (MethodSource) testSource);
+      testMethodExecutionFinished(testDescriptor, testExecutionResult);
     }
   }
 
-  private static void testMethodExecutionFinished(
-      TestDescriptor testDescriptor,
-      TestExecutionResult testExecutionResult,
-      MethodSource testSource) {
-    TestDescriptor suiteDescriptor = getSuiteDescriptor(testDescriptor);
-
-    Class<?> testClass;
-    String testSuiteName;
-    if (suiteDescriptor != null) {
-      testClass = JUnitPlatformUtils.getJavaClass(suiteDescriptor);
-      testSuiteName =
-          testClass != null ? testClass.getName() : suiteDescriptor.getLegacyReportingName();
-    } else {
-      testClass = JUnitPlatformUtils.getTestClass(testSource);
-      testSuiteName = testSource.getClassName();
-    }
-
-    String displayName = testDescriptor.getDisplayName();
-    String testName = testSource.getMethodName();
-    String testParameters = JUnitPlatformUtils.getParameters(testSource, displayName);
-
+  private void testMethodExecutionFinished(
+      TestDescriptor testDescriptor, TestExecutionResult testExecutionResult) {
     Throwable throwable = testExecutionResult.getThrowable().orElse(null);
     if (throwable != null) {
       if (JUnitPlatformUtils.isAssumptionFailure(throwable)) {
-        TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestSkip(
-            testSuiteName, testClass, testName, null, testParameters, throwable.getMessage());
+        TestEventsHandlerHolder.HANDLERS
+            .get(TestFrameworkInstrumentation.JUNIT5)
+            .onTestSkip(testDescriptor, throwable.getMessage());
       } else {
-        TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestFailure(
-            testSuiteName, testClass, testName, null, testParameters, throwable);
+        TestEventsHandlerHolder.HANDLERS
+            .get(TestFrameworkInstrumentation.JUNIT5)
+            .onTestFailure(testDescriptor, throwable);
       }
     }
-
-    TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestFinish(
-        testSuiteName, testClass, testName, null, testParameters);
+    TestExecutionHistory executionHistory =
+        TestEventsHandlerHolder.getExecutionHistory(testDescriptor);
+    TestEventsHandlerHolder.HANDLERS
+        .get(TestFrameworkInstrumentation.JUNIT5)
+        .onTestFinish(testDescriptor, null, executionHistory);
   }
 
   @Override
-  public void executionSkipped(final TestDescriptor testDescriptor, final String reason) {
-    TestSource testSource = testDescriptor.getSource().orElse(null);
+  public void executionSkipped(final TestDescriptor descriptor, final String reason) {
+    TestSource testSource = descriptor.getSource().orElse(null);
 
     if (testSource instanceof ClassSource) {
       // The annotation @Disabled is kept at type level.
-      containerExecutionSkipped(testDescriptor, reason);
+      containerExecutionSkipped(descriptor, reason);
 
     } else if (testSource instanceof MethodSource) {
       // The annotation @Disabled is kept at method level.
-      testMethodExecutionSkipped(testDescriptor, (MethodSource) testSource, reason);
+      testMethodExecutionSkipped(descriptor, (MethodSource) testSource, reason);
     }
   }
 
-  private void containerExecutionSkipped(final TestDescriptor testDescriptor, final String reason) {
-    if (!JUnitPlatformUtils.isSuite(testDescriptor)) {
+  private void containerExecutionSkipped(
+      final TestDescriptor suiteDescriptor, final String reason) {
+    if (!JUnitPlatformUtils.isSuite(suiteDescriptor)) {
       return;
     }
 
-    Class<?> testClass = JUnitPlatformUtils.getJavaClass(testDescriptor);
+    Class<?> testClass = JUnitPlatformUtils.getJavaClass(suiteDescriptor);
     String testSuiteName =
-        testClass != null ? testClass.getName() : testDescriptor.getLegacyReportingName();
-
+        testClass != null ? testClass.getName() : suiteDescriptor.getLegacyReportingName();
     List<String> tags =
-        testDescriptor.getTags().stream().map(TestTag::getName).collect(Collectors.toList());
+        suiteDescriptor.getTags().stream().map(TestTag::getName).collect(Collectors.toList());
 
-    TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestSuiteStart(
-        testSuiteName, testFramework, testFrameworkVersion, testClass, tags, false);
-    TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestSuiteSkip(testSuiteName, testClass, reason);
+    TestEventsHandlerHolder.HANDLERS
+        .get(TestFrameworkInstrumentation.JUNIT5)
+        .onTestSuiteStart(
+            suiteDescriptor,
+            testSuiteName,
+            testFramework,
+            testFrameworkVersion,
+            testClass,
+            tags,
+            false,
+            TestFrameworkInstrumentation.JUNIT5,
+            null);
+    TestEventsHandlerHolder.HANDLERS
+        .get(TestFrameworkInstrumentation.JUNIT5)
+        .onTestSuiteSkip(suiteDescriptor, reason);
 
-    for (TestDescriptor child : testDescriptor.getChildren()) {
+    for (TestDescriptor child : suiteDescriptor.getChildren()) {
       executionSkipped(child, reason);
     }
 
-    TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestSuiteFinish(testSuiteName, testClass);
+    TestEventsHandlerHolder.HANDLERS
+        .get(TestFrameworkInstrumentation.JUNIT5)
+        .onTestSuiteFinish(suiteDescriptor, null);
   }
 
   private void testMethodExecutionSkipped(
       final TestDescriptor testDescriptor, final MethodSource testSource, final String reason) {
-    TestDescriptor suiteDescriptor = getSuiteDescriptor(testDescriptor);
-
-    Class<?> testClass;
-    String testSuiteName;
-    if (suiteDescriptor != null) {
-      testClass = JUnitPlatformUtils.getJavaClass(suiteDescriptor);
-      testSuiteName =
-          testClass != null ? testClass.getName() : suiteDescriptor.getLegacyReportingName();
-    } else {
-      testClass = JUnitPlatformUtils.getTestClass(testSource);
-      testSuiteName = testSource.getClassName();
-    }
+    TestDescriptor suiteDescriptor = JUnitPlatformUtils.getSuiteDescriptor(testDescriptor);
 
     String displayName = testDescriptor.getDisplayName();
     String testName = testSource.getMethodName();
-
     String testParameters = JUnitPlatformUtils.getParameters(testSource, displayName);
     List<String> tags =
         testDescriptor.getTags().stream().map(TestTag::getName).collect(Collectors.toList());
+    TestSourceData testSourceData = JUnitPlatformUtils.toTestSourceData(testDescriptor);
 
-    Method testMethod = JUnitPlatformUtils.getTestMethod(testSource);
-    String testMethodName = testSource.getMethodName();
-
-    TestEventsHandlerHolder.TEST_EVENTS_HANDLER.onTestIgnore(
-        testSuiteName,
-        testName,
-        null,
-        testFramework,
-        testFrameworkVersion,
-        testParameters,
-        tags,
-        testClass,
-        testMethodName,
-        testMethod,
-        reason);
-  }
-
-  private static TestDescriptor getSuiteDescriptor(TestDescriptor testDescriptor) {
-    while (testDescriptor != null && !JUnitPlatformUtils.isSuite(testDescriptor)) {
-      testDescriptor = testDescriptor.getParent().orElse(null);
-    }
-    return testDescriptor;
+    TestEventsHandlerHolder.HANDLERS
+        .get(TestFrameworkInstrumentation.JUNIT5)
+        .onTestIgnore(
+            suiteDescriptor,
+            testDescriptor,
+            testName,
+            testFramework,
+            testFrameworkVersion,
+            testParameters,
+            tags,
+            testSourceData,
+            reason,
+            TestEventsHandlerHolder.getExecutionHistory(testDescriptor));
   }
 }

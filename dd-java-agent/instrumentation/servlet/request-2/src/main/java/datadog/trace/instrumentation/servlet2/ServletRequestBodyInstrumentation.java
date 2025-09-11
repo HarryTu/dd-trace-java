@@ -16,6 +16,7 @@ import com.google.auto.service.AutoService;
 import datadog.trace.advice.ActiveRequestContext;
 import datadog.trace.advice.RequiresRequestContext;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.api.gateway.CallbackProvider;
 import datadog.trace.api.gateway.Flow;
 import datadog.trace.api.gateway.RequestContext;
@@ -39,9 +40,9 @@ import net.bytebuddy.matcher.ElementMatcher;
  * Request bodies after servlet 3.0.x are covered by Servlet3RequestBodyInstrumentation from the
  * "request-3" module. Any changes to the behaviour here should also be reflected in "request-3".
  */
-@AutoService(Instrumenter.class)
-public class ServletRequestBodyInstrumentation extends Instrumenter.AppSec
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class ServletRequestBodyInstrumentation extends InstrumenterModule.AppSec
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
   public ServletRequestBodyInstrumentation() {
     super("servlet-request-body");
   }
@@ -52,7 +53,7 @@ public class ServletRequestBodyInstrumentation extends Instrumenter.AppSec
   }
 
   @Override
-  public ElementMatcher<ClassLoader> classLoaderMatcher() {
+  public ElementMatcher.Junction<ClassLoader> classLoaderMatcher() {
     // Avoid matching request bodies after 3.0.x which have their own instrumentation
     return not(hasClassNamed("javax.servlet.ReadListener"));
   }
@@ -71,14 +72,14 @@ public class ServletRequestBodyInstrumentation extends Instrumenter.AppSec
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("getInputStream")
             .and(takesNoArguments())
             .and(returns(named("javax.servlet.ServletInputStream")))
             .and(isPublic()),
         getClass().getName() + "$HttpServletGetInputStreamAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         named("getReader")
             .and(takesNoArguments())
             .and(returns(named("java.io.BufferedReader")))

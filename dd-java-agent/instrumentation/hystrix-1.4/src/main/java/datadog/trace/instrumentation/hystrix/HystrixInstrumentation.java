@@ -8,14 +8,15 @@ import static net.bytebuddy.matcher.ElementMatchers.returns;
 import com.google.auto.service.AutoService;
 import com.netflix.hystrix.HystrixInvokableInfo;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 import rx.Observable;
 
-@AutoService(Instrumenter.class)
-public class HystrixInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForTypeHierarchy {
+@AutoService(InstrumenterModule.class)
+public class HystrixInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForTypeHierarchy, Instrumenter.HasMethodAdvice {
 
   public HystrixInstrumentation() {
     super("hystrix");
@@ -48,11 +49,11 @@ public class HystrixInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         named("getExecutionObservable").and(returns(named("rx.Observable"))),
         HystrixInstrumentation.class.getName() + "$ExecuteAdvice");
-    transformation.applyAdvice(
+    transformer.applyAdvice(
         named("getFallbackObservable").and(returns(named("rx.Observable"))),
         HystrixInstrumentation.class.getName() + "$FallbackAdvice");
   }

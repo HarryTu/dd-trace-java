@@ -33,4 +33,14 @@ public class DDSpanTypes {
   public static final String TEST_SESSION_END = "test_session_end";
 
   public static final String VULNERABILITY = "vulnerability";
+  public static final String PROTOBUF = "protobuf";
+
+  public static final String MULE = "mule";
+
+  public static final String VALKEY = "valkey";
+  public static final String WEBSOCKET = "websocket";
+
+  public static final String SERVERLESS = "serverless";
+
+  public static final String LLMOBS = "llm";
 }

@@ -1,11 +1,12 @@
 package datadog.trace.instrumentation.ignite.v2.cache;
 
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import java.util.Collections;
 import java.util.Map;
 
-public abstract class AbstractIgniteCacheInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForKnownTypes {
+public abstract class AbstractIgniteCacheInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForKnownTypes, Instrumenter.HasMethodAdvice {
 
   public AbstractIgniteCacheInstrumentation() {
     super("ignite");

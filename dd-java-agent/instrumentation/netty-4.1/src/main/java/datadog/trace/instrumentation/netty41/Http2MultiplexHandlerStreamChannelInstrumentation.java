@@ -2,13 +2,14 @@ package datadog.trace.instrumentation.netty41;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import io.netty.channel.Channel;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.matcher.ElementMatchers;
 
-@AutoService(Instrumenter.class)
-public class Http2MultiplexHandlerStreamChannelInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class Http2MultiplexHandlerStreamChannelInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public Http2MultiplexHandlerStreamChannelInstrumentation() {
     super("netty", "netty-4.1", "netty-4.1-http2");
@@ -27,8 +28,8 @@ public class Http2MultiplexHandlerStreamChannelInstrumentation extends Instrumen
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         ElementMatchers.isConstructor(), getClass().getName() + "$PropagateContextAdvice");
   }
 

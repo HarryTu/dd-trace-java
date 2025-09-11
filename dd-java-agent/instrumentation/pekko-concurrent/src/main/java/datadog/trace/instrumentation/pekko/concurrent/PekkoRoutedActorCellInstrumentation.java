@@ -7,6 +7,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 import com.google.auto.service.AutoService;
 import datadog.trace.agent.tooling.Instrumenter;
+import datadog.trace.agent.tooling.InstrumenterModule;
 import datadog.trace.bootstrap.InstrumentationContext;
 import datadog.trace.bootstrap.instrumentation.api.AgentScope;
 import datadog.trace.bootstrap.instrumentation.java.concurrent.AdviceUtils;
@@ -16,9 +17,9 @@ import net.bytebuddy.asm.Advice;
 import org.apache.pekko.dispatch.Envelope;
 import org.apache.pekko.routing.RoutedActorCell;
 
-@AutoService(Instrumenter.class)
-public class PekkoRoutedActorCellInstrumentation extends Instrumenter.Tracing
-    implements Instrumenter.ForSingleType {
+@AutoService(InstrumenterModule.class)
+public class PekkoRoutedActorCellInstrumentation extends InstrumenterModule.Tracing
+    implements Instrumenter.ForSingleType, Instrumenter.HasMethodAdvice {
 
   public PekkoRoutedActorCellInstrumentation() {
     super("pekko_actor_send", "pekko_actor", "pekko_concurrent", "java_concurrent");
@@ -35,8 +36,8 @@ public class PekkoRoutedActorCellInstrumentation extends Instrumenter.Tracing
   }
 
   @Override
-  public void adviceTransformations(AdviceTransformation transformation) {
-    transformation.applyAdvice(
+  public void methodAdvice(MethodTransformer transformer) {
+    transformer.applyAdvice(
         isMethod()
             .and(
                 named("sendMessage")

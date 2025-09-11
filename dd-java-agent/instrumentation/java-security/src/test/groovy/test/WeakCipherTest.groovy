@@ -1,6 +1,6 @@
 package test
 
-import datadog.trace.agent.test.AgentTestRunner
+import datadog.trace.agent.test.InstrumentationSpecification
 import datadog.trace.api.iast.InstrumentationBridge
 import datadog.trace.api.iast.sink.WeakCipherModule
 import foo.bar.TestSuite
@@ -11,7 +11,7 @@ import java.security.Provider
 
 import static datadog.trace.agent.test.utils.TraceUtils.runUnderTrace
 
-class WeakCipherTest extends AgentTestRunner {
+class WeakCipherTest extends InstrumentationSpecification {
 
   def "unavailable cipher algorithm"() {
 
@@ -63,7 +63,7 @@ class WeakCipherTest extends AgentTestRunner {
   }
 
   // Key Generator
-  def "test weak cipher instrumentation"() {
+  def "test weak keygen instrumentation"() {
     setup:
     WeakCipherModule module = Mock(WeakCipherModule)
     InstrumentationBridge.registerIastModule(module)
@@ -75,7 +75,7 @@ class WeakCipherTest extends AgentTestRunner {
     1 * module.onCipherAlgorithm(_)
   }
 
-  def "test weak cipher instrumentation with provider"() {
+  def "test weak keygen instrumentation with provider"() {
     setup:
     WeakCipherModule module = Mock(WeakCipherModule)
     InstrumentationBridge.registerIastModule(module)
@@ -88,7 +88,7 @@ class WeakCipherTest extends AgentTestRunner {
     1 * module.onCipherAlgorithm(_)
   }
 
-  def "test weak cipher instrumentation with provider string"() {
+  def "test weak keygen instrumentation with provider string"() {
     setup:
     WeakCipherModule module = Mock(WeakCipherModule)
     InstrumentationBridge.registerIastModule(module)

@@ -22,8 +22,13 @@ public class IndexExpression implements ValueExpression<Value<?>> {
   @Override
   public Value<?> evaluate(ValueReferenceResolver valueRefResolver) {
     Value<?> targetValue = target.evaluate(valueRefResolver);
-    if (targetValue == Value.undefined()) {
-      return targetValue;
+    if (targetValue.isUndefined()) {
+      throw new EvaluationException(
+          "Cannot evaluate the expression for undefined value", PrettyPrintVisitor.print(this));
+    }
+    if (targetValue.isNull()) {
+      throw new EvaluationException(
+          "Cannot evaluate the expression for null value", PrettyPrintVisitor.print(this));
     }
     Value<?> result = Value.undefinedValue();
     Value<?> keyValue = key.evaluate(valueRefResolver);
@@ -38,9 +43,13 @@ public class IndexExpression implements ValueExpression<Value<?>> {
         } else {
           result = ((MapValue) targetValue).get(objKey);
         }
-      }
-      if (targetValue instanceof ListValue) {
+      } else if (targetValue instanceof ListValue) {
         result = ((ListValue) targetValue).get(keyValue.getValue());
+      } else {
+        throw new EvaluationException(
+            "Cannot evaluate the expression for unsupported type: "
+                + targetValue.getClass().getTypeName(),
+            PrettyPrintVisitor.print(this));
       }
     } catch (IllegalArgumentException ex) {
       throw new EvaluationException(ex.getMessage(), PrettyPrintVisitor.print(this), ex);
@@ -49,7 +58,7 @@ public class IndexExpression implements ValueExpression<Value<?>> {
     if (obj != null && Redaction.isRedactedType(obj.getClass().getTypeName())) {
       ExpressionHelper.throwRedactedException(this);
     }
-    return result;
+    return Value.of(result.getValue());
   }
 
   public <R> R accept(Visitor<R> visitor) {

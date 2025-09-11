@@ -7,6 +7,8 @@ def scalaVersion = '2.11'
 def playVersion = '2.6.0'
 
 muzzle {
+  extraRepository("typesafe", "https://repo.typesafe.com/typesafe/maven-releases/")
+
   pass {
     name = 'play26Plus'
     group = 'com.typesafe.play'
@@ -62,8 +64,8 @@ repositories {
   }
 }
 
-addTestSuiteForDir('baseTest', 'baseTest')
-addTestSuiteForDir('latestDepTest', 'latestDepTest')
+addTestSuite('baseTest')
+addTestSuite('latestDepTest')
 
 sourceSets {
   main_play27 {
@@ -104,15 +106,14 @@ dependencies {
 
   testRuntimeOnly project(':dd-java-agent:instrumentation:netty-4.0')
   testRuntimeOnly project(':dd-java-agent:instrumentation:netty-4.1')
-  testRuntimeOnly project(':dd-java-agent:instrumentation:akka-http-10.0')
-  testRuntimeOnly project(':dd-java-agent:instrumentation:akka-concurrent')
-  testRuntimeOnly project(':dd-java-agent:instrumentation:akka-init')
+  testRuntimeOnly project(':dd-java-agent:instrumentation:akka:akka-http:akka-http-10.0')
+  testRuntimeOnly project(':dd-java-agent:instrumentation:akka:akka-actor-2.5')
   testRuntimeOnly project(':dd-java-agent:instrumentation:scala-concurrent')
   testRuntimeOnly project(':dd-java-agent:instrumentation:scala-promise:scala-promise-2.10')
   testRuntimeOnly project(':dd-java-agent:instrumentation:scala-promise:scala-promise-2.13')
 
   latestDepTestRuntimeOnly sourceSets.baseTest.output
-  latestDepTestImplementation deps.scala213
+  latestDepTestImplementation libs.scala213
   latestDepTestImplementation group: 'com.typesafe.play', name: "play-java_2.13", version: '2.+'
   latestDepTestImplementation(group: 'com.typesafe.play', name: "play-test_2.13", version: '2.+') {
     exclude group: 'org.eclipse.jetty.websocket', module: 'websocket-client'
@@ -154,7 +155,7 @@ sourceSets {
   }
 }
 dependencies {
-  routeGeneratorImplementation deps.scala213
+  routeGeneratorImplementation libs.scala213
   routeGeneratorImplementation group: 'com.typesafe.play', name: "routes-compiler_2.13", version: '2.+'
 }
 configurations {
