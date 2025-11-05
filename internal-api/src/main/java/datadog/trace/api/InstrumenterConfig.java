@@ -45,6 +45,7 @@ import static datadog.trace.api.config.TraceInstrumentationConfig.INSTRUMENTATIO
 import static datadog.trace.api.config.TraceInstrumentationConfig.INTEGRATIONS_ENABLED;
 import static datadog.trace.api.config.TraceInstrumentationConfig.JAX_RS_ADDITIONAL_ANNOTATIONS;
 import static datadog.trace.api.config.TraceInstrumentationConfig.JDBC_CONNECTION_CLASS_NAME;
+import static datadog.trace.api.config.TraceInstrumentationConfig.JDBC_POOL_WAITING_ENABLED;
 import static datadog.trace.api.config.TraceInstrumentationConfig.JDBC_PREPARED_STATEMENT_CLASS_NAME;
 import static datadog.trace.api.config.TraceInstrumentationConfig.MEASURE_METHODS;
 import static datadog.trace.api.config.TraceInstrumentationConfig.RESOLVER_CACHE_CONFIG;
@@ -72,11 +73,15 @@ import static datadog.trace.api.config.TraceInstrumentationConfig.TRACE_OTEL_ENA
 import static datadog.trace.api.config.TraceInstrumentationConfig.TRACE_PEKKO_SCHEDULER_ENABLED;
 import static datadog.trace.api.config.TraceInstrumentationConfig.TRACE_THREAD_POOL_EXECUTORS_EXCLUDE;
 import static datadog.trace.api.config.TraceInstrumentationConfig.TRACE_WEBSOCKET_MESSAGES_ENABLED;
+import static datadog.trace.api.config.TraceInstrumentationConfig.UNSAFE_CLASS_INJECTION;
+import static datadog.trace.api.config.TraceInstrumentationConfig.VISITOR_CLASS_PARSING;
 import static datadog.trace.api.config.UsmConfig.USM_ENABLED;
 import static datadog.trace.util.CollectionUtils.tryMakeImmutableList;
 import static datadog.trace.util.CollectionUtils.tryMakeImmutableSet;
 
 import datadog.trace.api.profiling.ProfilingEnablement;
+import datadog.trace.api.telemetry.OtelEnvMetricCollectorImpl;
+import datadog.trace.api.telemetry.OtelEnvMetricCollectorProvider;
 import datadog.trace.bootstrap.config.provider.ConfigProvider;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import java.lang.reflect.Method;
@@ -128,6 +133,7 @@ public class InstrumenterConfig {
 
   private final String jdbcPreparedStatementClassName;
   private final String jdbcConnectionClassName;
+  private final boolean jdbcPoolWaitingEnabled;
 
   private final String httpURLConnectionClassName;
   private final String axisTransportClassName;
@@ -157,6 +163,9 @@ public class InstrumenterConfig {
   private final boolean resolverUseLoadClass;
   private final Boolean resolverUseUrlCaches;
   private final int resolverResetInterval;
+  private final boolean visitorClassParsing;
+
+  private final boolean unsafeClassInjection;
 
   private final boolean runtimeContextFieldInjection;
   private final boolean serialVersionUIDFieldInjection;
@@ -171,6 +180,11 @@ public class InstrumenterConfig {
   private final Collection<String> additionalJaxRsAnnotations;
 
   private final boolean rumEnabled;
+
+  static {
+    // Bind telemetry collector to config module before initializing ConfigProvider
+    OtelEnvMetricCollectorProvider.register(OtelEnvMetricCollectorImpl.getInstance());
+  }
 
   private InstrumenterConfig() {
     this(ConfigProvider.createDefault());
@@ -235,6 +249,7 @@ public class InstrumenterConfig {
     jdbcPreparedStatementClassName =
         configProvider.getString(JDBC_PREPARED_STATEMENT_CLASS_NAME, "");
     jdbcConnectionClassName = configProvider.getString(JDBC_CONNECTION_CLASS_NAME, "");
+    jdbcPoolWaitingEnabled = configProvider.getBoolean(JDBC_POOL_WAITING_ENABLED, false);
 
     httpURLConnectionClassName = configProvider.getString(HTTP_URL_CONNECTION_CLASS_NAME, "");
     axisTransportClassName = configProvider.getString(AXIS_TRANSPORT_CLASS_NAME, "");
@@ -269,6 +284,9 @@ public class InstrumenterConfig {
         Platform.isNativeImageBuilder()
             ? 0
             : configProvider.getInteger(RESOLVER_RESET_INTERVAL, DEFAULT_RESOLVER_RESET_INTERVAL);
+
+    unsafeClassInjection = configProvider.getBoolean(UNSAFE_CLASS_INJECTION, false);
+    visitorClassParsing = configProvider.getBoolean(VISITOR_CLASS_PARSING, false);
 
     runtimeContextFieldInjection =
         configProvider.getBoolean(
@@ -411,6 +429,10 @@ public class InstrumenterConfig {
     return jdbcConnectionClassName;
   }
 
+  public boolean isJdbcPoolWaitingEnabled() {
+    return jdbcPoolWaitingEnabled;
+  }
+
   public String getHttpURLConnectionClassName() {
     return httpURLConnectionClassName;
   }
@@ -489,6 +511,14 @@ public class InstrumenterConfig {
 
   public String getResolverCacheDir() {
     return resolverCacheDir;
+  }
+
+  public boolean isUnsafeClassInjection() {
+    return unsafeClassInjection;
+  }
+
+  public boolean isVisitorClassParsing() {
+    return visitorClassParsing;
   }
 
   public String getInstrumentationConfigId() {
@@ -620,6 +650,8 @@ public class InstrumenterConfig {
         + ", jdbcConnectionClassName='"
         + jdbcConnectionClassName
         + '\''
+        + ", jdbcPoolWaitingEnabled="
+        + jdbcPoolWaitingEnabled
         + ", httpURLConnectionClassName='"
         + httpURLConnectionClassName
         + '\''

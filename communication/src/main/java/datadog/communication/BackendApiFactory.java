@@ -3,13 +3,11 @@ package datadog.communication;
 import datadog.communication.ddagent.DDAgentFeaturesDiscovery;
 import datadog.communication.ddagent.SharedCommunicationObjects;
 import datadog.communication.http.HttpRetryPolicy;
-import datadog.communication.http.OkHttpUtils;
 import datadog.trace.api.Config;
 import datadog.trace.api.intake.Intake;
 import datadog.trace.util.throwable.FatalAgentMisconfigurationError;
 import javax.annotation.Nullable;
 import okhttp3.HttpUrl;
-import okhttp3.OkHttpClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,10 +34,13 @@ public class BackendApiFactory {
             "Agentless mode is enabled and api key is not set. Please set application key");
       }
       String traceId = config.getIdGenerationStrategy().generateTraceId().toString();
-      OkHttpClient httpClient =
-          OkHttpUtils.buildHttpClient(
-              agentlessUrl, config.getCiVisibilityBackendApiTimeoutMillis());
-      return new IntakeApi(agentlessUrl, apiKey, traceId, retryPolicyFactory, httpClient, true);
+      return new IntakeApi(
+          agentlessUrl,
+          apiKey,
+          traceId,
+          retryPolicyFactory,
+          sharedCommunicationObjects.getIntakeHttpClient(),
+          true);
     }
 
     DDAgentFeaturesDiscovery featuresDiscovery =
@@ -49,8 +50,14 @@ public class BackendApiFactory {
       String traceId = config.getIdGenerationStrategy().generateTraceId().toString();
       String evpProxyEndpoint = featuresDiscovery.getEvpProxyEndpoint();
       HttpUrl evpProxyUrl = sharedCommunicationObjects.agentUrl.resolve(evpProxyEndpoint);
+      String subdomain = intake.getUrlPrefix();
       return new EvpProxyApi(
-          traceId, evpProxyUrl, retryPolicyFactory, sharedCommunicationObjects.okHttpClient, true);
+          traceId,
+          evpProxyUrl,
+          subdomain,
+          retryPolicyFactory,
+          sharedCommunicationObjects.agentHttpClient,
+          true);
     }
 
     log.warn(

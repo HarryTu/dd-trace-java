@@ -8,11 +8,11 @@ addTestSuiteForDir('latestDepTest', 'test')
 final springBootVersion = '3.0.0'
 
 tasks.withType(AbstractCompile).configureEach {
-  setJavaVersion(it, 17)
+  configureCompiler(it, 17)
 }
 
 tasks.withType(GroovyCompile).configureEach {
-  javaLauncher = getJavaLauncherFor(17)
+  configureCompiler(it, 17)
 }
 
 dependencies {
@@ -27,6 +27,6 @@ dependencies {
   latestDepTestImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-web', version: '3.+'
   latestDepTestImplementation group: 'org.springframework.boot', name: 'spring-boot-starter-security', version: '3.+'
 
-  testRuntimeOnly project(':dd-java-agent:instrumentation:tomcat-appsec-6')
-  testRuntimeOnly project(':dd-java-agent:instrumentation:tomcat-5.5')
+  testRuntimeOnly project(':dd-java-agent:instrumentation:tomcat:tomcat-appsec:tomcat-appsec-6.0')
+  testRuntimeOnly project(':dd-java-agent:instrumentation:tomcat:tomcat-5.5')
 }

@@ -1,7 +1,6 @@
 package datadog.trace.common.writer.ddagent;
 
 import datadog.communication.serialization.EncodingCache;
-import datadog.trace.common.writer.ddagent.SimpleUtf8Cache.CacheEntry;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import java.nio.charset.StandardCharsets;
 
@@ -85,7 +84,7 @@ public final class GenerationalUtf8Cache implements EncodingCache {
   private static final double EDEN_PROPORTION = 1D / 3D;
   private static final double TENURED_PROPORTION = 1 - EDEN_PROPORTION;
 
-  private static final int MAX_ENTRY_LEN = 256;
+  static final int MAX_ENTRY_LEN = 256;
 
   private final CacheEntry[] edenEntries;
   private final int[] edenMarkers;

@@ -4,9 +4,10 @@ import datadog.trace.api.Config
 import datadog.trace.api.civisibility.config.TestFQN
 import datadog.trace.api.config.CiVisibilityConfig
 import datadog.trace.api.config.GeneralConfig
-import datadog.trace.util.Strings
 import spock.lang.Specification
 import spock.util.environment.Jvm
+
+import static datadog.trace.util.ConfigStrings.propertyNameToSystemPropertyName
 
 abstract class CiVisibilitySmokeTest extends Specification {
   static final List<String> SMOKE_IGNORED_TAGS = ["content.meta.['_dd.integration']"]
@@ -73,7 +74,7 @@ abstract class CiVisibilitySmokeTest extends Specification {
       argMap.put(CiVisibilityConfig.CIVISIBILITY_DEBUG_PORT, "5055")
     }
 
-    String agentArgs = argMap.collect { k, v -> "${Strings.propertyNameToSystemPropertyName(k)}=${v}" }.join(",")
+    String agentArgs = argMap.collect { k, v -> "${propertyNameToSystemPropertyName(k)}=${v}" }.join(",")
     arguments += "-javaagent:${AGENT_JAR}=${agentArgs}".toString()
 
     return arguments
@@ -82,7 +83,7 @@ abstract class CiVisibilitySmokeTest extends Specification {
   protected verifyEventsAndCoverages(String projectName, String toolchain, String toolchainVersion, List<Map<String, Object>> events, List<Map<String, Object>> coverages, List<String> additionalDynamicTags = []) {
     def additionalReplacements = ["content.meta.['test.toolchain']": "$toolchain:$toolchainVersion"]
 
-    if (System.getenv().get("GENERATE_TEST_FIXTURES") != null) {
+    if (System.getenv("GENERATE_TEST_FIXTURES") != null) {
       def baseTemplatesPath = CiVisibilitySmokeTest.classLoader.getResource(projectName).toURI().schemeSpecificPart.replace('build/resources/test', 'src/test/resources')
       CiVisibilityTestUtils.generateTemplates(baseTemplatesPath, events, coverages, additionalReplacements.keySet() + additionalDynamicTags, SMOKE_IGNORED_TAGS)
     } else {
@@ -148,7 +149,7 @@ abstract class CiVisibilitySmokeTest extends Specification {
     assert logs.findAll { log -> ((String) log.message).endsWith("is emitting.") }.size() == expectedCount
   }
 
-  private static verifySnapshots(List<Map<String, Object>> logs, expectedCount) {
+  protected static verifySnapshots(List<Map<String, Object>> logs, expectedCount) {
     assert logs.size() == expectedCount
 
     def requiredLogFields = ["logger.name", "logger.method", "dd.spanid", "dd.traceid"]
